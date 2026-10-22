@@ -1,0 +1,81 @@
+# Lingkungan lengkap untuk PC / uji coba: SILO lokal + PostgreSQL + engine.
+#
+#   cp .env.example .env      # opsional, nilai default sudah jalan
+#   docker compose up -d --build
+#
+#   Web UI      : http://localhost:8000/ui        (API key: lihat PQE_BOOTSTRAP_ADMIN_KEY)
+#   Swagger API : http://localhost:8000/docs
+#   SILO console: http://localhost:9001           (user/password: SILO_ROOT_USER / SILO_ROOT_PASSWORD)
+#
+# Ingin memakai SILO kantor (s3.pcpexpress.com)? Pakai docker-compose.remote-silo.yml.
+
+name: photo-quality-engine
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pqe
+      POSTGRES_USER: pqe
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pqe-local-only}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pqe -d pqe"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  silo:
+    image: docker.io/pgsty/silo:RELEASE.2026-10-18T00-00-00Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${SILO_ROOT_USER:-siloadmin}
+      MINIO_ROOT_PASSWORD: ${SILO_ROOT_PASSWORD:-siloadmin-local-only}
+      MINIO_UPDATE: "off"
+      # Bucket notification -> engine (real-time). Event diantre di disk jika engine sedang mati.
+      MINIO_NOTIFY_WEBHOOK_ENABLE_PQE: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_PQE: http://engine:8000/v1/events/s3
+      MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_PQE: ${PQE_S3_EVENT_TOKEN:-local-event-token}
+      MINIO_NOTIFY_WEBHOOK_QUEUE_DIR_PQE: /data/.pqe-events
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - silo-data:/data
+    restart: unless-stopped
+
+  engine:
+    build: .
+    image: photo-quality-engine:local
+    command: ["pqe", "run"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      silo:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+psycopg://pqe:${POSTGRES_PASSWORD:-pqe-local-only}@postgres:5432/pqe
+      AWS_ENDPOINT: http://silo:9000
+      # Host yang dipakai browser untuk membuka foto (presigned URL)
+      AWS_PUBLIC_ENDPOINT: ${AWS_PUBLIC_ENDPOINT:-http://localhost:9000}
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_USE_PATH_STYLE_ENDPOINT: "true"
+      AWS_ACCESS_KEY_ID: ${SILO_ROOT_USER:-siloadmin}
+      AWS_SECRET_ACCESS_KEY: ${SILO_ROOT_PASSWORD:-siloadmin-local-only}
+      AWS_BUCKET: ${AWS_BUCKET:-ekas-pcptransport}
+      ENGINE_CREATE_BUCKETS: "true"
+      PQE_BOOTSTRAP_ADMIN_KEY: ${PQE_BOOTSTRAP_ADMIN_KEY:-pqe_local_admin_change_me}
+      PQE_S3_EVENT_TOKEN: ${PQE_S3_EVENT_TOKEN:-local-event-token}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      PQE_WORKER_CONCURRENCY: ${PQE_WORKER_CONCURRENCY:-2}
+    volumes:
+      - ./config/tenants:/app/config/tenants:ro
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  silo-data:

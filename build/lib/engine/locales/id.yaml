@@ -1,0 +1,66 @@
+# Pesan untuk setiap kode alasan. message = apa masalahnya, suggestion = apa yang harus dilakukan kurir.
+verdict:
+  PASS: Foto layak
+  WARN: Foto kurang ideal
+  REJECT: Foto tidak layak
+reasons:
+  BLURRY:
+    message: Foto buram
+    suggestion: Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.
+  LOW_RESOLUTION:
+    message: Resolusi foto terlalu kecil
+    suggestion: Gunakan kamera langsung (bukan screenshot/thumbnail) dan jangan perkecil foto.
+  PIXELATED:
+    message: Foto pecah (kotak-kotak)
+    suggestion: Foto ulang dengan kamera, jangan kirim foto yang sudah dikompres berulang kali.
+  HEAVY_COMPRESSION:
+    message: Kualitas foto rusak karena kompresi berlebihan
+    suggestion: Kirim foto asli dari kamera tanpa dikompres aplikasi lain.
+  TOO_DARK:
+    message: Foto terlalu gelap
+    suggestion: Cari tempat lebih terang atau nyalakan flash.
+  TOO_BRIGHT:
+    message: Foto terlalu terang
+    suggestion: Hindari cahaya langsung ke kamera, matikan flash jika terlalu dekat.
+  GLARE:
+    message: Ada pantulan cahaya yang menutupi foto
+    suggestion: Ubah sudut foto agar tidak ada pantulan lampu atau matahari.
+  LOW_CONTRAST:
+    message: Foto pudar / kontras rendah
+    suggestion: Bersihkan lensa kamera dan foto di tempat dengan cahaya cukup.
+  NO_TEXT_DETECTED:
+    message: Tidak ada teks yang bisa dibaca
+    suggestion: Pastikan resi/dokumen terlihat penuh, lurus, dan dekat ke kamera.
+  TEXT_UNREADABLE:
+    message: Teks pada foto sulit dibaca
+    suggestion: Dekatkan kamera ke resi/dokumen, pastikan fokus dan cahaya cukup.
+  EXIF_MISSING:
+    message: Metadata kamera tidak tersedia
+    suggestion: Tidak perlu tindakan. Ini hanya informasi.
+  EDITING_SOFTWARE:
+    message: Foto terindikasi diedit dengan aplikasi editing
+    suggestion: Kirim foto asli langsung dari kamera.
+  OLD_PHOTO:
+    message: Foto diambil jauh sebelum dikirim
+    suggestion: Ambil foto baru saat serah terima, jangan memakai foto lama dari galeri.
+  CAPTURE_TIME_MISMATCH:
+    message: Waktu foto tidak sesuai dengan waktu yang dilaporkan aplikasi
+    suggestion: Ambil foto langsung dari aplikasi saat pengiriman.
+  GPS_MISMATCH:
+    message: Lokasi foto berbeda dengan lokasi pengiriman
+    suggestion: Ambil foto di lokasi penerima.
+  DUPLICATE_EXACT:
+    message: Foto identik sudah pernah dipakai untuk pengiriman lain
+    suggestion: Setiap pengiriman wajib memakai foto baru.
+  DUPLICATE_SIMILAR:
+    message: Foto sangat mirip dengan foto pengiriman lain
+    suggestion: Setiap pengiriman wajib memakai foto baru.
+  OCR_UNAVAILABLE:
+    message: Pemeriksaan teks (OCR) tidak aktif di server ini
+    suggestion: Tidak perlu tindakan. Hubungi admin engine jika OCR dibutuhkan.
+  COMPRESSION_TARGET_NOT_MET:
+    message: Ukuran file belum bisa diturunkan ke target tanpa merusak keterbacaan
+    suggestion: Tidak perlu tindakan. Keterbacaan diutamakan.
+  UNREADABLE_FILE:
+    message: File tidak bisa dibuka sebagai gambar
+    suggestion: Foto ulang dan kirim kembali.

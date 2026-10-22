@@ -177,6 +177,29 @@ def cmd_synth(a) -> None:
         print(p)
 
 
+def cmd_demo_upload(a) -> None:
+    """Upload sampel sintetis ke bucket (dengan metadata) untuk mencoba alur end-to-end."""
+    import random
+
+    from engine.storage import get_storage
+    from engine.synth import variants
+
+    st = get_storage()
+    bucket = a.bucket or get_settings().aws_bucket
+    samples = variants()
+    rnd = random.Random(42)
+    for i, (name, data) in enumerate(samples.items()):
+        awb = f"DEMO{int(time.time()) % 100000:05d}{i:02d}"
+        key = f"{a.prefix}{time.strftime('%Y/%m/%d')}/{awb}_{name}.jpg"
+        st.put(bucket, key, data, "image/jpeg", {
+            "awb": awb, "photo-type": "pod_document" if "huge" in name else "pod_recipient",
+            "courier-id": rnd.choice(["K001", "K002", "K003"]), "branch": rnd.choice(["JKT01", "BDG02"]),
+            "customer-id": "DEMO-CUST",
+        })
+        print(f"s3://{bucket}/{key}")
+    print(f"{len(samples)} foto diupload. Engine akan memprosesnya dalam beberapa detik; buka Web UI -> Review.")
+
+
 def cmd_reconcile(a) -> None:
     from engine.bootstrap import bootstrap
     from engine.ingestor import run_source
@@ -289,6 +312,10 @@ def main(argv: list[str] | None = None) -> None:
 
     p = add("synth-samples", cmd_synth, "Buat sampel foto sintetis (buram, pecah, gelap, ...)")
     p.add_argument("out_dir")
+
+    p = add("demo-upload", cmd_demo_upload, "Upload foto contoh ke bucket untuk mencoba alur end-to-end")
+    p.add_argument("--bucket", help="Default: AWS_BUCKET")
+    p.add_argument("--prefix", default="demo/")
 
     p = add("reconcile", cmd_reconcile, "Jalankan semua source sekali dengan lookback panjang")
     p.add_argument("--tenant")

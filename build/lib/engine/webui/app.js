@@ -1,0 +1,385 @@
+/* Photo Quality Engine - Web UI (vanilla JS, tanpa build step). */
+"use strict";
+
+const KEY_STORE = "pqe_api_key";
+const state = { me: null, tenants: [] };
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtDate = (s) => (s ? new Date(s).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" }) : "-");
+const kb = (n) => (n == null ? "-" : n >= 1048576 ? (n / 1048576).toFixed(2) + " MB" : Math.round(n / 1024) + " KB");
+const badge = (v, label) => `<span class="badge b-${esc(v || "pending")}">${esc(label || v || "pending")}</span>`;
+const REVIEW_LABEL = { none: "belum direview", approved: "disetujui", retake_requested: "minta foto ulang", fraud: "kecurangan" };
+
+function storedKey() { try { return localStorage.getItem(KEY_STORE); } catch { return null; } }
+function saveKey(k) { try { k ? localStorage.setItem(KEY_STORE, k) : localStorage.removeItem(KEY_STORE); } catch { /* abaikan */ } }
+
+async function api(path, opts = {}) {
+  const headers = { "X-API-Key": storedKey() || "", "Accept-Language": navigator.language || "id", ...(opts.headers || {}) };
+  let body = opts.body;
+  if (body && !(body instanceof FormData) && typeof body !== "string") { body = JSON.stringify(body); headers["Content-Type"] = "application/json"; }
+  const r = await fetch(path, { ...opts, headers, body });
+  if (r.status === 401) { saveKey(null); showLogin("Sesi berakhir, silakan masuk lagi."); throw new Error("unauthorized"); }
+  const ct = r.headers.get("content-type") || "";
+  const data = ct.includes("json") ? await r.json() : await r.text();
+  if (!r.ok) throw new Error((data && data.error && data.error.message) || r.statusText);
+  return data;
+}
+
+function toast(msg, err = false) {
+  const t = $("#toast");
+  t.textContent = msg; t.className = "toast" + (err ? " err" : "");
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add("hidden"), 4000);
+}
+
+function showLogin(msg = "") {
+  $("#app").classList.add("hidden"); $("#login").classList.remove("hidden"); $("#login-error").textContent = msg;
+}
+
+async function boot() {
+  if (!storedKey()) return showLogin();
+  try { state.me = await api("/v1/me"); } catch (e) { return showLogin(e.message === "unauthorized" ? "" : e.message); }
+  if (!["admin", "ops", "viewer"].includes(state.me.role)) { saveKey(null); return showLogin(`Role ${state.me.role} tidak bisa memakai Web UI.`); }
+  $("#login").classList.add("hidden"); $("#app").classList.remove("hidden");
+  $("#who").textContent = `${state.me.name} (${state.me.role})`;
+  document.querySelectorAll("[data-role=admin]").forEach((a) => a.classList.toggle("hidden", state.me.role !== "admin"));
+  try { state.tenants = await api("/v1/admin/tenants"); } catch { state.tenants = []; }
+  route();
+}
+
+$("#login-form").addEventListener("submit", (e) => { e.preventDefault(); saveKey($("#login-key").value.trim()); boot(); });
+$("#logout").addEventListener("click", () => { saveKey(null); showLogin(); });
+$("#drawer-close").addEventListener("click", closeDrawer);
+$("#drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") closeDrawer(); });
+window.addEventListener("hashchange", route);
+
+const pages = { dashboard, review, photos, test: testPhoto, tenants, keys, system };
+function route() {
+  const page = (location.hash.replace(/^#\//, "").split("?")[0]) || "dashboard";
+  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === page));
+  const fn = pages[page] || dashboard;
+  $("#main").innerHTML = `<div class="empty">Memuat...</div>`;
+  fn().catch((e) => { if (e.message !== "unauthorized") $("#main").innerHTML = `<div class="card error">${esc(e.message)}</div>`; });
+}
+
+const tenantOptions = (sel = "", all = true) =>
+  (all ? `<option value="">Semua tenant</option>` : "") +
+  state.tenants.map((t) => `<option value="${esc(t.code)}" ${t.code === sel ? "selected" : ""}>${esc(t.name)} (${esc(t.code)})</option>`).join("");
+
+/* ---------------- Dashboard ---------------- */
+async function dashboard() {
+  const f = dashboard.f || (dashboard.f = { tenant: "", days: 14 });
+  const q = new URLSearchParams({ days: f.days, ...(f.tenant ? { tenant: f.tenant } : {}) });
+  const s = await api("/v1/stats?" + q);
+  const total = s.total || 0;
+  const pct = (n) => (total ? Math.round((100 * (n || 0)) / total) : 0);
+  const v = s.by_verdict || {};
+  const max = Math.max(1, ...s.daily.map((d) => d.PASS + d.WARN + d.REJECT + d.pending));
+  const bar = (n, color) => `<span style="height:${(100 * n) / max}%;background:${color}" title="${n}"></span>`;
+  const list = (rows, key) => rows.length ? `<table>${rows.map((r) => `<tr><td>${esc(r[key])}</td><td style="text-align:right">${r.count}</td></tr>`).join("")}</table>` : `<p class="muted">Belum ada data.</p>`;
+  $("#main").innerHTML = `
+    <div class="filters">
+      <label>Tenant<select id="f-tenant">${tenantOptions(f.tenant)}</select></label>
+      <label>Periode<select id="f-days">${[1, 7, 14, 30, 90].map((d) => `<option ${d == f.days ? "selected" : ""} value="${d}">${d} hari</option>`).join("")}</select></label>
+    </div>
+    <div class="grid cols-4">
+      <div class="card kpi"><div class="v">${total}</div><div class="l">Foto diterima</div></div>
+      <div class="card kpi"><div class="v" style="color:var(--pass)">${pct(v.PASS)}%</div><div class="l">Layak (PASS) - ${v.PASS || 0}</div></div>
+      <div class="card kpi"><div class="v" style="color:var(--warn)">${pct(v.WARN)}%</div><div class="l">Kurang ideal (WARN) - ${v.WARN || 0}</div></div>
+      <div class="card kpi"><div class="v" style="color:var(--reject)">${pct(v.REJECT)}%</div><div class="l">Tidak layak (REJECT) - ${v.REJECT || 0}</div></div>
+      <div class="card kpi"><div class="v"><a href="#/review">${s.review_open}</a></div><div class="l">Menunggu review ops</div></div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Tren harian</h2>
+      <div class="legend"><span><i class="dot" style="background:var(--pass)"></i>PASS</span><span><i class="dot" style="background:var(--warn)"></i>WARN</span><span><i class="dot" style="background:var(--reject)"></i>REJECT</span><span><i class="dot" style="background:#cbd2db"></i>diproses</span></div>
+      ${s.daily.length ? `<div class="chart">${s.daily.map((d) => `<div class="col">${bar(d.PASS, "var(--pass)")}${bar(d.WARN, "var(--warn)")}${bar(d.REJECT, "var(--reject)")}${bar(d.pending, "#cbd2db")}</div>`).join("")}</div>
+      <div class="chart-labels">${s.daily.map((d) => `<span>${esc(d.date.slice(5))}</span>`).join("")}</div>` : `<p class="muted">Belum ada foto pada periode ini.</p>`}
+    </div>
+    <div class="grid cols-2" style="margin-top:16px">
+      <div class="card"><h2>Alasan terbanyak</h2>${s.top_reasons.length ? `<table>${s.top_reasons.map((r) => `<tr><td><a href="#/photos" data-reason="${esc(r.code)}">${esc(r.code)}</a></td><td style="text-align:right">${r.count}</td></tr>`).join("")}</table>` : `<p class="muted">Belum ada data.</p>`}</div>
+      <div class="card"><h2>Kurir dengan foto bermasalah terbanyak</h2>${list(s.top_couriers, "courier_id")}</div>
+      <div class="card"><h2>Cabang dengan foto bermasalah terbanyak</h2>${list(s.top_branches, "branch")}</div>
+    </div>`;
+  $("#f-tenant").onchange = (e) => { f.tenant = e.target.value; dashboard(); };
+  $("#f-days").onchange = (e) => { f.days = e.target.value; dashboard(); };
+  document.querySelectorAll("[data-reason]").forEach((a) => a.addEventListener("click", () => { photos.f = { reason: a.dataset.reason }; }));
+}
+
+/* ---------------- Daftar foto (dipakai Review & Cari) ---------------- */
+function photoTable(items) {
+  if (!items.length) return `<div class="empty">Tidak ada foto.</div>`;
+  return `<table><thead><tr><th></th><th>Resi</th><th>Tenant / jenis</th><th>Kurir</th><th>Verdict</th><th>Alasan utama</th><th>Review</th><th>Diterima</th></tr></thead><tbody>
+    ${items.map((p) => {
+      const main = (p.reasons || []).find((r) => r.severity !== "info");
+      return `<tr class="clickable" data-id="${esc(p.id)}">
+        <td>${p.urls && p.urls.thumbnail ? `<img class="thumb" loading="lazy" src="${esc(p.urls.thumbnail)}" alt="">` : `<div class="thumb"></div>`}</td>
+        <td><b>${esc(p.awb || "-")}</b><div class="muted small">${esc(p.external_id || "")}</div></td>
+        <td>${esc(p.tenant)}<div class="muted small">${esc(p.photo_type || "-")}</div></td>
+        <td>${esc(p.courier_id || "-")}<div class="muted small">${esc(p.branch || "")}</div></td>
+        <td>${p.status === "error" ? badge("REJECT", "ERROR") : badge(p.verdict)}</td>
+        <td>${main ? `${esc(main.message)}<div class="muted small">${esc(main.code)}</div>` : `<span class="muted">-</span>`}</td>
+        <td>${badge(p.review.status, REVIEW_LABEL[p.review.status])}</td>
+        <td class="small">${fmtDate(p.received_at)}</td></tr>`;
+    }).join("")}</tbody></table>`;
+}
+
+async function listPage(title, f, extraFilters, fixed) {
+  const params = { limit: 50, offset: f.offset || 0, ...fixed };
+  for (const k of ["tenant", "awb", "courier_id", "branch", "verdict", "status", "review_status", "reason", "date_from", "date_to"]) if (f[k]) params[k] = f[k];
+  const data = await api("/v1/photos?" + new URLSearchParams(params));
+  const sel = (id, label, opts) => `<label>${label}<select id="${id}">${opts.map(([v, l]) => `<option value="${v}" ${f[id.slice(2)] === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>`;
+  $("#main").innerHTML = `<h1>${title}</h1>
+    <div class="filters">
+      <label>Tenant<select id="f-tenant">${tenantOptions(f.tenant)}</select></label>
+      <label>Resi<input id="f-awb" value="${esc(f.awb || "")}" placeholder="AWB..."></label>
+      <label>Kurir<input id="f-courier_id" value="${esc(f.courier_id || "")}"></label>
+      <label>Cabang<input id="f-branch" value="${esc(f.branch || "")}"></label>
+      ${sel("f-verdict", "Verdict", [["", "Semua"], ["PASS", "PASS"], ["WARN", "WARN"], ["REJECT", "REJECT"]])}
+      <label>Kode alasan<input id="f-reason" value="${esc(f.reason || "")}" placeholder="BLURRY"></label>
+      ${extraFilters}
+      <button id="f-apply">Terapkan</button>
+    </div>
+    <div class="card">${photoTable(data.items)}
+      <div class="pager"><button class="secondary" id="prev" ${!params.offset ? "disabled" : ""}>Sebelumnya</button>
+      <span class="muted">${data.total ? `${params.offset + 1}-${Math.min(params.offset + 50, data.total)} dari ${data.total}` : "0"}</span>
+      <button class="secondary" id="next" ${params.offset + 50 >= data.total ? "disabled" : ""}>Berikutnya</button></div></div>`;
+  const rerun = () => (location.hash.startsWith("#/review") ? review() : photos());
+  $("#f-apply").onclick = () => {
+    for (const el of document.querySelectorAll(".filters [id^=f-]")) f[el.id.slice(2)] = el.value.trim();
+    f.offset = 0; rerun();
+  };
+  $("#prev").onclick = () => { f.offset = Math.max(0, params.offset - 50); rerun(); };
+  $("#next").onclick = () => { f.offset = params.offset + 50; rerun(); };
+  document.querySelectorAll("tr[data-id]").forEach((tr) => tr.addEventListener("click", () => openPhoto(tr.dataset.id, rerun)));
+}
+
+async function review() {
+  const f = review.f || (review.f = {});
+  await listPage("Antrean review", f, "", { needs_review: true });
+}
+
+async function photos() {
+  const f = photos.f || (photos.f = {});
+  const extra = `
+    <label>Status review<select id="f-review_status">${[["", "Semua"], ["none", "belum direview"], ["approved", "disetujui"], ["retake_requested", "minta foto ulang"], ["fraud", "kecurangan"]].map(([v, l]) => `<option value="${v}" ${f.review_status === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    <label>Dari<input type="date" id="f-date_from" value="${esc(f.date_from || "")}"></label>
+    <label>Sampai<input type="date" id="f-date_to" value="${esc(f.date_to || "")}"></label>`;
+  await listPage("Cari foto", f, extra, {});
+}
+
+/* ---------------- Detail foto ---------------- */
+function closeDrawer() { $("#drawer").classList.add("hidden"); }
+
+function scoreBars(scores) {
+  const color = (v) => (v >= 55 ? "var(--pass)" : v >= 30 ? "var(--warn)" : "var(--reject)");
+  return Object.entries(scores || {}).filter(([k]) => k !== "authenticity_risk").map(([k, v]) =>
+    `<div class="score-row"><span>${esc(k)}</span><div class="bar"><span style="width:${v}%;background:${color(v)}"></span></div><b>${Math.round(v)}</b></div>`).join("");
+}
+
+function reasonsHtml(reasons) {
+  if (!reasons || !reasons.length) return `<p class="muted">Tidak ada catatan.</p>`;
+  return reasons.map((r) => `<div class="reason ${esc(r.severity)}"><b>${esc(r.message)}</b> ${badge(r.severity === "info" ? "info" : r.severity === "reject" ? "REJECT" : "WARN", r.severity)}
+    <span class="muted small">${esc(r.code)}${r.score != null ? ` · skor ${Math.round(r.score)}` : ""}</span>
+    ${r.severity !== "info" && r.suggestion ? `<div class="small">${esc(r.suggestion)}</div>` : ""}</div>`).join("");
+}
+
+async function openPhoto(id, onChange) {
+  const p = await api(`/v1/photos/${id}`);
+  const canReview = ["admin", "ops"].includes(state.me.role);
+  const c = p.compression || {};
+  const kv = (rows) => `<div class="kv">${rows.map(([k, v]) => `<div>${esc(k)}</div><div>${v ?? "-"}</div>`).join("")}</div>`;
+  $("#drawer-body").innerHTML = `
+    <h1>${esc(p.awb || "(tanpa resi)")} ${p.status === "error" ? badge("REJECT", "ERROR") : badge(p.verdict)} ${badge(p.review.status, REVIEW_LABEL[p.review.status])}</h1>
+    <p class="muted">${esc(p.tenant)} · profile ${esc(p.profile || "-")} · aksi mode: <b>${esc(p.action || "-")}</b></p>
+    <div class="grid cols-2">
+      <div class="images">
+        ${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank"><img src="${esc(p.urls.processed)}" alt="foto"></a>` : `<div class="empty">Tidak ada pratinjau</div>`}
+        <div class="small"><a href="${esc(p.urls.original)}" target="_blank">Buka original</a>${p.urls.processed ? ` · <a href="${esc(p.urls.processed)}" target="_blank">Buka versi kompres</a>` : ""}</div>
+      </div>
+      <div>
+        <h3>Skor</h3>${scoreBars(p.scores)}
+        <h3>Catatan</h3>${reasonsHtml(p.reasons)}
+        ${p.error ? `<div class="reason reject"><b>${esc(p.error.code)}</b><div class="small">${esc(p.error.message)}</div></div>` : ""}
+        ${canReview ? `<h3>Keputusan ops</h3>
+          <textarea id="rv-note" rows="2" style="width:100%" placeholder="Catatan (opsional)">${esc(p.review.note || "")}</textarea>
+          <div class="actions">
+            <button data-act="approve">Setujui (layak tagih)</button>
+            <button class="secondary" data-act="request_retake">Minta foto ulang</button>
+            <button class="secondary" data-act="mark_fraud">Tandai kecurangan</button>
+            <button class="secondary" data-act="reset">Reset</button>
+            <button class="secondary" id="rv-reprocess">Analisis ulang</button>
+          </div>` : ""}
+      </div>
+    </div>
+    <h3>Data pengiriman</h3>${kv([["Kurir", esc(p.courier_id)], ["Cabang", esc(p.branch)], ["Pelanggan", esc(p.customer_id)], ["ID eksternal", esc(p.external_id)],
+      ["Waktu foto", fmtDate(p.captured_at)], ["Diterima", fmtDate(p.received_at)], ["Dianalisis", fmtDate(p.analyzed_at)],
+      ["Lokasi", p.location ? `<a target="_blank" href="https://maps.google.com/?q=${p.location.lat},${p.location.lng}">${p.location.lat}, ${p.location.lng}</a>` : "-"],
+      ["Sumber", esc(p.ingest_source)], ["Objek", `<code>${esc(p.object.bucket)}/${esc(p.object.key)}</code>`]])}
+    <h3>Gambar & kompresi</h3>${kv([["Format", esc((p.image || {}).format)], ["Dimensi", p.image && p.image.width ? `${p.image.width} × ${p.image.height}` : "-"],
+      ["Ukuran", `${kb(c.original_bytes)} → ${kb(c.output_bytes)} ${c.passthrough ? "(tidak dikompres)" : `(quality ${c.quality}, SSIM ${c.ssim})`}`],
+      ["SHA-256", `<code class="small">${esc(p.sha256)}</code>`]])}
+    <h3>EXIF</h3>${Object.keys(p.exif || {}).length ? kv(Object.entries(p.exif).map(([k, v]) => [k, esc(v)])) : `<p class="muted">Tidak ada EXIF.</p>`}
+    <h3>Riwayat review</h3><div id="rv-history" class="muted">Memuat...</div>
+    <details><summary class="muted">Metrik mentah</summary><pre class="json">${esc(JSON.stringify(p.metrics, null, 2))}</pre></details>`;
+  $("#drawer").classList.remove("hidden");
+  api(`/v1/photos/${id}/reviews`).then((rows) => {
+    $("#rv-history").innerHTML = rows.length ? rows.map((r) => `<div>${fmtDate(r.at)} · <b>${esc(r.action)}</b> oleh ${esc(r.actor)} ${r.note ? `- ${esc(r.note)}` : ""}</div>`).join("") : "Belum ada.";
+  }).catch(() => { $("#rv-history").textContent = "-"; });
+  document.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", async () => {
+    try {
+      await api(`/v1/photos/${id}/review`, { method: "POST", body: { action: b.dataset.act, note: $("#rv-note").value || null } });
+      toast("Keputusan tersimpan"); closeDrawer(); onChange && onChange();
+    } catch (e) { toast(e.message, true); }
+  }));
+  const rp = $("#rv-reprocess");
+  if (rp) rp.onclick = async () => { try { await api(`/v1/photos/${id}/reprocess`, { method: "POST" }); toast("Masuk antrean analisis ulang"); closeDrawer(); onChange && onChange(); } catch (e) { toast(e.message, true); } };
+}
+
+/* ---------------- Uji foto (preview, tidak disimpan) ---------------- */
+async function testPhoto() {
+  const builtin = await api("/v1/admin/profiles/builtin").catch(() => ({}));
+  $("#main").innerHTML = `<h1>Uji foto</h1>
+    <p class="muted">Analisis foto tanpa menyimpan apa pun. Pakai untuk mencoba threshold atau melatih tim.</p>
+    <div class="card"><div class="filters">
+      <label>Tenant<select id="t-tenant"><option value="">(profile bawaan)</option>${tenantOptions("", false)}</select></label>
+      <label>Jenis foto / profile<select id="t-type">${Object.keys(builtin).map((p) => `<option>${esc(p)}</option>`).join("")}</select></label>
+      <label>File foto<input id="t-file" type="file" accept="image/*"></label>
+      <button id="t-run">Analisis</button>
+    </div><div id="t-out"></div></div>`;
+  $("#t-run").onclick = async () => {
+    const file = $("#t-file").files[0];
+    if (!file) return toast("Pilih file dulu", true);
+    const fd = new FormData(); fd.append("file", file);
+    const q = new URLSearchParams({ photo_type: $("#t-type").value, ...($("#t-tenant").value ? { tenant: $("#t-tenant").value } : {}) });
+    $("#t-out").innerHTML = `<div class="empty">Menganalisis...</div>`;
+    try {
+      const r = await api("/v1/analyze/preview?" + q, { method: "POST", body: fd });
+      const c = r.compression || {};
+      $("#t-out").innerHTML = `<div class="grid cols-2"><div><img src="${URL.createObjectURL(file)}" style="max-width:100%;border-radius:6px"></div><div>
+        <h2>${badge(r.verdict)} <span class="muted small">profile ${esc(r.profile)} · mode ${esc(r.mode)} · aksi ${esc(r.action)}</span></h2>
+        <h3>Skor</h3>${scoreBars(r.scores)}<h3>Catatan</h3>${reasonsHtml(r.reasons)}
+        <h3>Kompresi</h3><p>${kb(c.original_bytes)} → ${kb(c.output_bytes)} ${c.passthrough ? "(tidak perlu dikompres)" : `(${c.width}×${c.height}, quality ${c.quality}, SSIM ${c.ssim}${c.target_met ? "" : ", target belum tercapai"})`}</p>
+        <p class="muted small">Waktu proses ${r.timings_ms.total} ms</p>
+        <details><summary class="muted">JSON lengkap</summary><pre class="json">${esc(JSON.stringify(r, null, 2))}</pre></details></div></div>`;
+    } catch (e) { $("#t-out").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  };
+}
+
+/* ---------------- Tenant (admin) ---------------- */
+const TENANT_TEMPLATE = `code: aplikasi-baru
+name: Aplikasi Baru
+default_lang: id
+timezone: Asia/Jakarta
+retention_days: 1095
+store_mode: processed
+default_profile: default
+sources:
+  - type: s3_poll
+    bucket: nama-bucket
+    prefix: "folder/"
+    poll_interval_sec: 15
+mapping:
+  awb: ["meta:awb"]
+  photo_type: ["meta:photo-type"]
+sinks: []
+profiles:
+  default:
+    mode: shadow
+`;
+
+async function tenants() {
+  state.tenants = await api("/v1/admin/tenants");
+  $("#main").innerHTML = `<h1>Tenant</h1>
+    <p class="muted">Setiap aplikasi yang terhubung = satu tenant. Perubahan berlaku tanpa restart (maks. 5 detik). Referensi field: <code>docs/configuration.md</code>.</p>
+    <div class="card"><table><thead><tr><th>Kode</th><th>Nama</th><th>Versi</th><th>Source</th><th>Mode per profile</th><th>Status</th><th></th></tr></thead><tbody>
+    ${state.tenants.map((t) => `<tr><td><b>${esc(t.code)}</b></td><td>${esc(t.name)}</td><td>v${t.version}</td><td>${esc((t.sources || []).join(", ") || "API saja")}</td>
+      <td class="small">${Object.entries(t.modes || {}).map(([k, v]) => `${esc(k)}: <b>${esc(v)}</b>`).join(" · ")}</td>
+      <td>${t.enabled ? badge("PASS", "aktif") : badge("REJECT", "nonaktif")}</td>
+      <td><button class="secondary" data-edit="${esc(t.code)}">Ubah</button></td></tr>`).join("")}
+    </tbody></table><div class="actions"><button id="tn-new">Tenant baru</button></div></div><div id="tn-editor"></div>`;
+  document.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => editTenant(b.dataset.edit)));
+  $("#tn-new").onclick = () => editTenant(null);
+}
+
+async function editTenant(code) {
+  const t = code ? await api(`/v1/admin/tenants/${code}`) : { config_yaml: TENANT_TEMPLATE, enabled: true };
+  $("#tn-editor").innerHTML = `<div class="card" style="margin-top:16px"><h2>${code ? `Ubah ${esc(code)} (v${t.version})` : "Tenant baru"}</h2>
+    <textarea id="tn-yaml" class="code" spellcheck="false">${esc(t.config_yaml)}</textarea>
+    <div class="actions"><button class="secondary" id="tn-validate">Validasi</button><button id="tn-save">Simpan</button>
+      ${code ? `<button class="secondary" id="tn-toggle">${t.enabled ? "Nonaktifkan" : "Aktifkan"}</button><button class="secondary" id="tn-history">Riwayat versi</button>` : ""}</div>
+    <div id="tn-msg"></div></div>`;
+  const yaml = () => $("#tn-yaml").value;
+  const post = (url, method) => api(url, { method, body: yaml(), headers: { "Content-Type": "application/x-yaml" } });
+  $("#tn-validate").onclick = async () => {
+    try { const r = await post("/v1/admin/tenants/validate", "POST"); $("#tn-msg").innerHTML = `<p style="color:var(--pass)">Valid. Profile: ${Object.keys(r.resolved_profiles).map(esc).join(", ")}</p><details><summary class="muted">Profile hasil gabungan</summary><pre class="json">${esc(JSON.stringify(r.resolved_profiles, null, 2))}</pre></details>`; }
+    catch (e) { $("#tn-msg").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  };
+  $("#tn-save").onclick = async () => {
+    try { const r = await post("/v1/admin/tenants", "PUT"); toast(`Tersimpan: ${r.code} v${r.version}`); await tenants(); editTenant(r.code); }
+    catch (e) { $("#tn-msg").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  };
+  if (code) {
+    $("#tn-toggle").onclick = async () => { await api(`/v1/admin/tenants/${code}/${t.enabled ? "disable" : "enable"}`, { method: "POST" }); toast("Status tenant diubah"); tenants(); };
+    $("#tn-history").onclick = async () => {
+      const h = await api(`/v1/admin/tenants/${code}/history`);
+      $("#tn-msg").innerHTML = h.map((x) => `<details><summary>v${x.version} · ${fmtDate(x.changed_at)} · ${esc(x.changed_by)}</summary><pre class="json">${esc(x.config_yaml)}</pre></details>`).join("");
+    };
+  }
+  $("#tn-editor").scrollIntoView({ behavior: "smooth" });
+}
+
+/* ---------------- API key (admin) ---------------- */
+async function keys() {
+  const rows = await api("/v1/admin/api-keys");
+  $("#main").innerHTML = `<h1>API key</h1>
+    <div class="card"><h2>Buat key baru</h2><div class="filters">
+      <label>Nama / pemakai<input id="k-name" placeholder="contoh: aplikasi-kurir-prod"></label>
+      <label>Role<select id="k-role"><option value="app">app (aplikasi)</option><option value="ops">ops</option><option value="viewer">viewer</option><option value="customer">customer (pelanggan)</option><option value="admin">admin</option></select></label>
+      <label>Tenant<select id="k-tenant"><option value="">-</option>${tenantOptions("", false)}</select></label>
+      <label>Customer ID<input id="k-cust" placeholder="untuk role customer"></label>
+      <button id="k-create">Buat</button></div><div id="k-out"></div></div>
+    <div class="card" style="margin-top:16px"><table><thead><tr><th>Nama</th><th>Prefix</th><th>Role</th><th>Tenant</th><th>Customer</th><th>Dibuat</th><th>Terakhir dipakai</th><th></th></tr></thead><tbody>
+    ${rows.map((k) => `<tr><td>${esc(k.name)}</td><td><code>${esc(k.prefix)}…</code></td><td>${esc(k.role)}</td><td>${esc(k.tenant || "-")}</td><td>${esc(k.customer_id || "-")}</td>
+      <td class="small">${fmtDate(k.created_at)}</td><td class="small">${fmtDate(k.last_used_at)}</td>
+      <td>${k.revoked ? badge("REJECT", "dicabut") : `<button class="secondary" data-revoke="${esc(k.id)}">Cabut</button>`}</td></tr>`).join("")}</tbody></table></div>`;
+  $("#k-create").onclick = async () => {
+    try {
+      const r = await api("/v1/admin/api-keys", { method: "POST", body: { name: $("#k-name").value, role: $("#k-role").value, tenant: $("#k-tenant").value || null, customer_id: $("#k-cust").value || null } });
+      $("#k-out").innerHTML = `<div class="keybox"><b>Simpan sekarang, key ini tidak bisa dilihat lagi:</b><br><code>${esc(r.api_key)}</code></div>`;
+    } catch (e) { toast(e.message, true); }
+  };
+  document.querySelectorAll("[data-revoke]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Cabut API key ini? Aplikasi yang memakainya akan langsung ditolak.")) return;
+    await api(`/v1/admin/api-keys/${b.dataset.revoke}`, { method: "DELETE" }); toast("Key dicabut"); keys();
+  }));
+}
+
+/* ---------------- Sistem ---------------- */
+async function system() {
+  const [jobs, sources] = await Promise.all([api("/v1/admin/jobs?status=dead"), api("/v1/admin/sources")]);
+  const audit = state.me.role === "admin" ? await api("/v1/admin/audit?limit=50").catch(() => []) : [];
+  const st = jobs.stats;
+  $("#main").innerHTML = `<h1>Sistem</h1>
+    <div class="grid cols-4">
+      <div class="card kpi"><div class="v">${st.queued}</div><div class="l">Antre</div></div>
+      <div class="card kpi"><div class="v">${st.running}</div><div class="l">Diproses</div></div>
+      <div class="card kpi"><div class="v">${st.done}</div><div class="l">Selesai</div></div>
+      <div class="card kpi"><div class="v" style="color:${st.dead ? "var(--reject)" : "inherit"}">${st.dead}</div><div class="l">Gagal permanen (dead)</div></div>
+    </div>
+    <div class="card" style="margin-top:16px"><h2>Job gagal permanen</h2>
+      ${jobs.items.length ? `<table><thead><tr><th>ID</th><th>Tenant</th><th>Objek</th><th>Percobaan</th><th>Error terakhir</th><th></th></tr></thead><tbody>
+      ${jobs.items.map((j) => `<tr><td>${j.id}</td><td>${esc(j.tenant)}</td><td><code class="small">${esc(j.object_key)}</code></td><td>${j.attempts}</td><td class="small">${esc(j.last_error)}</td>
+        <td>${state.me.role === "admin" ? `<button class="secondary" data-retry="${j.id}">Ulangi</button>` : ""}</td></tr>`).join("")}</tbody></table>
+      ${state.me.role === "admin" ? `<div class="actions"><button id="retry-all">Ulangi semua</button></div>` : ""}` : `<p class="muted">Tidak ada. Bagus.</p>`}
+    </div>
+    <div class="card" style="margin-top:16px"><h2>Source ingest</h2>
+      ${sources.length ? `<table><thead><tr><th>Source</th><th>Terakhir jalan</th><th>Foto baru</th><th>Reconcile terakhir</th><th>Error</th></tr></thead><tbody>
+      ${sources.map((s) => `<tr><td><code>${esc(s.id)}</code></td><td class="small">${fmtDate(s.last_run_at)}</td><td>${s.last_found}</td><td class="small">${fmtDate(s.last_reconcile_at)}</td><td class="small error">${esc(s.last_error || "")}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">Belum ada source yang berjalan.</p>`}
+    </div>
+    ${audit.length ? `<div class="card" style="margin-top:16px"><h2>Audit log</h2><table>${audit.map((a) => `<tr><td class="small">${fmtDate(a.at)}</td><td>${esc(a.actor)}</td><td><b>${esc(a.action)}</b></td><td>${esc(a.target || "")}</td></tr>`).join("")}</table></div>` : ""}
+    <p class="muted small">Metrik Prometheus: <a href="/metrics" target="_blank">/metrics</a> · Dokumentasi API: <a href="/docs" target="_blank">/docs</a></p>`;
+  document.querySelectorAll("[data-retry]").forEach((b) => (b.onclick = async () => { await api(`/v1/admin/jobs/${b.dataset.retry}/retry`, { method: "POST" }); toast("Job diantrekan ulang"); system(); }));
+  const ra = $("#retry-all");
+  if (ra) ra.onclick = async () => { const r = await api("/v1/admin/jobs/retry-dead", { method: "POST" }); toast(`${r.requeued} job diantrekan ulang`); system(); };
+}
+
+boot();
