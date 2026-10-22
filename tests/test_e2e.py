@@ -278,3 +278,37 @@ def test_auth_and_health(client, admin_headers):
     codes = client.get("/v1/meta/reason-codes?lang=en").json()
     assert {"code": "BLURRY", "message": "The photo is blurry"}.items() <= next(
         c for c in codes if c["code"] == "BLURRY").items()
+
+
+def test_cors_disabled_by_default_and_configurable(env, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from engine.api.app import create_app
+    from engine.settings import reset_settings_cache
+
+    with TestClient(create_app(run_bootstrap=False)) as c:
+        r = c.options("/v1/photos", headers={"Origin": "https://portal.test", "Access-Control-Request-Method": "GET"})
+        assert "access-control-allow-origin" not in r.headers
+    monkeypatch.setenv("PQE_CORS_ORIGINS", "https://portal.test")
+    reset_settings_cache()
+    with TestClient(create_app(run_bootstrap=False)) as c:
+        r = c.options("/v1/photos", headers={"Origin": "https://portal.test", "Access-Control-Request-Method": "GET"})
+        assert r.headers["access-control-allow-origin"] == "https://portal.test"
+
+
+def test_dead_webhook_can_be_retried(client, admin_headers, samples, monkeypatch):
+    import engine.webhooks as wh
+
+    put_photo("pod/pod_recipient/AWB990.jpg", samples["pass_sharp_large"])
+    monkeypatch.setattr(wh, "MAX_ATTEMPTS", 1)
+    real_client = httpx.Client
+    failing = httpx.MockTransport(lambda r: httpx.Response(500))
+    monkeypatch.setattr("engine.webhooks.httpx.Client", lambda *a, **kw: real_client(*a, transport=failing, **kw))
+    ingest_and_process()
+    dead = client.get("/v1/admin/webhooks", headers=admin_headers).json()
+    assert len(dead) == 1 and dead[0]["last_error"].startswith("HTTP 500")
+    assert client.post("/v1/admin/webhooks/retry-dead", headers=admin_headers).json() == {"requeued": 1}
+    pending = client.get("/v1/admin/webhooks", params={"status": "pending"}, headers=admin_headers).json()
+    assert pending[0]["id"] == dead[0]["id"]
+    metrics = client.get("/metrics").text
+    assert "pqe_pending_webhooks 1.0" in metrics

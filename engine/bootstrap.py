@@ -19,6 +19,9 @@ def bootstrap() -> None:
         from engine.api.auth import ensure_bootstrap_key
 
         ensure_bootstrap_key(s.bootstrap_admin_key)
+    if not s.s3_event_token:
+        log.warning("PQE_S3_EVENT_TOKEN kosong: endpoint /v1/events/s3 menerima request tanpa token. "
+                    "Isi nilai acak di produksi.")
     imported = import_dir(s.tenants_dir)
     if imported:
         log.info("tenant di-import dari %s: %s", s.tenants_dir, ", ".join(imported))

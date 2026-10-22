@@ -355,7 +355,7 @@ async function keys() {
 
 /* ---------------- Sistem ---------------- */
 async function system() {
-  const [jobs, sources] = await Promise.all([api("/v1/admin/jobs?status=dead"), api("/v1/admin/sources")]);
+  const [jobs, sources, hooks] = await Promise.all([api("/v1/admin/jobs?status=dead"), api("/v1/admin/sources"), api("/v1/admin/webhooks?status=dead")]);
   const audit = state.me.role === "admin" ? await api("/v1/admin/audit?limit=50").catch(() => []) : [];
   const st = jobs.stats;
   $("#main").innerHTML = `<h1>Sistem</h1>
@@ -371,6 +371,11 @@ async function system() {
         <td>${state.me.role === "admin" ? `<button class="secondary" data-retry="${j.id}">Ulangi</button>` : ""}</td></tr>`).join("")}</tbody></table>
       ${state.me.role === "admin" ? `<div class="actions"><button id="retry-all">Ulangi semua</button></div>` : ""}` : `<p class="muted">Tidak ada. Bagus.</p>`}
     </div>
+    <div class="card" style="margin-top:16px"><h2>Webhook gagal permanen</h2>
+      ${hooks.length ? `<table><thead><tr><th>ID</th><th>Tenant</th><th>Event</th><th>URL</th><th>Percobaan</th><th>Error terakhir</th></tr></thead><tbody>
+      ${hooks.map((h) => `<tr><td>${h.id}</td><td>${esc(h.tenant)}</td><td>${esc(h.event)}</td><td class="small">${esc(h.url)}</td><td>${h.attempts}</td><td class="small">${esc(h.last_error)}</td></tr>`).join("")}</tbody></table>
+      ${state.me.role === "admin" ? `<div class="actions"><button id="retry-hooks">Kirim ulang semua</button></div>` : ""}` : `<p class="muted">Tidak ada.</p>`}
+    </div>
     <div class="card" style="margin-top:16px"><h2>Source ingest</h2>
       ${sources.length ? `<table><thead><tr><th>Source</th><th>Terakhir jalan</th><th>Foto baru</th><th>Reconcile terakhir</th><th>Error</th></tr></thead><tbody>
       ${sources.map((s) => `<tr><td><code>${esc(s.id)}</code></td><td class="small">${fmtDate(s.last_run_at)}</td><td>${s.last_found}</td><td class="small">${fmtDate(s.last_reconcile_at)}</td><td class="small error">${esc(s.last_error || "")}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">Belum ada source yang berjalan.</p>`}
@@ -378,6 +383,8 @@ async function system() {
     ${audit.length ? `<div class="card" style="margin-top:16px"><h2>Audit log</h2><table>${audit.map((a) => `<tr><td class="small">${fmtDate(a.at)}</td><td>${esc(a.actor)}</td><td><b>${esc(a.action)}</b></td><td>${esc(a.target || "")}</td></tr>`).join("")}</table></div>` : ""}
     <p class="muted small">Metrik Prometheus: <a href="/metrics" target="_blank">/metrics</a> · Dokumentasi API: <a href="/docs" target="_blank">/docs</a></p>`;
   document.querySelectorAll("[data-retry]").forEach((b) => (b.onclick = async () => { await api(`/v1/admin/jobs/${b.dataset.retry}/retry`, { method: "POST" }); toast("Job diantrekan ulang"); system(); }));
+  const rh = $("#retry-hooks");
+  if (rh) rh.onclick = async () => { const r = await api("/v1/admin/webhooks/retry-dead", { method: "POST" }); toast(`${r.requeued} webhook diantrekan ulang`); system(); };
   const ra = $("#retry-all");
   if (ra) ra.onclick = async () => { const r = await api("/v1/admin/jobs/retry-dead", { method: "POST" }); toast(`${r.requeued} job diantrekan ulang`); system(); };
 }

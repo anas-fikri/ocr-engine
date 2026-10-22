@@ -19,6 +19,7 @@ from engine.db import (
     SourceState,
     Tenant,
     TenantConfigHistory,
+    WebhookDelivery,
     session_scope,
     utcnow,
 )
@@ -196,6 +197,27 @@ def retry_dead(principal: Admin):
         for j in rows:
             j.status, j.attempts, j.run_after, j.last_error = "queued", 0, utcnow(), None
         s.add(AuditLog(actor=principal.actor, action="job.retry_dead", detail={"count": len(rows)}))
+    return {"requeued": len(rows)}
+
+
+@router.get("/webhooks", summary="Pengiriman webhook (default: dead)")
+def webhooks(_: Staff, status: Annotated[str, Query(pattern="^(pending|done|dead)$")] = "dead",
+             limit: Annotated[int, Query(ge=1, le=500)] = 100):
+    with session_scope() as s:
+        rows = s.scalars(select(WebhookDelivery).where(WebhookDelivery.status == status)
+                         .order_by(WebhookDelivery.id.desc()).limit(limit)).all()
+        return [{"id": d.id, "tenant": d.tenant_code, "url": d.url, "event": d.event, "attempts": d.attempts,
+                 "last_error": d.last_error, "photo_id": (d.payload.get("photo") or {}).get("id"),
+                 "created_at": d.created_at.isoformat()} for d in rows]
+
+
+@router.post("/webhooks/retry-dead", summary="Kirim ulang semua webhook dead")
+def retry_dead_webhooks(principal: Admin):
+    with session_scope() as s:
+        rows = s.scalars(select(WebhookDelivery).where(WebhookDelivery.status == "dead")).all()
+        for d in rows:
+            d.status, d.attempts, d.next_attempt_at, d.last_error = "pending", 0, utcnow(), None
+        s.add(AuditLog(actor=principal.actor, action="webhook.retry_dead", detail={"count": len(rows)}))
     return {"requeued": len(rows)}
 
 

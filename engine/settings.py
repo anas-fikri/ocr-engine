@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     default_lang: str = Field("id", alias="PQE_DEFAULT_LANG")
     max_upload_mb: int = Field(25, alias="PQE_MAX_UPLOAD_MB")
     sync_timeout_ms: int = Field(3000, alias="PQE_SYNC_TIMEOUT_MS")
+    # daftar origin dipisah koma, contoh "https://portal.pcpexpress.com". Kosong = CORS mati.
+    cors_origins: str = Field("", alias="PQE_CORS_ORIGINS")
 
     # --- Worker & ingestor ---
     tenants_dir: Path = Field(Path("config/tenants"), alias="PQE_TENANTS_DIR")
@@ -48,6 +50,8 @@ class Settings(BaseSettings):
     reconcile_interval_sec: int = Field(86400, alias="PQE_RECONCILE_INTERVAL_SEC")
     duplicate_lookback_days: int = Field(90, alias="PQE_DUPLICATE_LOOKBACK_DAYS")
 
+    # port metrik Prometheus untuk proses `pqe worker` / `pqe ingestor` (API memakai /metrics di port API)
+    metrics_port: int = Field(9100, alias="PQE_METRICS_PORT")
     log_level: str = Field("INFO", alias="PQE_LOG_LEVEL")
 
 

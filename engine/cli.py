@@ -32,6 +32,15 @@ def _serve_api(host: str, port: int, run_bootstrap: bool = True) -> None:
                 forwarded_allow_ips="*", log_level=get_settings().log_level.lower())
 
 
+def _start_metrics_server() -> None:
+    """Endpoint metrik + health untuk proses tanpa API (worker/ingestor)."""
+    from prometheus_client import start_http_server
+
+    port = get_settings().metrics_port
+    start_http_server(port)
+    logging.getLogger("pqe").info("metrik Prometheus di :%d/metrics", port)
+
+
 def _wait_forever(stop: threading.Event) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
@@ -61,6 +70,7 @@ def cmd_worker(a) -> None:
     from engine.worker import Worker
 
     bootstrap()
+    _start_metrics_server()
     w = Worker(concurrency=a.concurrency)
     w.start()
     _wait_forever(w.stop_event)
@@ -71,6 +81,7 @@ def cmd_ingestor(a) -> None:
     from engine.ingestor import Ingestor
 
     bootstrap()
+    _start_metrics_server()
     ing = Ingestor()
     t = threading.Thread(target=ing.run_forever, daemon=True)
     t.start()

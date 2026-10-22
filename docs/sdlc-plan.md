@@ -2,15 +2,48 @@
 
 | | |
 |---|---|
-| **Versi** | 0.1 (draft untuk review) |
+| **Versi** | 0.2 (diperbarui setelah implementasi v0.1.0) |
 | **Tanggal** | 22 Oktober 2026 |
 | **Pemilik** | Anas Fikri |
-| **Status** | Perencanaan, belum masuk implementasi |
+| **Status** | Fase 1 selesai diimplementasikan, sebagian fase 2 selesai. Lihat [Status implementasi](#status-implementasi) |
 
 Dokumen ini disusun dari hasil diskusi/brainstorming dan mengikuti tahapan SDLC: **Planning → Analisis Kebutuhan → Desain → Implementasi → Testing → Deployment → Operasional & Maintenance**. Semua diagram flow ditulis dalam Mermaid dan bisa dirender langsung di GitLab/GitHub.
 
+## Status implementasi
+
+Per 22 Oktober 2026 (versi engine 0.1.0):
+
+| Fase | Item | Status |
+|---|---|---|
+| 1 | Analyzer sharpness, resolution, exposure, EXIF, duplicate (pHash + SHA-256) | ✅ |
+| 1 | Kompresi dinamis < 1 MB + guard SSIM, thumbnail | ✅ |
+| 1 | Profile per jenis foto, multi-tenant, mode shadow/warn/enforce, i18n ID/EN | ✅ |
+| 1 | Ingestor SILO (polling + bucket event) + reconciliation, antrean + retry + dead-letter | ✅ |
+| 1 | API v1 + OpenAPI + API key per role | ✅ |
+| 1 | Web UI admin + ops review + dashboard + uji foto | ✅ |
+| 1 | Metrik Prometheus, health check, docker-compose (SILO + Postgres + engine) | ✅ |
+| 2 | OCR keterbacaan resi (Tesseract, ind + eng) | ✅ |
+| 2 | Authenticity score (EXIF, foto lama, beda waktu/GPS, duplikat) | ✅ (deteksi foto dari layar & ELA belum) |
+| 2 | API evidence + PDF + verifikasi hash | ✅ |
+| 2 | Webhook bertanda tangan HMAC | ✅ |
+| 2 | Source DB aplikasi (read-only) + job migrasi foto lama | ✅ |
+| 2 | Laporan export CSV/Excel | ⏳ belum |
+| 3 | Manifest Kubernetes + CI | ✅ (belum dideploy) |
+| 3 | Client library TypeScript & PHP | ✅ (Kotlin/Swift/Dart: contoh di panduan integrasi) |
+| 3 | Pre-check di HP, SSO/LDAP, model ML | ⏳ belum |
+| - | Kalibrasi threshold dengan foto POD asli | ⏳ menunggu sampel / mode shadow |
+
+**Perubahan dari rencana awal** (alasan di [docs/adr](adr/)):
+
+1. **Antrean memakai PostgreSQL, bukan Redis** (`SELECT ... FOR UPDATE SKIP LOCKED`). Satu komponen lebih sedikit,
+   transaksi foto dan job atomik, dan volume ribuan foto/hari jauh di bawah batas. Bagian dokumen ini yang masih
+   menyebut Redis dibaca sebagai "antrean di PostgreSQL".
+2. **Web UI memakai HTML + JavaScript tanpa build step, bukan React.** Disajikan langsung oleh engine di `/ui`,
+   tidak butuh Node.js di server maupun pipeline build terpisah.
+
 ## Daftar Isi
 
+0. [Status implementasi](#status-implementasi)
 1. [Planning](#1-planning)
 2. [Analisis Kebutuhan](#2-analisis-kebutuhan)
 3. [Desain Sistem](#3-desain-sistem)

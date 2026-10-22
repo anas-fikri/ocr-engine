@@ -8,6 +8,7 @@ from importlib import resources
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -51,6 +52,10 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
         redoc_url="/redoc",
     )
     app.state.run_bootstrap = run_bootstrap
+    origins = [o.strip() for o in get_settings().cors_origins.split(",") if o.strip()]
+    if origins:
+        app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "PUT", "DELETE"],
+                           allow_headers=["X-API-Key", "Authorization", "Content-Type", "Accept-Language"])
 
     @app.exception_handler(HTTPException)
     async def http_error(_: Request, exc: HTTPException):
@@ -98,6 +103,12 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
 
     @app.get("/metrics", tags=["ops"], summary="Metrik Prometheus")
     def prom():
+        from engine.worker import update_gauges
+
+        try:  # gauge antrean dihitung dari DB agar benar juga di pod API (mode terpisah)
+            update_gauges()
+        except Exception:
+            log.warning("gagal memperbarui gauge antrean", exc_info=True)
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     ui_dir = resources.files("engine").joinpath("webui")

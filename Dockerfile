@@ -28,9 +28,10 @@ COPY config ./config
 RUN useradd --system --uid 10001 --home /app pqe && chown -R pqe /app
 USER pqe
 
-EXPOSE 8000
+EXPOSE 8000 9100
+# API/run: /healthz di :8000. Worker/ingestor: endpoint metrik di :PQE_METRICS_PORT (default 9100).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1
+  CMD curl -fsS http://127.0.0.1:8000/healthz >/dev/null || curl -fsS "http://127.0.0.1:${PQE_METRICS_PORT:-9100}/metrics" >/dev/null || exit 1
 
 # Mode default: API + worker + ingestor dalam satu proses.
 # Di Kubernetes jalankan terpisah: `pqe api`, `pqe worker`, `pqe ingestor`.
