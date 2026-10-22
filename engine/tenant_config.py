@@ -161,7 +161,7 @@ def build_profile(name: str, tenant_profiles: dict[str, dict] | None = None) -> 
     parent = override.pop("extends", None)
     data = deep_merge({}, builtins["default"])
     if name != "default":
-        data = deep_merge(data, tenant_profiles.get("default", {}))
+        data = deep_merge(data, {k: v for k, v in tenant_profiles.get("default", {}).items() if k != "extends"})
     if parent and parent != name:
         data = deep_merge(data, builtins.get(parent, {}))
         data = deep_merge(data, {k: v for k, v in tenant_profiles.get(parent, {}).items() if k != "extends"})

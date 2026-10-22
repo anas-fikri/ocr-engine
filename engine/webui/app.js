@@ -245,6 +245,13 @@ async function testPhoto() {
       <label>File foto<input id="t-file" type="file" accept="image/*"></label>
       <button id="t-run">Analisis</button>
     </div><div id="t-out"></div></div>`;
+  $("#t-tenant").onchange = async (e) => {
+    let names = Object.keys(builtin);
+    if (e.target.value) {
+      try { names = Object.keys((await api(`/v1/admin/tenants/${e.target.value}`)).resolved_profiles); } catch { /* pakai bawaan */ }
+    }
+    $("#t-type").innerHTML = names.map((p) => `<option>${esc(p)}</option>`).join("");
+  };
   $("#t-run").onclick = async () => {
     const file = $("#t-file").files[0];
     if (!file) return toast("Pilih file dulu", true);

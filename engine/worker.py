@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, func, select
 
@@ -32,6 +32,16 @@ def update_gauges() -> dict:
     lag = (datetime.now(UTC) - as_aware(datetime.fromisoformat(oldest))).total_seconds() if oldest else 0
     metrics.QUEUE_LAG.set(max(0.0, lag))
     return st
+
+
+def cleanup_webhook_history(days: int = 30) -> int:
+    """Hapus catatan pengiriman webhook yang sudah selesai/dead lebih dari `days` hari."""
+    with session_scope() as s:
+        r = s.execute(delete(WebhookDelivery).where(
+            WebhookDelivery.status.in_(("done", "dead")),
+            WebhookDelivery.created_at < utcnow() - timedelta(days=days),
+        ))
+        return r.rowcount or 0
 
 
 def retention_sweep(storage: Storage, batch: int = 200) -> int:
@@ -92,6 +102,7 @@ class Worker:
                         log.warning("%d job macet dikembalikan ke antrean", n)
                     update_gauges()
                     retention_sweep(self.storage or get_storage())
+                    cleanup_webhook_history()
                     last_slow = now
             except Exception:
                 log.exception("maintenance error")

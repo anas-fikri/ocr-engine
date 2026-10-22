@@ -135,9 +135,12 @@ def poll_db(t: LoadedTenant, idx: int, src: Source) -> int:
     with session_scope() as s:
         st = s.get(SourceState, sid)
         checkpoint = st.checkpoint if st and st.checkpoint else None
-    cp_value = parse_meta_datetime(checkpoint, cfg.timezone) if checkpoint else None
-    if cp_value is None:
-        cp_value = checkpoint or (datetime.now(ZoneInfo(cfg.timezone)) - timedelta(days=src.lookback_days))
+    if checkpoint and checkpoint.lstrip("-").isdigit():  # kolom ID auto-increment
+        cp_value = int(checkpoint)
+    else:
+        cp_value = parse_meta_datetime(checkpoint, cfg.timezone) if checkpoint else None
+        if cp_value is None:
+            cp_value = checkpoint or (datetime.now(ZoneInfo(cfg.timezone)) - timedelta(days=src.lookback_days))
     if isinstance(cp_value, datetime):
         cp_value = cp_value.replace(tzinfo=None)  # kolom DB aplikasi umumnya tanpa zona waktu
     with _external_engine(dsn).connect() as conn:
@@ -163,13 +166,18 @@ def poll_db(t: LoadedTenant, idx: int, src: Source) -> int:
         cp = row.get(src.checkpoint_column)
         if cp is not None:
             cp_s = cp.isoformat() if isinstance(cp, datetime) else str(cp)
-            if newest is None or cp_s > newest:
+            if newest is None or _cp_key(cp_s) > _cp_key(newest):
                 newest = cp_s
     with session_scope() as s:
         st = s.get(SourceState, sid) or SourceState(id=sid)
         st.checkpoint = newest
         s.add(st)
     return found
+
+
+def _cp_key(value: str) -> tuple:
+    """Urutan checkpoint: angka dibandingkan sebagai angka, selain itu sebagai teks (ISO-8601)."""
+    return (0, int(value), "") if value.lstrip("-").isdigit() else (1, 0, value)
 
 
 def run_source(t: LoadedTenant, idx: int, src: Source, storage: Storage, *, reconcile: bool = False) -> int:

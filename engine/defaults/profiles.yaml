@@ -10,7 +10,7 @@ default:
     resolution:   { reject: 30, warn: 55 }
     exposure:     { reject: 15, warn: 45 }
     ocr:          { reject: 40, warn: 65 }
-    authenticity: { reject: null, warn: 60 }
+    authenticity: { reject: null, warn: 75 }   # satu temuan (>= 30 poin) sudah cukup untuk WARN
   params:
     sharpness:
       analysis_long_side_px: 1024

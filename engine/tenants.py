@@ -79,12 +79,15 @@ class TenantRegistry:
 
     def match_object(self, bucket: str, key: str) -> tuple[LoadedTenant, int, Source] | None:
         """Cari tenant + source yang memantau bucket/prefix ini (prefix terpanjang menang)."""
+        from engine.settings import get_settings
+
+        default_bucket = get_settings().aws_bucket
         best = None
         for t in self.all():
             for i, src in enumerate(t.config.sources):
                 if src.type not in ("s3_poll", "s3_event"):
                     continue
-                if (src.bucket or "") == bucket and key.startswith(src.prefix):
+                if (src.bucket or default_bucket) == bucket and key.startswith(src.prefix):
                     if best is None or len(src.prefix) > len(best[2].prefix):
                         best = (t, i, src)
         return best
@@ -107,6 +110,12 @@ def save_tenant(text: str, actor: str, *, create_only: bool = False) -> tuple[Te
         else:
             if t.config_yaml == text:
                 return cfg, t.version, False
+            try:
+                old_retention = parse_tenant_yaml(t.config_yaml).retention_days
+            except Exception:
+                old_retention = None
+            if old_retention != cfg.retention_days:
+                _update_expiry(s, cfg.code, cfg.retention_days)
             t.version += 1
             t.name = cfg.name
             t.config_yaml = text
@@ -117,6 +126,17 @@ def save_tenant(text: str, actor: str, *, create_only: bool = False) -> tuple[Te
         version = t.version
     registry.invalidate()
     return cfg, version, created
+
+
+def _update_expiry(s, tenant_code: str, days: int) -> None:
+    """Hitung ulang expires_at semua foto tenant (received_at + days) langsung di database."""
+    from sqlalchemy import text
+
+    if s.get_bind().dialect.name == "postgresql":
+        sql = "UPDATE photos SET expires_at = received_at + make_interval(days => :d) WHERE tenant_code = :t"
+    else:
+        sql = "UPDATE photos SET expires_at = datetime(received_at, '+' || :d || ' days') WHERE tenant_code = :t"
+    s.execute(text(sql), {"d": days, "t": tenant_code})
 
 
 def set_enabled(code: str, enabled: bool, actor: str) -> None:

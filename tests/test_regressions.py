@@ -1,0 +1,120 @@
+"""Test regresi untuk bug yang ditemukan saat review dokumentasi."""
+
+from __future__ import annotations
+
+import io
+from datetime import UTC, datetime, timedelta
+
+from PIL import Image
+
+from engine.analyzers import AnalysisContext
+from engine.pipeline import analyze
+from engine.synth import base_scene
+from engine.tenant_config import build_profile, parse_tenant_yaml
+
+
+def test_single_authenticity_finding_warns():
+    img = base_scene(1600, 1200)
+    exif = Image.Exif()
+    exif[305] = "Snapseed 2.0"
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90, exif=exif)
+    r = analyze(buf.getvalue(), AnalysisContext(profile=build_profile("pod_recipient"),
+                                                received_at=datetime.now(UTC)), do_compress=False)
+    assert r.verdict.scores["authenticity"] == 60
+    assert r.verdict.verdict == "WARN"
+    assert "EDITING_SOFTWARE" in {x.code for x in r.verdict.reasons}
+
+
+def test_extends_in_tenant_default_profile():
+    cfg = parse_tenant_yaml("code: t1\nname: T\nprofiles:\n  default:\n    extends: package\n    mode: warn\n")
+    assert cfg.resolve_profile("pod_recipient")[1].mode == "warn"
+
+
+def test_reason_filter_total_matches(client, admin_headers, samples):
+    from tests.test_e2e import ingest_and_process, put_photo
+
+    put_photo("pod/pod_recipient/AWB1.jpg", samples["reject_dark"])
+    put_photo("pod/pod_recipient/AWB2.jpg", samples["reject_blur_severe"])
+    put_photo("pod/pod_recipient/AWB3.jpg", samples["pass_huge_camera"])
+    ingest_and_process()
+    r = client.get("/v1/photos", params={"reason": "TOO_DARK", "limit": 1}, headers=admin_headers).json()
+    assert r["total"] == 1 and r["items"][0]["awb"] == "AWB1"
+    assert client.get("/v1/photos", params={"reason": "bukan kode"}, headers=admin_headers).status_code == 422
+
+
+def test_retention_change_updates_existing_photos(client, admin_headers, samples):
+    from engine.db import Photo, as_aware, session_scope
+    from tests.conftest import TENANT_YAML
+    from tests.test_e2e import ingest_and_process, put_photo
+
+    put_photo("pod/pod_recipient/AWB10.jpg", samples["pass_small_ok"])
+    ingest_and_process()
+    h = {**admin_headers, "Content-Type": "application/x-yaml"}
+    r = client.put("/v1/admin/tenants", content=TENANT_YAML.replace("retention_days: 30", "retention_days: 400"),
+                   headers=h)
+    assert r.status_code == 200, r.text
+    with session_scope() as s:
+        p = s.query(Photo).one()
+        delta = as_aware(p.expires_at) - as_aware(p.received_at)
+    assert abs(delta - timedelta(days=400)) < timedelta(seconds=1)
+
+
+def test_s3_event_matches_source_without_bucket(client, admin_headers, samples, monkeypatch):
+    from tests.conftest import TENANT_YAML
+    from tests.test_e2e import put_photo
+
+    h = {**admin_headers, "Content-Type": "application/x-yaml"}
+    yaml_no_bucket = TENANT_YAML.replace("    bucket: app-photos\n", "")
+    assert client.put("/v1/admin/tenants", content=yaml_no_bucket, headers=h).status_code == 200
+    put_photo("pod/pod_recipient/AWB20.jpg", samples["pass_small_ok"])
+    event = {"Records": [{"eventName": "s3:ObjectCreated:Put", "s3": {
+        "bucket": {"name": "app-photos"}, "object": {"key": "pod/pod_recipient/AWB20.jpg"}}}]}
+    r = client.post("/v1/events/s3", json=event, headers={"Authorization": "Bearer event-token"})
+    assert r.json() == {"accepted": 1, "ignored": 0}
+
+
+def test_db_poll_with_integer_checkpoint(client, admin_headers, samples, tmp_path, monkeypatch):
+    import sqlalchemy as sa
+
+    from engine.ingestor import run_source
+    from engine.storage import get_storage
+    from engine.tenants import registry
+    from engine.worker import Worker
+    from tests.test_e2e import put_photo
+
+    app_db = tmp_path / "app.db"
+    eng = sa.create_engine(f"sqlite:///{app_db}")
+    with eng.begin() as c:
+        c.execute(sa.text("CREATE TABLE delivery_photos (id INTEGER PRIMARY KEY, photo_url TEXT, awb TEXT)"))
+        for i in range(1, 11):  # id 1..10: "10" < "9" jika dibandingkan sebagai teks
+            put_photo(f"legacy/AWB{i:03d}.jpg", samples["pass_small_ok"] if i % 2 else samples["reject_dark"])
+            url = f"{get_storage().s.aws_endpoint}/app-photos/legacy/AWB{i:03d}.jpg"
+            row = {"i": i, "u": url, "a": f"AWB{i:03d}"}
+            c.execute(sa.text("INSERT INTO delivery_photos VALUES (:i, :u, :a)"), row)
+    monkeypatch.setenv("APP_DB_DSN", f"sqlite:///{app_db}")
+    yaml_text = """
+code: legacy-app
+name: Legacy
+sources:
+  - type: db_poll
+    dsn_env: APP_DB_DSN
+    query: "SELECT id, photo_url, awb FROM delivery_photos WHERE id > :checkpoint ORDER BY id LIMIT 4"
+    checkpoint_column: id
+    lookback_days: 0
+"""
+    h = {**admin_headers, "Content-Type": "application/x-yaml"}
+    assert client.put("/v1/admin/tenants", content=yaml_text, headers=h).status_code == 200
+    from engine.db import SourceState, session_scope
+
+    with session_scope() as s:
+        s.add(SourceState(id="legacy-app:0:db_poll", checkpoint="0"))
+    t = registry.get("legacy-app")
+    found = [run_source(t, 0, t.config.sources[0], get_storage()) for _ in range(4)]
+    assert found == [4, 4, 2, 0]
+    with session_scope() as s:
+        assert s.get(SourceState, "legacy-app:0:db_poll").checkpoint == "10"
+    Worker().run_until_empty()
+    items = client.get("/v1/photos", params={"tenant": "legacy-app", "limit": 200}, headers=admin_headers).json()
+    assert items["total"] == 10
+    assert {p["awb"] for p in items["items"]} == {f"AWB{i:03d}" for i in range(1, 11)}

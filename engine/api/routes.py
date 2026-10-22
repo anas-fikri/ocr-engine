@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Body, Depends, File, Form, Header, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Text, and_, cast, func, or_, select
 
 from engine.analyzers import AnalysisContext
 from engine.api.auth import Principal, check_tenant, current_principal, require
@@ -191,7 +191,7 @@ async def analyze_upload(
 @router.post("/analyze/preview", summary="Coba analisis tanpa menyimpan apa pun (kalibrasi & onboarding)")
 async def analyze_preview(
     request: Request,
-    principal: Annotated[Principal, Depends(require("app", "admin", "ops"))],
+    principal: Annotated[Principal, Depends(require("app", "admin", "ops", "viewer"))],
     file: Annotated[UploadFile, File()],
     tenant: Annotated[str | None, Query()] = None,
     photo_type: Annotated[str | None, Query(description="Profile yang dipakai")] = None,
@@ -238,7 +238,7 @@ def list_photos(
     status: Annotated[str | None, Query(pattern="^(pending|done|error)$")] = None,
     review_status: Annotated[str | None, Query(pattern="^(none|approved|retake_requested|fraud)$")] = None,
     needs_review: Annotated[bool, Query(description="Hanya WARN/REJECT/error yang belum direview")] = False,
-    reason: str | None = None,
+    reason: Annotated[str | None, Query(pattern="^[A-Z_]{3,40}$", description="Kode alasan, contoh BLURRY")] = None,
     date_from: date | None = None,
     date_to: date | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
@@ -259,15 +259,15 @@ def list_photos(
     if needs_review:
         q = q.where(Photo.review_status == "none",
                     or_(Photo.verdict.in_(("WARN", "REJECT")), Photo.status == "error"))
+    if reason:  # cocok di PostgreSQL (JSONB) maupun SQLite (JSON teks)
+        q = q.where(cast(Photo.reasons, Text).like(f'%"code": "{reason}"%'))
     if date_from:
         q = q.where(Photo.received_at >= datetime.combine(date_from, datetime.min.time()))
     if date_to:
         q = q.where(Photo.received_at < datetime.combine(date_to + timedelta(days=1), datetime.min.time()))
     with session_scope() as s:
         total = s.scalar(select(func.count()).select_from(q.subquery()))
-        rows = s.scalars(q.order_by(Photo.received_at.desc()).offset(offset).limit(limit * (4 if reason else 1))).all()
-        if reason:
-            rows = [p for p in rows if any(r.get("code") == reason for r in (p.reasons or []))][:limit]
+        rows = s.scalars(q.order_by(Photo.received_at.desc()).offset(offset).limit(limit)).all()
         storage = get_storage()
         ttl = get_settings().engine_presign_ttl_ui
         lg = request_lang(request, lang)
