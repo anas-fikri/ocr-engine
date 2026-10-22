@@ -11,6 +11,19 @@ test:
     - ruff check engine tests
     - pytest -q -p no:warnings
 
+# Runtime dikunci ke versi security release 21 Okt 2026 (lihat clients/README.md)
+client-node:
+  stage: test
+  image: node:24.22.1-alpine
+  script:
+    - cd clients && node --experimental-strip-types --no-warnings typescript/test.ts
+
+client-php:
+  stage: test
+  image: php:8.4.27-cli
+  script:
+    - cd clients && php php/test.php
+
 build:
   stage: build
   image: docker:27

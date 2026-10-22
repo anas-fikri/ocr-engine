@@ -24,6 +24,21 @@ jobs:
       - name: Test
         run: pytest -q -p no:warnings
 
+  clients:
+    # Runtime dikunci ke versi security release 21 Okt 2026 (lihat clients/README.md)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - {image: "node:22.23.4-alpine", cmd: "node --experimental-strip-types --no-warnings typescript/test.ts"}
+          - {image: "node:24.22.1-alpine", cmd: "node --experimental-strip-types --no-warnings typescript/test.ts"}
+          - {image: "php:8.3.36-cli", cmd: "php php/test.php"}
+          - {image: "php:8.4.27-cli", cmd: "php php/test.php"}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test client (${{ matrix.image }})
+        run: docker run --rm -v "$PWD/clients:/c" -w /c ${{ matrix.image }} ${{ matrix.cmd }}
+
   docker:
     runs-on: ubuntu-latest
     needs: test

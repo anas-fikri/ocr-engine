@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import posixpath
+import time
 import uuid
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal
@@ -87,16 +88,23 @@ def _photo_response(photo_id: str, lang: str, status_code: int = 200) -> JSONRes
 
 def _run_sync(photo_id: str, timeout_ms: int) -> None:
     """Proses foto langsung di request ini. Lewat batas waktu -> tetap jalan di background (fail-open)."""
+    deadline = time.monotonic() + timeout_ms / 1000
     with session_scope() as s:
         job = claim_photo_job(s, photo_id)
         job_id = job.id if job else None
-    if job_id is None:
+    if job_id is not None:
+        fut = _sync_pool.submit(execute_job, job_id, photo_id)
+        try:
+            fut.result(timeout=timeout_ms / 1000)
+        except concurrent.futures.TimeoutError:
+            pass
         return
-    fut = _sync_pool.submit(execute_job, job_id, photo_id)
-    try:
-        fut.result(timeout=timeout_ms / 1000)
-    except concurrent.futures.TimeoutError:
-        pass
+    # job sudah diambil worker lain (misal lewat bucket notification): tunggu hasilnya
+    while time.monotonic() < deadline:
+        with session_scope() as s:
+            if s.get(Photo, photo_id).status != "pending":
+                return
+        time.sleep(0.1)
 
 
 @router.post(
