@@ -1,0 +1,43 @@
+# Contoh config tenant: aplikasi kurir.
+# Referensi lengkap setiap field: docs/configuration.md
+# File ini hanya dipakai sebagai SEED saat tenant belum ada di database.
+# Setelah itu ubah lewat Web UI (menu Tenant) atau `pqe import-tenants --force`.
+
+code: courier-app
+name: Aplikasi Kurir
+default_lang: id
+timezone: Asia/Jakarta
+retention_days: 1095          # 3 tahun
+store_mode: processed         # processed = simpan versi kompres + thumbnail | none = hanya analisis
+default_profile: pod_recipient
+
+sources:
+  # Pantau bucket foto aplikasi. Event (real-time) jika bucket notification SILO aktif,
+  # polling tetap jalan sebagai jaring pengaman.
+  - type: s3_poll
+    bucket: ekas-pcptransport
+    prefix: ""                # contoh: "courier-app/" jika foto disimpan di sub-folder
+    # date_prefix_format: "%Y/%m/%d/"   # aktifkan jika key mengandung tanggal (jauh lebih ringan)
+    poll_interval_sec: 15
+    lookback_days: 2
+
+# Cara engine mengetahui resi, jenis foto, kurir, dst. dari setiap foto.
+# Urutan dicoba dari kiri; metadata objek (x-amz-meta-*) paling disarankan.
+mapping:
+  awb:        ["meta:awb", "key:regex:(?P<awb>[A-Z0-9]{8,20})_"]
+  photo_type: ["meta:photo-type", "default:pod_recipient"]
+  courier_id: ["meta:courier-id"]
+  customer_id: ["meta:customer-id"]
+  branch:     ["meta:branch"]
+
+sinks: []
+#  - type: webhook
+#    url: https://courier-api.internal/hooks/photo-quality
+#    secret_env: COURIER_WEBHOOK_SECRET
+#    events: [analysis.completed, review.updated]
+
+profiles:
+  pod_recipient:
+    mode: shadow              # shadow -> warn -> enforce (lihat docs/sdlc-plan.md 4.8)
+  pod_document:
+    mode: shadow

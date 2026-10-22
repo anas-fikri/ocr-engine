@@ -1,0 +1,17 @@
+"""Metrik Prometheus (endpoint /metrics). Lihat docs/operations.md untuk alert yang disarankan."""
+
+from prometheus_client import Counter, Gauge, Histogram
+
+PHOTOS_INGESTED = Counter("pqe_photos_ingested_total", "Foto baru tercatat", ["tenant", "source"])
+PHOTOS_ANALYZED = Counter("pqe_photos_analyzed_total", "Foto selesai dianalisis", ["tenant", "verdict"])
+PHOTOS_FAILED = Counter("pqe_photos_failed_total", "Foto gagal diproses", ["tenant", "code"])
+JOBS_DEAD = Counter("pqe_jobs_dead_total", "Job yang menyerah setelah semua retry")
+ANALYSIS_SECONDS = Histogram(
+    "pqe_analysis_seconds", "Durasi proses satu foto", buckets=(0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32)
+)
+WEBHOOKS_SENT = Counter("pqe_webhooks_total", "Pengiriman webhook", ["result"])
+SOURCE_ERRORS = Counter("pqe_source_errors_total", "Error saat membaca source", ["tenant", "type"])
+QUEUE_DEPTH = Gauge("pqe_queue_depth", "Job menunggu di antrean")
+QUEUE_LAG = Gauge("pqe_queue_lag_seconds", "Umur job tertua di antrean")
+DEAD_JOBS = Gauge("pqe_dead_jobs", "Jumlah job dead (perlu ditinjau)")
+PENDING_WEBHOOKS = Gauge("pqe_pending_webhooks", "Webhook menunggu dikirim")

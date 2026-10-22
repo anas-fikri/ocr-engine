@@ -1,0 +1,88 @@
+"""Bentuk JSON foto yang dipakai API, webhook, dan Web UI (satu sumber, supaya konsisten)."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from engine.db import Photo, as_aware
+from engine.i18n import localize_reasons, verdict_text
+from engine.storage import Storage
+
+
+def _iso(dt) -> str | None:
+    dt = as_aware(dt)
+    return dt.isoformat() if dt else None
+
+
+def evidence_eligible(p: Photo) -> bool:
+    """Foto boleh tampil di evidence pelanggan: PASS, atau sudah di-approve ops."""
+    if p.review_status in ("retake_requested", "fraud"):
+        return False
+    return p.status == "done" and (p.verdict == "PASS" or p.review_status == "approved")
+
+
+def photo_to_dict(
+    p: Photo,
+    lang: str,
+    storage: Storage | None = None,
+    ttl: int = 900,
+    *,
+    detail: bool = True,
+) -> dict[str, Any]:
+    scores = dict(p.scores or {})
+    if "authenticity" in scores:
+        scores["authenticity_risk"] = round(100 - scores["authenticity"], 1)
+    out: dict[str, Any] = {
+        "id": p.id,
+        "tenant": p.tenant_code,
+        "status": p.status,
+        "verdict": p.verdict,
+        "verdict_text": verdict_text(p.verdict, lang) if p.verdict else None,
+        "action": p.action,
+        "photo_type": p.photo_type,
+        "profile": p.profile,
+        "awb": p.awb,
+        "courier_id": p.courier_id,
+        "customer_id": p.customer_id,
+        "branch": p.branch,
+        "external_id": p.external_id,
+        "captured_at": _iso(p.captured_at),
+        "received_at": _iso(p.received_at),
+        "analyzed_at": _iso(p.analyzed_at),
+        "scores": scores,
+        "reasons": localize_reasons(p.reasons or [], lang),
+        "review": {
+            "status": p.review_status,
+            "by": p.reviewed_by,
+            "at": _iso(p.reviewed_at),
+            "note": p.review_note,
+        },
+        "evidence_eligible": evidence_eligible(p),
+        "object": {"bucket": p.bucket, "key": p.object_key},
+        "sha256": p.sha256,
+        "error": {"code": p.error_code, "message": p.error_message} if p.error_code else None,
+    }
+    if storage is not None:
+        processed_key = p.processed_key or (p.object_key if p.compression.get("passthrough") else None)
+        processed_bucket = p.processed_bucket or (p.bucket if p.compression.get("passthrough") else None)
+        out["urls"] = {
+            "original": storage.presign(p.bucket, p.object_key, ttl),
+            "processed": storage.presign(processed_bucket, processed_key, ttl),
+            "thumbnail": storage.presign(p.thumb_bucket, p.thumb_key, ttl),
+            "expires_in": ttl,
+        }
+    if detail:
+        out.update({
+            "ingest_source": p.ingest_source,
+            "config_version": p.config_version,
+            "image": p.image_info or {},
+            "compression": p.compression or {},
+            "exif": p.exif or {},
+            "metrics": p.metrics or {},
+            "location": {"lat": p.lat, "lng": p.lng} if p.lat is not None else None,
+            "capture_source": p.capture_source,
+            "input_fields": p.meta or {},
+            "duration_ms": p.duration_ms,
+            "phash": p.phash,
+        })
+    return out
