@@ -539,7 +539,30 @@ Config ini dikelola lewat Web UI admin dan disimpan di Postgres (dengan versi). 
 - Secret (kredensial SILO/DB) lewat environment / K8s Secret, tidak di repo.
 - Retensi + penghapusan otomatis sesuai UU PDP. Durasi final dikonfirmasi ke legal/finance.
 
-### 3.10 Teknologi
+### 3.10 Konfigurasi koneksi SILO (environment variable)
+
+Engine memakai nama variabel yang sama dengan aplikasi yang sudah ada, supaya konfigurasinya konsisten. Template ada di [`.env.example`](../.env.example). **Nilai asli disimpan di `.env` lokal (di-ignore git) atau K8s Secret, tidak pernah di repo.**
+
+| Variabel | Contoh | Keterangan |
+|---|---|---|
+| `AWS_ENDPOINT` | `https://s3.pcpexpress.com` | Endpoint SILO |
+| `AWS_DEFAULT_REGION` | `us-east-1` | Wajib diisi untuk SDK S3, nilainya tidak berpengaruh di SILO |
+| `AWS_USE_PATH_STYLE_ENDPOINT` | `true` | Wajib `true` untuk SILO/MinIO (`endpoint/bucket/key`) |
+| `AWS_ACCESS_KEY_ID` | — | Access key **service account engine** (rahasia) |
+| `AWS_SECRET_ACCESS_KEY` | — | Secret key (rahasia) |
+| `AWS_BUCKET` | `ekas-pcptransport` | Bucket foto original aplikasi (engine hanya baca) |
+| `AWS_URL` | `https://s3.pcpexpress.com/ekas-pcptransport` | Base URL bucket |
+| `ENGINE_BUCKET_PROCESSED` | `photos-processed` | Bucket hasil kompres (milik engine) |
+| `ENGINE_BUCKET_THUMB` | `photos-thumb` | Bucket thumbnail (milik engine) |
+| `ENGINE_PRESIGN_TTL_UI` / `_CUSTOMER` | `900` / `604800` | Masa berlaku presigned URL (detik) |
+
+Untuk multi-tenant, kredensial per tenant direferensikan dari config (`dsn_ref`/`secret_ref`), bukan ditulis langsung.
+
+**Aturan kredensial:**
+- Engine **tidak memakai akun root/admin SILO**. Buat **service account khusus engine** dengan policy minimum: `GetObject` + `ListBucket` di bucket aplikasi, `GetObject`/`PutObject`/`DeleteObject` hanya di bucket milik engine.
+- Kredensial yang pernah tersebar (chat, tiket, dokumen) dianggap bocor dan harus dirotasi.
+
+### 3.11 Teknologi
 
 | Lapisan | Pilihan | Alasan |
 |---|---|---|
@@ -1099,6 +1122,7 @@ flowchart LR
 | Q6 | SSO/LDAP kantor tersedia untuk login Web UI? | Tim infra | Autentikasi |
 | Q7 | Lokasi NAS backup (gedung/ruangan berbeda dari SILO)? | Tim infra | Keandalan backup |
 | Q8 | Pemilihan OCR: PaddleOCR vs Tesseract (diputuskan dari uji akurasi fase 2) | Tim engine | Akurasi resi |
+| Q10 | Service account khusus engine di SILO (read-only bucket aplikasi, read-write bucket engine) | Tim infra | Keamanan kredensial |
 | Q9 | Sampel foto berlabel dari ops/finance (bagus vs ditolak) | Ops / finance | Kalibrasi |
 
 ---
