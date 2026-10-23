@@ -16,7 +16,7 @@ menghubungkan aplikasinya ke Photo Quality Engine. Ikuti dari atas ke bawah. Sem
 
 ## Daftar isi
 
-0. [Cara tercepat: 1 panggilan, 2 field](#0-cara-tercepat-1-panggilan-2-field)
+0. [Cara tercepat: scan dulu, baru simpan](#0-cara-tercepat-scan-dulu-baru-simpan)
 1. [Aturan emas (wajib dibaca)](#1-aturan-emas-wajib-dibaca)
 2. [Pilih cara integrasi](#2-pilih-cara-integrasi)
 3. [Persiapan: tenant & API key](#3-persiapan-tenant--api-key)
@@ -32,103 +32,116 @@ menghubungkan aplikasinya ke Photo Quality Engine. Ikuti dari atas ke bawah. Sem
 
 ---
 
-## 0. Cara tercepat: 1 panggilan, 2 field
+## 0. Cara tercepat: scan dulu, baru simpan
 
-Setelah aplikasi pengiriman menyimpan foto ke SILO (seperti sekarang), panggil engine **sekali** dengan key objeknya
-dan tunggu maks. 3 detik: `POST /v1/analyze?sync=true&timeout_ms=3000`. Tidak ada upload ulang, tidak perlu polling,
-tidak perlu webhook. Lalu baca 2 field:
+Aplikasi pengiriman mengirim foto dari kurir **langsung ke engine** (bukan ke SILO dulu):
+`POST /v1/analyze?sync=true&timeout_ms=3000` dengan file foto (multipart), atau `checkFile(...)` di client. Engine
+memeriksa foto lebih dulu, lalu **hanya foto yang diterima** dioptimasi, dikompres, dan disimpan ke SILO. Foto yang
+ditolak tidak disimpan sebagai foto pengiriman; pesannya langsung dikirim balik untuk kurir. Satu request, tunggu
+maks. 3 detik, tanpa polling dan tanpa webhook.
 
-| Field | Yang dilakukan aplikasi pengiriman |
+| Hasil | Yang dilakukan aplikasi pengiriman |
 |---|---|
-| `courier_message` | Jika tidak `null`: tampilkan ke kurir apa adanya (sudah dalam bahasa ID/EN) |
-| `allow_status_update: true` | Lanjut update status pengiriman seperti biasa |
-| `allow_status_update: false` | **Jangan update status pengiriman.** Foto ditolak: kurir wajib foto ulang, lalu kirim lagi |
-| Engine error / timeout / `202` | Anggap `allow_status_update: true` (fail-open), kurir tidak boleh tertahan karena engine |
+| `allow_status_update: true` | Foto diterima dan **sudah disimpan engine di SILO**: simpan `stored.url` di database Anda, update status pengiriman, tampilkan `courier_message` jika tidak `null` |
+| `allow_status_update: false` | Foto ditolak, **tidak disimpan** sebagai foto pengiriman (`stored: null`). Kirim balik `courier_message` ke kurir, **jangan update status**, kurir foto ulang |
+| Engine error / timeout / `202` | Simpan foto ke SILO sendiri seperti sekarang (kode lama tetap dipakai sebagai cadangan), lalu update status (fail-open). Engine tetap memeriksa foto itu belakangan (bucket notification/polling) untuk laporan & evidence |
 
-Status pengiriman **milik aplikasi pengiriman**. Engine tidak pernah mengubahnya; engine hanya memberi keputusan.
+Status pengiriman **milik aplikasi pengiriman**. Engine tidak pernah mengubahnya; engine hanya memberi keputusan
+dan link foto yang sudah disimpan.
 
 **Kapan foto dikirim ke engine, dan kapan divalidasi?**
 
 | Urutan | Siapa | Apa yang terjadi |
 |---|---|---|
 | 1 | Kurir | Ambil foto POD, tekan **Kirim** |
-| 2 | Aplikasi pengiriman (backend) | Terima foto asli, simpan ke SILO seperti sekarang. Status **belum** diupdate |
-| 3 · kirim | Aplikasi pengiriman → engine | **Foto dikirim ke engine** saat itu juga: `POST /v1/analyze?sync=true` dengan key objek SILO (atau file langsung). Satu request, tunggu maks. 3 detik |
-| 4 · validasi | Engine | **Validasi gambar** di dalam request itu (biasanya 0,2–2 detik): ambil foto dari SILO, cek ketajaman, pecah, resolusi, cahaya, EXIF, duplikat, OCR → verdict. Lalu optimasi + kompres < 1 MB dan simpan |
-| 5 | Engine → aplikasi pengiriman | Jawaban `allow_status_update` + `courier_message` |
-| 6 | Aplikasi pengiriman | `true` → update status (tampilkan pesan jika ada). `false` → status **tidak** diupdate, kurir foto ulang. Tidak ada jawaban dalam 3 detik → update status (fail-open) |
+| 2 · kirim | Aplikasi pengiriman → engine | **Foto langsung dikirim ke engine** (belum ke SILO, status belum diupdate): `POST /v1/analyze?sync=true` dengan file foto. Satu request, tunggu maks. 3 detik |
+| 3 · scan | Engine | **Validasi gambar** (biasanya 0,2–2 detik): ketajaman, pecah, resolusi, cahaya, EXIF, duplikat, OCR → verdict |
+| 4a · diterima | Engine → SILO | Optimasi + kompres < 1 MB (tanpa manipulasi), lalu **disimpan ke SILO** (versi hasil di `photos-processed`, asli diarsipkan untuk verifikasi keaslian). Engine menjawab `allow_status_update: true` + `stored.url` |
+| 4b · ditolak | Engine → aplikasi → kurir | Tidak disimpan sebagai foto pengiriman, tanpa link. Engine menjawab `allow_status_update: false` + `courier_message`; aplikasi mengirim balik pesan itu ke kurir untuk foto ulang (kembali ke 1) |
+| 5 | Aplikasi pengiriman | Diterima → simpan `stored.url` + update status. Ditolak → status **tidak** diupdate. Engine tidak menjawab dalam 3 detik → simpan foto ke SILO sendiri (kode lama) + update status (fail-open) |
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor K as Kurir
     participant BE as Aplikasi Pengiriman
-    participant S as SILO
     participant E as Engine
+    participant S as SILO
     K->>BE: Foto + resi (tekan Kirim)
-    BE->>S: Simpan foto
-    BE->>E: ① Kirim ke engine: POST /v1/analyze?sync=true
-    E->>S: Ambil foto asli
-    note over E: ② Validasi gambar ≤ 3 dtk
-    E-->>BE: allow_status_update + courier_message
-    alt true (atau engine tidak menjawab)
-        BE->>BE: Update status pengiriman
-    else false
-        BE-->>K: courier_message, wajib foto ulang (status tidak diupdate)
+    BE->>E: ① Kirim file ke engine: POST /v1/analyze?sync=true
+    note over E: ② Scan / validasi gambar ≤ 3 dtk
+    alt diterima
+        E->>S: Simpan versi optimasi (+ arsip asli)
+        E-->>BE: allow_status_update true + stored.url
+        BE->>BE: Simpan stored.url + update status pengiriman
+    else ditolak (REJECT, mode enforce)
+        E-->>BE: allow_status_update false + courier_message (tidak disimpan)
+        BE-->>K: Kirim balik pesan, wajib foto ulang (status tidak diupdate)
+    else engine tidak menjawab ≤ 3 dtk
+        BE->>S: Simpan foto sendiri (kode lama)
+        BE->>BE: Update status pengiriman (fail-open)
     end
 ```
 
-**PHP / Laravel** (salin [`clients/php/PhotoQualityClient.php`](../clients/php/PhotoQualityClient.php); `checkObject` tidak pernah throw):
+Foto asli dari kurir disimpan di bucket internal engine (`photos-upload`) sebagai arsip untuk verifikasi keaslian (hash,
+EXIF), agar foto tidak hilang jika engine mati di tengah proses, dan agar ops bisa meninjau foto yang ditolak. Bucket itu
+tidak pernah diberikan sebagai link foto pengiriman: `stored` selalu menunjuk ke versi hasil di `photos-processed`
+(foto kecil yang tidak perlu dikompres pun disalin ke sana).
+
+**PHP / Laravel** (salin [`clients/php/PhotoQualityClient.php`](../clients/php/PhotoQualityClient.php); `checkFile` tidak pernah throw):
 
 ```php
 $pqe = new PhotoQualityClient(env('PQE_URL'), env('PQE_API_KEY'), 5000, 'id');
-$d = $pqe->checkObject($objectKey, ['awb' => $awb, 'photo_type' => 'pod_recipient', 'courier_id' => $courierId]);
+$path = $request->file('photo')->getRealPath();
+$d = $pqe->checkFile($path, ['awb' => $awb, 'photo_type' => 'pod_recipient', 'courier_id' => $courierId, 'source' => 'camera']);
 
-$response = [];
-if ($d['message']) {
-    $response['pesan_foto'] = $d['message'];          // tampilkan ke kurir
+if (!$d['allow_status_update']) {                       // DITOLAK: tidak disimpan, kirim balik ke kurir
+    return response()->json(['foto_ulang' => true, 'pesan' => $d['message']], 422);
 }
-if (!$d['allow_status_update']) {
-    return response()->json($response + ['foto_ulang' => true], 422);   // status TIDAK diupdate
-}
-$shipment->updateStatus('DELIVERED');                  // engine mati/lambat -> tetap sampai sini
+$link = $d['stored']['url'] ?? Storage::disk('s3')->putFile('pod', $request->file('photo'));  // null = engine tidak menjawab
+$shipment->update(['photo_url' => $link, 'status' => 'DELIVERED']);
+return response()->json(['ok' => true, 'pesan' => $d['message']]);   // pesan bisa null
 ```
 
-**TypeScript / Node** (salin [`clients/typescript/pqe-client.ts`](../clients/typescript/pqe-client.ts); `checkObject` tidak pernah throw):
+**TypeScript / Node** (salin [`clients/typescript/pqe-client.ts`](../clients/typescript/pqe-client.ts); `checkFile` tidak pernah throw):
 
 ```ts
 import { PhotoQualityClient } from "./pqe-client.ts";
 const pqe = new PhotoQualityClient({ baseUrl: process.env.PQE_URL!, apiKey: process.env.PQE_API_KEY!, lang: "id" });
 
-const d = await pqe.checkObject(objectKey, { awb, photo_type: "pod_recipient", courier_id: courierId });
-if (d.message) res.locals.pesanFoto = d.message;                 // tampilkan ke kurir
-if (!d.allowStatusUpdate) return res.status(422).json({ fotoUlang: true, pesan: d.message }); // status TIDAK diupdate
-await shipment.updateStatus("DELIVERED");                        // engine mati/lambat -> tetap sampai sini
+const d = await pqe.checkFile(photoBlob, "foto.jpg", { awb, photo_type: "pod_recipient", courier_id: courierId, source: "camera" });
+if (!d.allowStatusUpdate) return res.status(422).json({ fotoUlang: true, pesan: d.message }); // ditolak, tidak disimpan
+const link = d.stored?.url ?? (await uploadKeSiloSendiri(photoBlob));  // null = engine tidak menjawab (fail-open)
+await shipment.update({ photoUrl: link, status: "DELIVERED" });
+res.json({ ok: true, pesan: d.message });
 ```
 
 **curl:**
 
 ```bash
-curl -s -m 5 -X POST "$PQE_URL/v1/analyze?sync=true&timeout_ms=3000" \
-  -H "X-API-Key: $PQE_API_KEY" -H "Content-Type: application/json" -H "Accept-Language: id" \
-  -d '{"object_key":"pod/2026/10/22/AWB123.jpg","awb":"AWB123","photo_type":"pod_recipient"}'
-# -> {"allow_status_update": false, "courier_message": "Wajib foto ulang. Foto buram. Pegang HP ...", ...}
+curl -s -m 8 -X POST "$PQE_URL/v1/analyze?sync=true&timeout_ms=3000" \
+  -H "X-API-Key: $PQE_API_KEY" -H "Accept-Language: id" \
+  -F "file=@foto.jpg" -F "awb=AWB123" -F "photo_type=pod_recipient" -F "source=camera"
+# diterima -> {"allow_status_update": true,  "stored": {"bucket": "photos-processed", "key": "...", "url": "https://s3.pcpexpress.com/photos-processed/...jpg"}, ...}
+# ditolak  -> {"allow_status_update": false, "stored": null, "courier_message": "Wajib foto ulang. Foto buram. ...", ...}
 ```
 
-Keputusan dari `checkObject` / `checkFile`:
+Keputusan dari `checkFile` / `checkObject`:
 
 | TypeScript | PHP | Arti |
 |---|---|---|
 | `allowStatusUpdate` | `allow_status_update` | `false` = foto ditolak: **jangan** update status, minta foto ulang |
 | `message` | `message` | Tampilkan ke kurir jika tidak `null` |
+| `stored` | `stored` | `{bucket, key, url}` lokasi permanen foto yang diterima di SILO: simpan `url` di database Anda. `null` = ditolak, atau engine tidak menjawab (simpan sendiri) |
 | `retakeRequired` | `retake_required` | Kualitas tidak memenuhi syarat (verdict `REJECT`) |
-| `decided` | `decided` | `false` = belum ada keputusan (engine mati/lambat/error, atau lewat 3 detik) → fail-open, status boleh diupdate |
+| `decided` | `decided` | `false` = belum ada keputusan (engine mati/lambat/error, atau lewat 3 detik) → fail-open: simpan foto sendiri, status boleh diupdate |
 | `photoId`, `verdict` | `photo_id`, `verdict` | Untuk disimpan/dilacak |
 
-Belum menyimpan ke SILO? Pakai `checkFile(...)` (file dikirim langsung, engine yang menyimpan ke SILO). Kurir hanya
-ditahan jika foto `REJECT` **dan** mode tenant `enforce`; di mode `shadow`/`warn` `allow_status_update` selalu `true`.
-Menahan status hanya bisa di level 2 (sinkron); level 0/1 menganalisis setelahnya. Contoh Python dan Kotlin ada di
-panduan browser `/ui/guide.html#cepat`.
+Foto sudah terlanjur disimpan ke SILO oleh aplikasi? Pakai `checkObject(objectKey, ...)` (kirim key objek, bukan file).
+Keputusannya sama, tetapi foto yang ditolak sudah terlanjur ada di bucket aplikasi. Kurir hanya ditahan jika foto
+`REJECT` **dan** mode tenant `enforce` (atau ops menandai "minta foto ulang"); di mode `shadow`/`warn` foto tidak pernah
+menahan status. Menahan status hanya bisa di level 2 (sinkron); level 0/1 menganalisis setelahnya. Contoh Python ada
+di panduan browser `/ui/guide.html#cepat`.
 
 ---
 
@@ -155,21 +168,21 @@ panduan browser `/ui/guide.html#cepat`.
 
 ```mermaid
 flowchart TD
-    A[Aplikasi Anda] --> B{Foto sudah diupload<br/>ke SILO s3.pcpexpress.com?}
-    B -- Ya --> C{Bisa mengubah kode<br/>upload?}
+    A[Aplikasi Anda] --> C{Bisa mengubah kode<br/>upload foto?}
     C -- Tidak --> L0[Level 0<br/>cukup daftarkan tenant]
-    C -- Ya --> D{Perlu hasil langsung<br/>untuk kurir?}
-    D -- Tidak --> L1[Level 1<br/>tambah metadata saat upload]
-    D -- Ya --> L2A[Level 2A<br/>upload ke SILO lalu panggil<br/>POST /v1/analyze dengan object_key]
-    B -- Tidak --> L2B[Level 2B<br/>kirim file ke POST /v1/analyze<br/>engine yang menyimpan]
+    C -- Ya --> D{Perlu keputusan langsung<br/>untuk kurir / menahan status?}
+    D -- Tidak --> L1[Level 1<br/>tambah metadata saat upload ke SILO]
+    D -- Ya --> E{Foto boleh dikirim ke engine<br/>sebelum disimpan?}
+    E -- Ya, disarankan --> L2B[Level 2B: scan dulu<br/>kirim file ke POST /v1/analyze<br/>engine menyimpan foto yang diterima]
+    E -- Tidak, sudah terlanjur di SILO --> L2A[Level 2A<br/>simpan ke SILO lalu panggil<br/>POST /v1/analyze dengan object_key]
 ```
 
 | Level | Yang dikerjakan aplikasi | Hasil | Kapan dipilih |
 |---|---|---|---|
 | **0** | Tidak ada. Upload ke SILO seperti biasa | Laporan & review ops, evidence pelanggan | Aplikasi lama yang belum bisa diubah |
 | **1** | Tambah metadata (`awb`, `photo-type`, ...) saat upload | Sama dengan level 0, tapi data resi/kurir akurat | Aplikasi yang sedang dikembangkan (disarankan minimal) |
-| **2A** | Level 1 + panggil API setelah upload ([cara tercepat](#0-cara-tercepat-1-panggilan-2-field)) | Keputusan per foto langsung (`courier_message`, `allow_status_update`), bisa memberi notif/menahan status | Ingin memberi feedback ke kurir atau menahan status saat foto ditolak (disarankan) |
-| **2B** | Kirim file ke engine | Sama dengan 2A, engine yang menyimpan file | Aplikasi tanpa penyimpanan S3 sendiri |
+| **2B** (disarankan) | Kirim file foto ke engine, **scan dulu, baru simpan** ([cara tercepat](#0-cara-tercepat-scan-dulu-baru-simpan)) | Keputusan per foto langsung (`courier_message`, `allow_status_update`); hanya foto yang diterima disimpan engine ke SILO (`stored.url`) | Semua aplikasi yang bisa diubah: paling sedikit kode, foto ditolak tidak pernah masuk penyimpanan foto pengiriman |
+| **2A** | Level 1 + simpan ke SILO, lalu panggil API dengan `object_key` | Keputusan sama dengan 2B, tetapi foto yang ditolak sudah terlanjur ada di bucket aplikasi | Aplikasi yang alur uploadnya ke SILO belum bisa diubah urutannya |
 
 Semua level bisa naik bertahap tanpa mengubah engine. Menahan update status saat foto ditolak hanya bisa di level 2,
 karena aplikasi butuh jawaban engine **sebelum** update status. Level 0/1 menganalisis setelahnya (laporan, evidence, kalibrasi).
@@ -454,6 +467,7 @@ curl -s -H "X-API-Key: $PQE_API_KEY" "$PQE_URL/v1/photos/<id>"
   ],
   "review": { "status": "none", "by": null, "at": null, "note": null },
   "evidence_eligible": false,
+  "stored": null,
   "object": { "bucket": "ekas-pcptransport", "key": "pod/2026/10/22/AWB123_K045_1729580000.jpg" },
   "sha256": "2a7572fdcb5afcfcd8beb90057115f6f0e643f33ab081b7a5de202e3516e82ce",
   "error": null,
@@ -477,6 +491,7 @@ Arti field penting:
 | `action` | `log` / `notify` / `reject` | Ketegasan saat ini, sudah memperhitungkan mode tenant (`shadow` → `log`, `warn` → `notify`, `enforce` → `reject` untuk `REJECT`) |
 | `retake_required` | `true` / `false` | `true` = kualitas tidak memenuhi syarat (verdict `REJECT`, termasuk file rusak), atau ops meminta foto ulang |
 | `retake_message` | teks / `null` | Pesan foto ulang (ID/EN). Hanya terisi jika `retake_required: true` |
+| `stored` | objek / `null` | Lokasi **permanen** foto pengiriman di SILO: `{"bucket", "key", "url"}` (`url` path-style, contoh `https://s3.pcpexpress.com/photos-processed/...jpg`, tanpa tanda tangan). Simpan `url` ini di database aplikasi. Terisi hanya jika `allow_status_update: true`: versi hasil di `photos-processed` (foto upload yang tidak perlu dikompres pun disalin ke sana), atau foto asli untuk foto dari bucket aplikasi yang tidak perlu dikompres / analisis belum selesai. `null` = foto ditolak |
 | `evidence_eligible` | `true` / `false` | Apakah foto ini tampil di evidence pelanggan (lihat [§9](#9-evidence-untuk-pelanggan-penagihan)) |
 | `reasons[].severity` | `reject` / `warn` / `info` | `info` hanya informasi, jangan ditampilkan sebagai kesalahan |
 | `scores` | 0-100 | Makin tinggi makin baik. `authenticity_risk` makin tinggi makin mencurigakan |
@@ -489,7 +504,8 @@ Detail foto (`GET /v1/photos/{id}`) dan endpoint uji `POST /v1/analyze/preview` 
 ### 6.4 Laravel (backend) dengan fail-open
 
 Cara paling sederhana: salin [`clients/php/PhotoQualityClient.php`](../clients/php/PhotoQualityClient.php) dan pakai
-`checkObject` (lihat [§0](#0-cara-tercepat-1-panggilan-2-field)). Jika butuh seluruh hasil, pakai `analyzeObject`:
+`checkFile` (scan dulu, baru simpan; lihat [§0](#0-cara-tercepat-scan-dulu-baru-simpan)). Contoh di bawah adalah alternatif
+level 2A (foto sudah tersimpan di SILO) dengan seluruh hasil lewat `analyzeObject`:
 
 ```php
 // config/services.php
@@ -537,7 +553,7 @@ $allow = $quality['allow_status_update'] ?? true;   // null/tidak ada hasil -> f
 ### 6.5 Node.js / TypeScript (backend)
 
 Salin [`clients/typescript/pqe-client.ts`](../clients/typescript/pqe-client.ts) (tanpa dependency). Paling ringkas:
-`checkObject` / `checkFile` (lihat [§0](#0-cara-tercepat-1-panggilan-2-field)). Jika butuh seluruh hasil:
+`checkObject` / `checkFile` (lihat [§0](#0-cara-tercepat-scan-dulu-baru-simpan)). Jika butuh seluruh hasil:
 
 ```ts
 import { PhotoQualityClient } from "./pqe-client.ts";
@@ -712,7 +728,7 @@ X-PQE-Delivery: 1234
 X-PQE-Timestamp: 1761151010
 X-PQE-Signature: sha256=5f2c...
 
-{"event":"analysis.completed","photo":{ ...objek foto, sama dengan respons API tanpa field urls (termasuk allow_status_update, courier_message, retake_required & retake_message)... }}
+{"event":"analysis.completed","photo":{ ...objek foto, sama dengan respons API tanpa field urls (termasuk allow_status_update, courier_message, stored, retake_required & retake_message)... }}
 ```
 
 | Event | Kapan |
@@ -837,7 +853,8 @@ Untuk foto yang gagal diproses setelah diterima, `status` = `error` dan `error.c
 
 ## 11. Checklist sebelum go-live
 
-- [ ] Engine mati/lambat **tidak menahan** update status pengiriman (uji dengan engine dimatikan: status tetap diupdate)
+- [ ] Engine mati/lambat **tidak menahan** update status pengiriman (uji dengan engine dimatikan: foto disimpan ke SILO dengan kode lama, status tetap diupdate)
+- [ ] Foto diterima: `stored.url` disimpan di database aplikasi sebagai link foto pengiriman; foto ditolak tidak disimpan sebagai foto pengiriman
 - [ ] `allow_status_update: false` → status pengiriman **tidak** diupdate, kurir diminta foto ulang (uji dengan foto buram di mode `enforce`, bisa lewat halaman Uji Coba Kamera)
 - [ ] Semua panggilan ke engine punya timeout (≤ 3 dtk sync, ≤ 5 dtk lainnya) dan fail-open
 - [ ] API key hanya ada di server (env), tidak di aplikasi mobile/browser, tidak di git
@@ -855,7 +872,8 @@ Untuk foto yang gagal diproses setelah diterima, `status` = `error` dan `error.c
 
 **Apakah engine membuat upload kurir lebih lambat?**
 Tidak. Di Level 0/1 engine bekerja setelah upload, terpisah dari aplikasi. Di Level 2 Anda memanggilnya dengan
-timeout 3 detik dan fail-open: jika lewat batas, `allow_status_update` dianggap `true` dan kurir lanjut. Analisis umumnya 0,2-1,5 detik per foto (foto resi dengan OCR bisa sampai ~3 detik di CPU biasa).
+timeout 3 detik dan fail-open: jika lewat batas, `allow_status_update` dianggap `true`, aplikasi menyimpan foto sendiri, dan kurir lanjut.
+Di level 2B foto hanya dikirim sekali (ke engine), jadi tidak ada upload ganda. Analisis umumnya 0,2-1,5 detik per foto (foto resi dengan OCR bisa sampai ~3 detik di CPU biasa).
 
 **Bolehkah aplikasi mobile memanggil engine langsung?**
 Tidak disarankan karena API key akan bocor. Panggil lewat backend Anda. Jika terpaksa dari web (misal portal
@@ -873,6 +891,13 @@ Engine mendeteksi perubahan ETag dan menganalisis ulang.
 Tidak. Engine hanya mengoptimasi ukuran dan mengompres (lihat [§7.1](#71-optimasi-tanpa-manipulasi)); tidak ada AI,
 filter, atau koreksi cahaya secara bawaan. File original tetap tersimpan utuh di SILO dan kode verifikasi (SHA-256)
 di PDF evidence merujuk ke original. Foto gelap/buram tidak "dibenarkan", kurir diminta foto ulang.
+
+**Foto dikirim ke engine dulu atau ke SILO dulu?**
+Ke engine dulu (level 2B, disarankan): engine memeriksa foto, lalu hanya foto yang diterima disimpan ke SILO dan
+linknya dikembalikan di `stored.url`. Foto yang ditolak tidak disimpan sebagai foto pengiriman dan pesannya dikirim
+balik ke kurir. Foto asli tetap diarsipkan engine di bucket internal `photos-upload` (untuk verifikasi keaslian dan
+review ops), tetapi tidak pernah diberikan sebagai link. Jika engine tidak menjawab, aplikasi menyimpan foto ke SILO
+sendiri seperti sekarang. Aplikasi yang sudah terlanjur menyimpan ke SILO dulu bisa memakai `checkObject` (level 2A).
 
 **Apakah engine mengubah status pengiriman?**
 Tidak. Status pengiriman milik aplikasi pengiriman. Engine hanya menjawab `allow_status_update`; aplikasi yang

@@ -138,7 +138,7 @@ Catatan:
 
 - Seluruh `.env` dimuat ke container engine (`env_file: .env`). `DATABASE_URL` ditimpa compose agar mengarah ke Postgres di compose.
 - `ENGINE_CREATE_BUCKETS` di `.env.example` bernilai `false`: bucket engine harus sudah dibuat tim infra (bagian 4).
-- Engine hanya **membaca** `AWS_BUCKET` dan **menulis** ke `ENGINE_BUCKET_PROCESSED`, `ENGINE_BUCKET_THUMB`, `ENGINE_BUCKET_UPLOAD`.
+- Engine hanya **membaca** `AWS_BUCKET` (bucket aplikasi tetap read-only untuk engine) dan **menulis** ke `ENGINE_BUCKET_PROCESSED`, `ENGINE_BUCKET_THUMB`, `ENGINE_BUCKET_UPLOAD`. Dengan integrasi "scan dulu, baru simpan", foto pengiriman yang diterima disimpan engine di `ENGINE_BUCKET_PROCESSED` (link `stored`) dan foto asli diarsipkan di `ENGINE_BUCKET_UPLOAD`; aplikasi tidak perlu memberi engine akses tulis ke bucket aplikasi.
 - Sesuaikan `config/tenants/courier-app.yaml` (bucket, prefix, mapping) dengan struktur key foto di SILO kantor sebelum start. Setelah tenant tersimpan di DB, ubah lewat Web UI (menu Tenant) atau `pqe import-tenants --force`.
 
 ---
@@ -348,10 +348,15 @@ Sesuai [sdlc-plan.md](sdlc-plan.md) 4.11:
 ```bash
 mcli alias set nas https://nas-silo.pcpexpress.local NAS_USER NAS_PASSWORD   # SILO/S3 di NAS
 mcli mirror --watch pcp/ekas-pcptransport nas/ekas-pcptransport              # wajib (original)
-mcli mirror --watch pcp/photos-processed  nas/photos-processed               # opsional (bisa dibuat ulang)
+mcli mirror --watch pcp/photos-upload     nas/photos-upload                  # wajib jika memakai "scan dulu" (asli dari upload)
+mcli mirror --watch pcp/photos-processed  nas/photos-processed               # wajib jika memakai "scan dulu" (link stored aplikasi)
 ```
 
-Jalankan `mcli mirror --watch` sebagai service (systemd / Deployment terpisah). Original **wajib** di-backup; processed & thumbnail opsional karena bisa dibuat ulang dengan analisis ulang. NAS sebaiknya di lokasi berbeda dari server SILO. Uji restore sampel acak tiap bulan.
+Jalankan `mcli mirror --watch` sebagai service (systemd / Deployment terpisah). Original **wajib** di-backup. Jika aplikasi
+memakai integrasi "scan dulu, baru simpan" (`checkFile`), `photos-upload` berisi foto asli dan `photos-processed` berisi
+foto pengiriman yang linknya disimpan aplikasi (`stored.url`), jadi keduanya **wajib** di-backup juga. Tanpa integrasi itu,
+processed & thumbnail opsional karena bisa dibuat ulang dengan analisis ulang. NAS sebaiknya di lokasi berbeda dari server
+SILO. Uji restore sampel acak tiap bulan.
 
 ---
 

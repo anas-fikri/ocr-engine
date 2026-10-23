@@ -23,7 +23,7 @@ Engine bisa dipakai oleh aplikasi apa pun (Android, iOS, Flutter, web, Laravel, 
 | Indikasi keaslian | EXIF (kamera, waktu, GPS, software editing), foto lama, beda waktu/lokasi, foto identik/mirip dipakai ulang |
 | Multi-aplikasi & multi-jenis foto | Tenant per aplikasi, profile per jenis foto (POD penerima, resi, paket, lokasi, barang), semua lewat config |
 | Mode bertahap | `shadow` → `warn` → `enforce` per tenant/profile tanpa deploy ulang |
-| Integrasi tercepat | Satu panggilan `POST /v1/analyze?sync=true` (key SILO atau file), baca 2 field. Client TS/PHP: `checkObject`/`checkFile` (fail-open, tidak pernah throw). Alternatif tanpa ubah aplikasi: baca SILO / metadata saat upload |
+| Integrasi tercepat: scan dulu, baru simpan | Aplikasi mengirim file foto langsung ke engine (`POST /v1/analyze?sync=true`, client `checkFile`). Engine memeriksa dulu; hanya foto yang diterima disimpan ke SILO dan linknya dikembalikan di `stored.url`. Foto ditolak tidak disimpan, pesannya dikirim balik ke kurir. Engine mati → aplikasi menyimpan sendiri (fail-open). Alternatif: `checkObject` untuk foto yang sudah di SILO, atau tanpa ubah aplikasi (baca SILO / metadata saat upload) |
 | Web UI | Dashboard, antrean review ops (opsional), pencarian, uji foto, editor config tenant, API key, **Pengaturan SILO** (impor JSON mc, tes koneksi), status sistem |
 | Panduan developer di browser | `/ui/guide.html`: panduan integrasi interaktif tanpa login, diagram alur (integrasi, penggunaan, keputusan di aplikasi pengiriman, proses engine), contoh kode curl/PHP/TS/Python/Kotlin dengan URL server terisi otomatis |
 | Uji coba tanpa aplikasi | `/ui/coba.html`: buka dari HP, ambil foto dengan kamera, lihat pesan yang tampil di layar kurir + detail analisis (simulasi penuh atau uji cepat) |
@@ -35,8 +35,9 @@ Engine bisa dipakai oleh aplikasi apa pun (Android, iOS, Flutter, web, Laravel, 
 
 ```mermaid
 flowchart LR
-    App[Aplikasi kurir / lainnya] -->|upload foto| SILO[(SILO<br/>s3.pcpexpress.com)]
-    App -->|setelah upload, sebelum update status:<br/>POST /v1/analyze sync ≤ 3 dtk → validasi| API
+    App[Aplikasi kurir / lainnya] -->|1. kirim file foto dulu, sebelum update status:<br/>POST /v1/analyze sync ≤ 3 dtk| API
+    API -->|2. diterima: simpan versi hasil<br/>ditolak: tidak disimpan| SILO[(SILO<br/>s3.pcpexpress.com)]
+    App -.->|level 0/1 atau engine mati:<br/>upload sendiri| SILO
     SILO -->|bucket event / polling| ING[Ingestor]
     ING --> Q[[Antrean<br/>PostgreSQL]]
     API[API + Web UI] --> Q
@@ -62,12 +63,13 @@ docker compose exec engine pqe demo-upload
 # uji coba dari HP (kamera): http://<IP-PC>:8000/ui/coba.html
 ```
 
-Integrasi tercepat dari aplikasi pengiriman (satu panggilan, dua field):
+Integrasi tercepat dari aplikasi pengiriman: scan dulu, baru simpan (satu panggilan):
 
 ```php
-$d = $pqe->checkObject($objectKey, ['awb' => $awb, 'photo_type' => 'pod_recipient']);   // maks. 3 detik, fail-open
-if ($d['message']) { /* tampilkan ke kurir */ }
-if ($d['allow_status_update']) { /* update status pengiriman */ }   // false = foto ditolak, minta foto ulang
+$d = $pqe->checkFile($pathFoto, ['awb' => $awb, 'photo_type' => 'pod_recipient']);   // maks. 3 detik, fail-open
+if (!$d['allow_status_update']) { /* ditolak: tidak disimpan, kirim $d['message'] ke kurir, minta foto ulang */ }
+$link = $d['stored']['url'] ?? simpanKeSiloSendiri($pathFoto);   // null = engine tidak menjawab -> kode lama
+/* update status pengiriman + simpan $link; tampilkan $d['message'] jika tidak null */
 ```
 
 Langkah lengkap: [docs/getting-started.md](docs/getting-started.md).
@@ -77,7 +79,7 @@ Langkah lengkap: [docs/getting-started.md](docs/getting-started.md).
 | Untuk | Dokumen |
 |---|---|
 | Semua orang | [Memulai dalam 10 menit](docs/getting-started.md) |
-| **Programmer aplikasi** | [Cara tercepat (1 panggilan)](docs/integration-guide.md#0-cara-tercepat-1-panggilan-2-field) · Panduan di browser: `http://<server-engine>/ui/guide.html` · [Panduan integrasi](docs/integration-guide.md) · [Referensi API](docs/api-reference.md) · [Client siap pakai](clients/README.md) |
+| **Programmer aplikasi** | [Cara tercepat: scan dulu, baru simpan](docs/integration-guide.md#0-cara-tercepat-scan-dulu-baru-simpan) · Panduan di browser: `http://<server-engine>/ui/guide.html` · [Panduan integrasi](docs/integration-guide.md) · [Referensi API](docs/api-reference.md) · [Client siap pakai](clients/README.md) |
 | Admin engine | [Konfigurasi (env, tenant, profile, mapping, kalibrasi)](docs/configuration.md) |
 | Ops / finance | [Panduan Web UI](docs/web-ui-guide.md) |
 | DevOps / infra | [Operasional (deploy, SILO, K8s, monitoring, backup, runbook)](docs/operations.md) |

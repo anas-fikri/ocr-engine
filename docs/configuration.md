@@ -45,9 +45,9 @@ admin lewat Web UI → **Pengaturan SILO** tanpa restart (lihat [1.6](#16-pengat
 | `AWS_SECRET_ACCESS_KEY` ⚙ | kosong | Secret key pasangannya | Selalu diisi |
 | `AWS_BUCKET` ⚙ | `ekas-pcptransport` | Bucket foto original milik aplikasi (engine hanya **membaca**). Dipakai sebagai default jika source/API tidak menyebut bucket | Sesuaikan dengan bucket aplikasi |
 | `AWS_URL` | — | **Tidak dibaca engine.** Ada di `.env.example` hanya agar sama dengan config aplikasi Laravel | — |
-| `ENGINE_BUCKET_PROCESSED` ⚙ | `photos-processed` | Bucket hasil kompres (milik engine) | Sesuai nama bucket dari tim infra |
+| `ENGINE_BUCKET_PROCESSED` ⚙ | `photos-processed` | Bucket hasil optimasi (milik engine). Untuk integrasi "scan dulu, baru simpan" ini adalah **penyimpanan foto pengiriman yang diterima**: link `stored.url` yang disimpan aplikasi menunjuk ke sini (foto upload yang diterima selalu disalin ke sini, walau tidak perlu dikompres) | Sesuai nama bucket dari tim infra |
 | `ENGINE_BUCKET_THUMB` ⚙ | `photos-thumb` | Bucket thumbnail (milik engine) | Sesuai nama bucket dari tim infra |
-| `ENGINE_BUCKET_UPLOAD` ⚙ | `photos-upload` | Bucket untuk foto yang diupload **langsung ke engine** lewat `POST /v1/analyze` (multipart). Bisa ditimpa per tenant dengan `upload_bucket` | Sesuai nama bucket dari tim infra |
+| `ENGINE_BUCKET_UPLOAD` ⚙ | `photos-upload` | Bucket internal untuk foto asli yang diupload **langsung ke engine** lewat `POST /v1/analyze` (multipart): arsip asli (verifikasi keaslian, hash/EXIF) + karantina foto yang ditolak untuk review ops. Tidak pernah diberikan sebagai link `stored`. Bisa ditimpa per tenant dengan `upload_bucket` | Sesuai nama bucket dari tim infra |
 | `ENGINE_CREATE_BUCKETS` | `false` | `true` = saat start, engine membuat bucket processed/thumb/upload **dan** `AWS_BUCKET` jika belum ada | `true` hanya untuk lokal/uji coba. Di produksi bucket dibuat tim infra |
 | `ENGINE_PRESIGN_TTL_UI` | `900` | Masa berlaku link foto (detik) untuk Web UI dan API `/v1/photos` | Perpanjang jika ops sering membuka tab lama |
 | `ENGINE_PRESIGN_TTL_CUSTOMER` | `604800` (7 hari) | Masa berlaku link foto di `/v1/evidence/...` (untuk pelanggan) | Maksimal 7 hari (batas presigned S3 v4) |
@@ -178,7 +178,7 @@ Field yang tidak dikenal akan **ditolak** saat validasi, supaya salah ketik lang
 | `timezone` | | `Asia/Jakarta` | Zona waktu untuk: waktu EXIF dan `captured_at` tanpa offset, tanggal pada `date_prefix_format`, checkpoint `db_poll`, dan tampilan waktu di PDF evidence |
 | `retention_days` | | `1095` (3 tahun) | Lihat [Retensi](#retensi) |
 | `store_mode` | | `processed` | `processed` = simpan versi kompres + thumbnail ke SILO. `none` = hanya analisis (tanpa kompres & thumbnail; Web UI tidak menampilkan pratinjau, hanya link original) |
-| `upload_bucket` | | `ENGINE_BUCKET_UPLOAD` | Bucket tujuan file yang diupload langsung ke `POST /v1/analyze` (multipart) |
+| `upload_bucket` | | `ENGINE_BUCKET_UPLOAD` | Bucket arsip asli (+ karantina foto ditolak) untuk file yang diupload langsung ke `POST /v1/analyze` (multipart) |
 | `default_profile` | | `default` | Profile yang dipakai jika `photo_type` foto kosong atau tidak dikenal |
 | `review_required` | | `false` | Apakah foto `WARN` harus di-*approve* ops dulu sebelum masuk evidence pelanggan. `false` = `PASS` dan `WARN` langsung masuk evidence, review ops **opsional** (antrean Review tetap bisa dipakai untuk memantau). `true` = hanya `PASS` atau foto yang di-*approve* ops. `REJECT` tidak pernah masuk tanpa approve. Lihat [bagian 5](#5-mode-verdict-dan-action) |
 | `sources` | | `[]` | Dari mana foto diambil. Kosong = tenant hanya menerima foto lewat API |
@@ -615,6 +615,9 @@ disimpan utuh.
 **Thumbnail:** sisi terpanjang `thumbnail.long_side_px` (320), JPEG `thumbnail.quality` (70). Selalu JPEG.
 
 Lokasi file (jika `store_mode: processed`): `<ENGINE_BUCKET_PROCESSED>/<tenant>/<yyyy>/<mm>/<dd>/<photo_id>.jpg` dan `<ENGINE_BUCKET_THUMB>/<tenant>/<yyyy>/<mm>/<dd>/<photo_id>.jpg`.
+Foto yang diupload langsung ke engine dan **diterima** (aksi bukan `reject`) selalu punya file di `ENGINE_BUCKET_PROCESSED`:
+jika tidak perlu dikompres, file asli disalin apa adanya (ekstensi asli). Lokasinya dikembalikan di field `stored`
+(hanya untuk foto yang `allow_status_update: true`). Foto upload yang ditolak tidak diberi versi hasil maupun link.
 
 ---
 

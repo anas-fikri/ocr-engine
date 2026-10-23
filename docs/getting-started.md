@@ -74,13 +74,15 @@ engine, lalu lihat pesan yang akan tampil di layar kurir beserta detail analisis
    HP harus di jaringan (Wi-Fi) yang sama, dan port 8000 tidak diblokir firewall PC.
 2. Di HP buka `http://192.168.1.10:8000/ui/coba.html`, masuk dengan API key admin (`pqe_local_admin_change_me` di lokal).
 3. Pilih mode:
-   - **Simulasi aplikasi kurir** (bawaan): sama dengan integrasi level 2 (`POST /v1/analyze?sync=true&timeout_ms=3000`).
-     Foto disimpan ke tenant **`uji-coba`** (dibuat otomatis dari `config/tenants/uji-coba.yaml`, mode `enforce`,
+   - **Simulasi aplikasi kurir** (bawaan): sama dengan integrasi level 2B "scan dulu, baru simpan"
+     (`POST /v1/analyze?sync=true&timeout_ms=3000` dengan file): foto diperiksa dulu, hanya yang diterima disimpan ke
+     SILO (link di `stored`). Foto masuk tenant **`uji-coba`** (dibuat otomatis dari `config/tenants/uji-coba.yaml`, mode `enforce`,
      retensi 30 hari), jadi tidak tercampur dengan data aplikasi kurir. Foto muncul di Web UI dan evidence resi uji.
    - **Uji cepat**: hanya dianalisis, tidak disimpan.
 4. Tekan **📷 Ambil foto** (membuka kamera bawaan HP, EXIF ikut terkirim) atau **Pilih dari galeri**.
 5. Hasil: tampilan **layar kurir** (pesan `courier_message`, tombol Foto ulang / Tetap kirim / Lanjut, dan baris
-   **Status pengiriman: diupdate / TIDAK diupdate** sesuai `allow_status_update`), waktu tunggu kurir, perbandingan foto
+   **Status pengiriman: diupdate / TIDAK diupdate** sesuai `allow_status_update`, plus apakah foto disimpan ke SILO),
+   **Link SILO (stored)** untuk foto yang diterima, waktu tunggu kurir, perbandingan foto
    asli vs hasil engine (hanya dioptimasi/dikompres), skor, alasan, kompresi, dan EXIF. **Tampilkan sebagai mode** memperlihatkan pengalaman kurir di `shadow`/`warn`/`enforce` tanpa
    mengubah config. Tombol **Buka di Web UI** langsung membuka detail foto tersebut.
 

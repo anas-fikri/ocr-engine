@@ -73,15 +73,19 @@ mengembalikan foto yang sama.
 Hanya `object_key` yang wajib. `bucket` default `AWS_BUCKET`. Field yang dikirim eksplisit selalu menang atas
 metadata objek dan aturan mapping tenant.
 
-**Bentuk B: upload file** (`multipart/form-data`): field `file` (JPEG/PNG/HEIC/WebP, maks. `PQE_MAX_UPLOAD_MB`)
-ditambah field metadata yang sama seperti di atas (semua opsional). File disimpan engine ke bucket upload tenant
-(`upload_bucket` atau `ENGINE_BUCKET_UPLOAD`).
+**Bentuk B: upload file** (`multipart/form-data`, **disarankan: scan dulu, baru simpan**): field `file`
+(JPEG/PNG/HEIC/WebP, maks. `PQE_MAX_UPLOAD_MB`) ditambah field metadata yang sama seperti di atas (semua opsional).
+Foto asli diarsipkan engine di bucket upload tenant (`upload_bucket` atau `ENGINE_BUCKET_UPLOAD`, bucket internal:
+arsip asli + karantina foto yang ditolak). Jika foto diterima, versi hasilnya selalu disimpan di `ENGINE_BUCKET_PROCESSED`
+(foto kecil yang tidak perlu dikompres pun disalin) dan lokasinya dikembalikan di `stored`; jika ditolak, `stored: null`.
 
 **Respons:** `200` (hasil ada) atau `202` (masih diproses, ada `poll_url`). Isi: [objek foto](#objek-foto).
 
-Cara tercepat untuk aplikasi pengiriman: `sync=true&timeout_ms=3000`, lalu cukup baca `allow_status_update` (false =
-jangan update status pengiriman, minta foto ulang) dan `courier_message` (tampilkan ke kurir jika tidak null).
-`202`/error/timeout = fail-open. Client: `checkObject` / `checkFile` di [clients/](../clients/README.md).
+Cara tercepat untuk aplikasi pengiriman: Bentuk B dengan `sync=true&timeout_ms=3000`, lalu baca `allow_status_update`
+(false = jangan update status pengiriman, foto tidak disimpan, minta foto ulang), `courier_message` (tampilkan ke kurir
+jika tidak null), dan `stored.url` (link foto yang diterima, simpan di database aplikasi). `202`/error/timeout =
+fail-open: aplikasi menyimpan foto ke SILO sendiri. Client: `checkFile` (utama) / `checkObject` (foto sudah di SILO) di
+[clients/](../clients/README.md).
 
 ### `POST /v1/analyze/preview`
 
@@ -384,6 +388,7 @@ Arti error yang sering muncul: [troubleshooting.md](troubleshooting.md#pengatura
 | `action` | `log` / `notify` / `reject` / null | Saran perilaku aplikasi sesuai mode profile (`shadow` → `log`, `warn` → `notify`, `enforce` → `reject` untuk `REJECT`; `PASS` → `log`) |
 | `allow_status_update` | bool | Boleh aplikasi pengiriman mengupdate status pengiriman (status milik aplikasi pengiriman, bukan engine). `false` hanya jika `action = reject` (verdict `REJECT` di mode `enforce`) atau ops memilih "minta foto ulang"/"tandai kecurangan". `true` jika ops meng-*approve*, selama `pending`, dan saat gagal karena sistem (fail-open). File rusak (`UNREADABLE_FILE`) diperlakukan seperti `REJECT` (ditahan di mode `enforce`). Ada juga di webhook |
 | `courier_message` | string / null | Satu kalimat siap tampil untuk kurir (sesuai bahasa): `<message>. <suggestion>` dari alasan pertama non-info, diawali `Wajib foto ulang.` / `Retake required.` jika `retake_required`. `null` jika `action` bukan `notify`/`reject` (atau ops meng-*approve*) |
+| `stored` | objek / null | Lokasi permanen foto pengiriman di SILO: `{"bucket", "key", "url"}`, `url` path-style di `AWS_PUBLIC_ENDPOINT` (atau `AWS_ENDPOINT`) tanpa tanda tangan. Hanya jika `allow_status_update: true`: versi hasil (`processed_*`) jika ada, selain itu foto asli (foto dari bucket aplikasi yang tidak perlu dikompres, atau analisis belum selesai). Foto upload yang diterima selalu punya versi hasil di `ENGINE_BUCKET_PROCESSED`. `null` jika foto ditolak. Tidak ada di respons preview. Ada juga di webhook |
 | `retake_required` | bool | `true` = kualitas tidak memenuhi syarat (verdict `REJECT`, termasuk file rusak), atau ops memilih "minta foto ulang". `false` jika ops meng-*approve*. Tidak bergantung pada mode. Ada juga di webhook |
 | `retake_message` | string / null | Pesan foto ulang (sesuai bahasa) jika `retake_required: true`: "Kualitas foto tidak memenuhi syarat. Silakan ambil foto ulang." |
 | `photo_type`, `profile` | string | Jenis foto & profile yang dipakai |
@@ -448,10 +453,10 @@ tercatat di `enhancement.before.codes`.
 
 Format, header, tanda tangan, dan aturan retry: [integration-guide.md#8-menerima-webhook](integration-guide.md#8-menerima-webhook).
 Payload berisi objek foto yang sama dengan respons API (tanpa `urls`), termasuk `allow_status_update`,
-`courier_message`, `retake_required`, dan `retake_message`:
+`courier_message`, `stored`, `retake_required`, dan `retake_message`:
 
 ```json
 {"event": "analysis.completed", "photo": {"id": "e350...", "status": "done", "verdict": "REJECT", "action": "reject",
- "allow_status_update": false, "courier_message": "Wajib foto ulang. Foto buram. Pegang HP dengan stabil, ...",
+ "allow_status_update": false, "courier_message": "Wajib foto ulang. Foto buram. Pegang HP dengan stabil, ...", "stored": null,
  "retake_required": true, "retake_message": "Kualitas foto tidak memenuhi syarat. Silakan ambil foto ulang.", "...": "..."}}
 ```

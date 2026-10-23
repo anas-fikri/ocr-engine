@@ -30,7 +30,8 @@ Per 23 Oktober 2026 (versi engine 0.1.0):
 | 2 | Optimasi tanpa manipulasi isi gambar (hanya perkecil proporsional + kompresi dinamis); koreksi pencahayaan kurva global terverifikasi tersedia sebagai **opsi per profile, nonaktif bawaan** | ✅ |
 | 2 | `retake_required` + `retake_message` (wajib foto ulang jika kualitas tidak memenuhi syarat) | ✅ |
 | 2 | Keputusan siap pakai `allow_status_update` + `courier_message`: `REJECT` di mode `enforce` menahan update status di aplikasi pengiriman; engine mati/lambat = fail-open | ✅ |
-| 2 | Integrasi tercepat: 1 panggilan sinkron, client `checkObject`/`checkFile` (TS & PHP) yang fail-open | ✅ |
+| 2 | Integrasi tercepat: 1 panggilan sinkron, client `checkFile` (utama) / `checkObject` (TS & PHP) yang fail-open | ✅ |
+| 2 | "Scan dulu, baru simpan": file dikirim ke engine dulu, hanya foto yang diterima disimpan ke SILO (`photos-processed`) dan linknya dikembalikan di `stored`; foto ditolak tidak disimpan sebagai foto pengiriman | ✅ |
 | 2 | Review ops opsional per tenant (`review_required`, bawaan `false`: PASS + WARN langsung masuk evidence) | ✅ |
 | 2 | Halaman Pengaturan SILO di Web UI (impor JSON `mc`, test koneksi, secret terenkripsi, tanpa restart) | ✅ |
 | 2 | Panduan integrasi developer di browser (`/ui/guide.html`, tanpa login) + 4 diagram alur (integrasi, penggunaan, keputusan di aplikasi pengiriman, proses engine) | ✅ |
@@ -61,8 +62,14 @@ Per 23 Oktober 2026 (versi engine 0.1.0):
    mengubah status; engine memberi `allow_status_update` dan `courier_message`. Di mode `enforce`, foto `REJECT`
    menghasilkan `allow_status_update: false`: aplikasi pengiriman tidak mengupdate status sampai foto ulang diterima.
    Engine mati/lambat/error tetap fail-open (status diupdate). Menahan status butuh integrasi level 2 (sinkron); di
-   level 0/1 engine tetap bekerja setelahnya seperti flow 4.1. Integrasi paling cepat: satu panggilan
-   `POST /v1/analyze?sync=true` atau `checkObject` di client.
+   level 0/1 engine tetap bekerja setelahnya (lihat alternatif di flow 4.1). Integrasi paling cepat: satu panggilan
+   `POST /v1/analyze?sync=true` dengan file, atau `checkFile` di client.
+7. **Scan dulu, baru simpan.** Aplikasi pengiriman mengirim file foto langsung ke engine, bukan ke SILO dulu. Engine
+   memeriksa foto, lalu hanya foto yang diterima disimpan ke SILO (`photos-processed`) dan lokasinya dikembalikan di
+   field `stored` untuk disimpan aplikasi. Foto ditolak tidak disimpan sebagai foto pengiriman; pesannya dikirim
+   balik ke kurir. Foto asli tetap diarsipkan di bucket internal `photos-upload` (verifikasi keaslian, review ops),
+   tidak pernah diberikan sebagai link. Engine mati → aplikasi menyimpan sendiri dengan kode lama (fail-open).
+   `checkObject` tetap tersedia untuk aplikasi yang sudah terlanjur menyimpan ke SILO dulu.
 
 ## Daftar Isi
 
@@ -299,7 +306,8 @@ flowchart TB
 
     subgraph SILO[SILO - s3.pcpexpress.com]
         B1[(photos-original<br/>milik aplikasi)]
-        B2[(photos-processed<br/>hasil kompres)]
+        B4[(photos-upload<br/>arsip asli + karantina)]
+        B2[(photos-processed<br/>foto pengiriman diterima)]
         B3[(photos-thumb<br/>thumbnail)]
     end
 
@@ -320,15 +328,17 @@ flowchart TB
 
     NAS[(NAS backup<br/>lokasi berbeda)]
 
-    A1 -->|upload| B1
-    A2 -->|upload| B1
-    A1 -->|setelah simpan ke SILO, sebelum update status:<br/>POST /v1/analyze sync ≤ 3 dtk| API
+    A1 -->|1. kirim file foto dulu, sebelum update status:<br/>POST /v1/analyze sync ≤ 3 dtk| API
+    A1 -.->|level 0/1 atau engine mati: upload sendiri| B1
+    A2 -.->|upload| B1
+    API -->|arsip asli| B4
     B1 -->|bucket event / polling| I
     ADB -.->|read-only mapping| I
     API --> Q
     I --> Q
     Q --> W
     W -->|baca original| B1
+    W -->|baca original upload| B4
     W -->|tulis| B2
     W -->|tulis| B3
     W --> PG
@@ -639,9 +649,10 @@ Untuk multi-tenant, kredensial per tenant direferensikan dari config (`dsn_ref`/
 
 ### 4.1 Flow utama: kurir memotret sampai foto divalidasi
 
-Ini alur integrasi level 2 (disarankan). Foto **dikirim ke engine tepat setelah tersimpan di SILO**, dan **validasi
-gambar terjadi di dalam panggilan itu** (sinkron, maks. 3 detik), **sebelum** aplikasi pengiriman mengupdate status.
-Status pengiriman tetap milik aplikasi pengiriman; engine hanya menjawab `allow_status_update` dan `courier_message`.
+Ini alur integrasi level 2B (disarankan): **scan dulu, baru simpan**. Foto **langsung dikirim ke engine** (belum ke
+SILO), **divalidasi di dalam panggilan itu** (sinkron, maks. 3 detik), dan **hanya foto yang diterima disimpan ke
+SILO**. Semua terjadi **sebelum** aplikasi pengiriman mengupdate status. Status pengiriman tetap milik aplikasi
+pengiriman; engine hanya menjawab `allow_status_update`, `courier_message`, dan `stored` (link foto yang disimpan).
 
 ```mermaid
 sequenceDiagram
@@ -649,30 +660,39 @@ sequenceDiagram
     actor K as Kurir
     participant App as Aplikasi Kurir (HP)
     participant BE as Aplikasi Pengiriman (backend)
-    participant S as SILO
     participant E as Photo Quality Engine
+    participant S as SILO
 
     K->>App: Ambil foto POD, tekan Kirim
     App->>BE: Foto asli + resi
-    BE->>S: Simpan foto (seperti sekarang)
     rect rgb(230, 235, 250)
-    note over BE,E: ① FOTO DIKIRIM KE ENGINE (langsung, sebelum update status)
-    BE->>E: POST /v1/analyze?sync=true {object_key, awb, photo_type}
-    E->>S: Ambil foto asli
-    note over E: ② VALIDASI GAMBAR (≤ 3 dtk)<br/>ketajaman, pecah, resolusi, cahaya,<br/>EXIF, duplikat, OCR → verdict
-    E->>E: Optimasi + kompres < 1 MB (tanpa manipulasi)
-    E->>S: Simpan versi kompres + thumbnail
-    E-->>BE: allow_status_update + courier_message
+    note over BE,E: ① FOTO LANGSUNG DIKIRIM KE ENGINE (belum ke SILO, sebelum update status)
+    BE->>E: POST /v1/analyze?sync=true (file + awb, photo_type)
+    E->>S: Arsipkan foto asli (photos-upload, internal)
+    note over E: ② SCAN / VALIDASI (≤ 3 dtk)<br/>ketajaman, pecah, resolusi, cahaya,<br/>EXIF, duplikat, OCR → verdict
     end
-    alt allow_status_update = true, atau engine tidak menjawab ≤ 3 dtk (fail-open)
-        BE->>BE: Update status pengiriman
+    alt diterima
+        E->>E: Optimasi + kompres < 1 MB (tanpa manipulasi)
+        E->>S: Simpan foto pengiriman (photos-processed) + thumbnail
+        E-->>BE: allow_status_update true + stored.url (+ courier_message)
+        BE->>BE: Simpan stored.url + update status pengiriman
         BE-->>App: OK (+ courier_message jika ada)
         App-->>K: Terkirim ✅
-    else allow_status_update = false (REJECT di mode enforce)
+    else ditolak (REJECT, mode enforce)
+        E-->>BE: allow_status_update false + courier_message, stored null
         BE-->>App: Ditolak + courier_message (status TIDAK diupdate)
         App-->>K: Wajib foto ulang → kembali ke langkah 1
+    else engine tidak menjawab ≤ 3 dtk (fail-open)
+        BE->>S: Simpan foto sendiri (kode lama)
+        BE->>BE: Update status pengiriman
+        BE-->>App: OK
     end
 ```
+
+Foto yang ditolak tidak pernah diberi link dan tidak menjadi foto pengiriman; salinan aslinya hanya diarsipkan di
+bucket internal engine untuk verifikasi keaslian dan review ops. Aplikasi yang sudah terlanjur menyimpan ke SILO dulu
+bisa memakai level 2A (`checkObject` dengan key objek): keputusannya sama, tetapi foto yang ditolak sudah ada di bucket
+aplikasi.
 
 **Level 0/1** (aplikasi belum memanggil engine): jalur kurir tidak berubah dan status diupdate seperti biasa. Engine
 mengambil foto sendiri beberapa detik setelah upload (bucket notification, polling sebagai cadangan) lalu memvalidasinya
