@@ -41,8 +41,10 @@ check("checkObject engine mati -> status boleh diupdate", dDown.allowStatusUpdat
 const photo = (extra: Record<string, unknown>) => ({ ok: true as const, status: 200, data: { id: "p1", status: "done", verdict: "REJECT", action: "reject", reasons: [], scores: {}, awb: null, photo_type: null, verdict_text: null, ...extra } as any });
 const dReject = toDecision(photo({ allow_status_update: false, courier_message: "Wajib foto ulang. Foto buram.", retake_required: true }));
 check("REJECT enforce -> status ditahan + pesan", !dReject.allowStatusUpdate && dReject.decided && dReject.message === "Wajib foto ulang. Foto buram." && dReject.retakeRequired);
-const dPass = toDecision(photo({ verdict: "PASS", action: "log", allow_status_update: true, courier_message: null }));
-check("PASS -> status boleh, tanpa pesan", dPass.allowStatusUpdate && dPass.message === null);
+const dPass = toDecision(photo({ verdict: "PASS", action: "log", allow_status_update: true, courier_message: null, stored: { bucket: "b", key: "k.jpg", url: "https://s3/b/k.jpg" } }));
+check("PASS -> status boleh, tanpa pesan, ada link", dPass.allowStatusUpdate && dPass.message === null && dPass.stored?.url === "https://s3/b/k.jpg");
+check("REJECT -> tanpa link", dReject.stored === null);
+check("engine mati -> tanpa link (simpan sendiri)", dDown.stored === null);
 const dPending = toDecision({ ok: true, status: 202, data: { id: "p2", status: "pending" } as any });
 check("lewat 3 detik (pending) -> fail-open", dPending.allowStatusUpdate && !dPending.decided && dPending.photoId === "p2");
 

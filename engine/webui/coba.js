@@ -81,7 +81,7 @@ function setMode(m) {
   });
   $("#sim-fields").classList.toggle("hidden", m !== "sim");
   $("#mode-desc").innerHTML = m === "sim"
-    ? `Sama seperti aplikasi asli: foto <b>disimpan</b> (upload → antrean → worker → SILO), kurir menunggu maks. ${SYNC_TIMEOUT_MS / 1000} detik. Foto muncul di Web UI dan evidence resi uji.`
+    ? `Sama seperti aplikasi asli ("scan dulu"): foto dikirim ke engine, diperiksa, lalu hanya yang diterima disimpan ke SILO. Kurir menunggu maks. ${SYNC_TIMEOUT_MS / 1000} detik. Foto muncul di Web UI dan evidence resi uji.`
     : `Hanya dianalisis, <b>tidak disimpan</b> ke mana pun. Cocok untuk mencoba banyak foto dengan cepat.` +
       (canSim ? "" : ` <br>${!$("#tenant").value ? "Pilih tenant untuk simulasi." : "Role viewer hanya bisa uji cepat."}`);
 }
@@ -254,9 +254,12 @@ function courierScreen(run) {
     msg = `<div class="msg ok"><b>✓ Foto diterima</b></div>` +
       (r.verdict !== "PASS" ? `<p class="note">Mode shadow: engine mencatat ${esc(r.verdict)}, tetapi kurir tidak melihat pesan apa pun.</p>` : "");
   }
+  const saved = run.mode === "quick" ? "Uji cepat: foto tidak disimpan ke mana pun."
+    : allow ? (r.stored ? "Foto disimpan engine ke SILO, link dikirim ke aplikasi." : "Foto disimpan aplikasi ke SILO (fail-open).")
+      : "Foto TIDAK disimpan sebagai foto pengiriman.";
   const status = allow
-    ? `<div class="msg ok" style="padding:8px 12px"><span>Status pengiriman: <b>diupdate</b> oleh aplikasi pengiriman</span></div>`
-    : `<div class="msg reject" style="padding:8px 12px"><span>Status pengiriman: <b>TIDAK diupdate</b> sampai foto ulang diterima</span></div>`;
+    ? `<div class="msg ok" style="padding:8px 12px"><span>Status pengiriman: <b>diupdate</b> oleh aplikasi pengiriman.<br><span class="small">${esc(saved)}</span></span></div>`
+    : `<div class="msg reject" style="padding:8px 12px"><span>Status pengiriman: <b>TIDAK diupdate</b> sampai foto ulang diterima.<br><span class="small">${esc(saved)}</span></span></div>`;
   return `<div class="phone"><div class="bar"><span>Aplikasi Kurir</span><span class="small">${esc(run.awb || "uji cepat")}</span></div>
     <div class="screen"><img src="${run.origUrl}" alt="foto">${msg}${status}
     <p class="note">Waktu tunggu kurir: <b>${ms(run.waitMs)}</b> · mode ${esc(modeLabel)}</p></div></div>`;
@@ -287,6 +290,7 @@ function render(run) {
       <div class="fact"><div class="l">Proses engine</div><div class="v">${ms(run.serverMs)}</div></div>
       <div class="fact"><div class="l">Ukuran</div><div class="v">${kb(img.bytes || run.file.size)} → ${kb(c.output_bytes)}</div></div>
       ${evid == null ? "" : `<div class="fact"><div class="l">Masuk evidence</div><div class="v">${evid ? "Ya" : "Tidak"}</div></div>`}
+      ${run.mode === "sim" ? `<div class="fact"><div class="l">Link SILO (stored)</div><div class="v small" style="word-break:break-all">${r.stored ? esc(r.stored.bucket + "/" + r.stored.key) : "tidak ada (ditolak)"}</div></div>` : ""}
     </div>
     ${r.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">Kualitas tidak memenuhi syarat. Engine tidak memanipulasi gambar, jadi foto harus diambil ulang.</div></div>` : ""}
     ${en.applied ? `<div class="reason info"><b>Diperbaiki otomatis (tanpa AI)</b><div class="small">${esc((en.operations || []).join(", "))}. Sebelum: ${esc(en.before && en.before.verdict)} → sesudah: ${esc(r.verdict)}. Terverifikasi: hanya kurva pencahayaan global, tidak ada teks/angka yang berubah.</div></div>`

@@ -105,6 +105,7 @@ def process_photo(photo_id: str, storage: Storage | None = None) -> str:
         if p is None:
             return "error"
         tenant_code, bucket, key, fields = p.tenant_code, p.bucket, p.object_key, dict(p.meta or {})
+        ingest_source = p.ingest_source
         received_at = as_aware(p.received_at)
     tenant = registry.get(tenant_code)
     cfg = tenant.config
@@ -142,6 +143,13 @@ def process_photo(photo_id: str, storage: Storage | None = None) -> str:
             ext = "webp" if comp.content_type == "image/webp" else "jpg"
             processed_key = pkey.rsplit(".", 1)[0] + f".{ext}"
             storage.put(st.engine_bucket_processed, processed_key, comp.data, comp.content_type,
+                        {"photo-id": photo_id, "source-key": key, "sha256-original": result.image.sha256})
+        if processed_key is None and ingest_source == "upload" and result.verdict.action != "reject":
+            # "scan dulu": foto upload yang diterima selalu punya salinan di bucket hasil, supaya link `stored`
+            # tidak pernah menunjuk ke bucket upload (arsip asli + karantina foto yang ditolak)
+            ext = key.rsplit(".", 1)[-1] if "." in key else "jpg"
+            processed_key = pkey.rsplit(".", 1)[0] + f".{ext}"
+            storage.put(st.engine_bucket_processed, processed_key, obj.data, obj.content_type or "image/jpeg",
                         {"photo-id": photo_id, "source-key": key, "sha256-original": result.image.sha256})
         if result.thumbnail:
             thumb_key = tkey

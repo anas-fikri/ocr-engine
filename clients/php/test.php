@@ -43,8 +43,10 @@ $photo = function (array $extra): array {
 };
 $dReject = PhotoQualityClient::toDecision($photo(['allow_status_update' => false, 'courier_message' => 'Wajib foto ulang. Foto buram.', 'retake_required' => true]));
 check('REJECT enforce -> status ditahan + pesan', $dReject['allow_status_update'] === false && $dReject['decided'] && $dReject['message'] === 'Wajib foto ulang. Foto buram.' && $dReject['retake_required']);
-$dPass = PhotoQualityClient::toDecision($photo(['verdict' => 'PASS', 'action' => 'log', 'allow_status_update' => true, 'courier_message' => null]));
-check('PASS -> status boleh, tanpa pesan', $dPass['allow_status_update'] === true && $dPass['message'] === null);
+$dPass = PhotoQualityClient::toDecision($photo(['verdict' => 'PASS', 'action' => 'log', 'allow_status_update' => true, 'courier_message' => null, 'stored' => ['bucket' => 'b', 'key' => 'k.jpg', 'url' => 'https://s3/b/k.jpg']]));
+check('PASS -> status boleh, tanpa pesan, ada link', $dPass['allow_status_update'] === true && $dPass['message'] === null && $dPass['stored']['url'] === 'https://s3/b/k.jpg');
+check('REJECT -> tanpa link', $dReject['stored'] === null);
+check('engine mati -> tanpa link (simpan sendiri)', $dDown['stored'] === null);
 $dPending = PhotoQualityClient::toDecision(['ok' => true, 'status' => 202, 'data' => ['id' => 'p2', 'status' => 'pending']]);
 check('lewat 3 detik (pending) -> fail-open', $dPending['allow_status_update'] === true && $dPending['decided'] === false && $dPending['photo_id'] === 'p2');
 

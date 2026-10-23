@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 from engine.db import Photo, as_aware
 from engine.i18n import courier_message, localize_reasons, retake_text, verdict_text
@@ -63,6 +64,25 @@ def allow_status_update(p: Photo) -> bool:
     return p.action != "reject"
 
 
+def stored_location(p: Photo, storage: Storage | None = None) -> dict[str, str] | None:
+    """Lokasi permanen foto pengiriman di SILO (untuk disimpan aplikasi di database-nya).
+
+    Hanya untuk foto yang diterima (`allow_status_update`): versi optimasi jika ada, selain itu foto asli
+    (foto kecil yang tidak perlu dikompres, atau analisis belum selesai). Foto yang ditolak tidak diberi link.
+    """
+    if not allow_status_update(p):
+        return None
+    bucket, key = (p.processed_bucket, p.processed_key) if p.processed_key else (p.bucket, p.object_key)
+    if not bucket or not key:
+        return None
+    if storage is None:
+        from engine.storage import get_storage
+
+        storage = get_storage()
+    base = (storage.s.aws_public_endpoint or storage.s.aws_endpoint).rstrip("/")
+    return {"bucket": bucket, "key": key, "url": f"{base}/{bucket}/{quote(key)}"}
+
+
 def photo_to_dict(
     p: Photo,
     lang: str,
@@ -107,6 +127,7 @@ def photo_to_dict(
             "note": p.review_note,
         },
         "evidence_eligible": evidence_eligible(p),
+        "stored": stored_location(p, storage),
         "object": {"bucket": p.bucket, "key": p.object_key},
         "sha256": p.sha256,
         "error": {"code": p.error_code, "message": p.error_message} if p.error_code else None,

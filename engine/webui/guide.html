@@ -66,13 +66,13 @@
   <div class="guide">
     <aside class="toc card">
       <b>Panduan Integrasi</b>
-      <a href="#cepat"><b>Cara tercepat (1 panggilan)</b></a>
+      <a href="#cepat"><b>Cara tercepat: scan dulu, baru simpan</b></a>
       <a href="#coba">Uji coba tanpa aplikasi</a>
       <a href="#alur">Diagram alur</a>
       <a class="sub" href="#kapan">Kapan foto dikirim &amp; divalidasi</a>
       <a class="sub" href="#alur-onboarding">Alur integrasi sampai go-live</a>
       <a class="sub" href="#alur-pakai">Alur penggunaan (runtime)</a>
-      <a class="sub" href="#alur-kurir">Keputusan di aplikasi pengiriman</a>
+      <a class="sub" href="#alur-kurir">Keputusan: scan dulu, baru simpan</a>
       <a class="sub" href="#alur-engine">Proses di dalam engine</a>
       <a href="#aturan">1. Aturan emas</a>
       <a href="#pilih">2. Pilih cara integrasi</a>
@@ -101,71 +101,62 @@
       </section>
 
       <section id="cepat">
-        <h2>Cara tercepat: 1 panggilan, 2 field</h2>
-        <p>Setelah aplikasi pengiriman menyimpan foto ke SILO (seperti sekarang), panggil engine <b>sekali</b> dengan key objeknya
-          dan tunggu maks. 3 detik. Tidak ada upload ulang, tidak perlu polling, tidak perlu webhook. <b>Validasi gambar terjadi di dalam
-          panggilan ini</b>, sebelum aplikasi mengupdate status (urutan lengkap: <a href="#kapan">kapan foto dikirim &amp; divalidasi</a>).
-          Lalu baca 2 field:</p>
+        <h2>Cara tercepat: scan dulu, baru simpan (1 panggilan)</h2>
+        <p>Aplikasi pengiriman mengirim foto dari kurir <b>langsung ke engine</b> (bukan ke SILO dulu). Engine memeriksa foto,
+          lalu <b>hanya foto yang diterima</b> dioptimasi, dikompres, dan disimpan ke SILO. Foto yang ditolak tidak disimpan sebagai foto
+          pengiriman; pesannya langsung dikirim balik untuk kurir. Satu request, tunggu maks. 3 detik
+          (urutan lengkap: <a href="#kapan">kapan foto dikirim &amp; divalidasi</a>).</p>
         <table>
-          <tr><th>Field</th><th>Yang dilakukan aplikasi pengiriman</th></tr>
-          <tr><td><code>courier_message</code></td><td>Jika tidak <code>null</code>: tampilkan ke kurir apa adanya (sudah dalam bahasa ID/EN).</td></tr>
-          <tr><td><code>allow_status_update: true</code></td><td>Lanjut update status pengiriman seperti biasa.</td></tr>
-          <tr><td><code>allow_status_update: false</code></td><td><b>Jangan update status pengiriman.</b> Foto ditolak: kurir wajib foto ulang, lalu kirim lagi.</td></tr>
-          <tr><td>Engine error / timeout / <code>202</code></td><td>Anggap <code>allow_status_update: true</code> (fail-open), kurir tidak boleh tertahan karena engine.</td></tr>
+          <tr><th>Hasil</th><th>Yang dilakukan aplikasi pengiriman</th></tr>
+          <tr><td><code>allow_status_update: true</code></td><td>Foto diterima dan <b>sudah disimpan engine di SILO</b>: simpan <code>stored.url</code> di database Anda,
+            update status pengiriman, tampilkan <code>courier_message</code> jika ada.</td></tr>
+          <tr><td><code>allow_status_update: false</code></td><td>Foto ditolak, tidak disimpan sebagai foto pengiriman (<code>stored: null</code>). Kirim balik
+            <code>courier_message</code> ke kurir, <b>jangan update status</b>, kurir foto ulang.</td></tr>
+          <tr><td>Engine error / timeout</td><td>Simpan foto ke SILO sendiri seperti sekarang (kode lama tetap dipakai sebagai cadangan), lalu update status (fail-open).
+            Engine tetap memeriksa foto itu belakangan untuk laporan &amp; evidence.</td></tr>
         </table>
-        <div class="tabs" data-tabs="fast"><button data-t="php">PHP / Laravel</button><button data-t="ts">TypeScript / Node</button><button data-t="curl">curl</button><button data-t="py">Python</button><button data-t="kt">Kotlin (backend)</button></div>
-        <div class="tabpane" data-pane="fast:php"><pre data-code>// Salin clients/php/PhotoQualityClient.php (tanpa dependency). checkObject tidak pernah throw.
+        <div class="tabs" data-tabs="fast"><button data-t="php">PHP / Laravel</button><button data-t="ts">TypeScript / Node</button><button data-t="curl">curl</button><button data-t="py">Python</button></div>
+        <div class="tabpane" data-pane="fast:php"><pre data-code>// Salin clients/php/PhotoQualityClient.php (tanpa dependency). checkFile tidak pernah throw.
 $pqe = new PhotoQualityClient('{{BASE}}', env('PQE_API_KEY'), 5000, 'id');
-$d = $pqe->checkObject($objectKey, ['awb' => $awb, 'photo_type' => 'pod_recipient', 'courier_id' => $courierId]);
+$path = $request->file('photo')->getRealPath();
+$d = $pqe->checkFile($path, ['awb' => $awb, 'photo_type' => 'pod_recipient', 'courier_id' => $courierId, 'source' => 'camera']);
 
-$response = [];
-if ($d['message']) {
-    $response['pesan_foto'] = $d['message'];          // tampilkan ke kurir
+if (!$d['allow_status_update']) {                       // DITOLAK: tidak disimpan, kirim balik ke kurir
+    return response()->json(['foto_ulang' => true, 'pesan' => $d['message']], 422);
 }
-if (!$d['allow_status_update']) {
-    return response()->json($response + ['foto_ulang' => true], 422);   // status TIDAK diupdate
-}
-$shipment->updateStatus('DELIVERED');                  // engine mati/lambat -> tetap sampai sini</pre></div>
-        <div class="tabpane" data-pane="fast:ts"><pre data-code>// Salin clients/typescript/pqe-client.ts (tanpa dependency). checkObject tidak pernah throw.
+$link = $d['stored']['url'] ?? Storage::disk('s3')->putFile('pod', $request->file('photo'));  // null = engine tidak menjawab
+$shipment->update(['photo_url' => $link, 'status' => 'DELIVERED']);
+return response()->json(['ok' => true, 'pesan' => $d['message']]);   // pesan bisa null</pre></div>
+        <div class="tabpane" data-pane="fast:ts"><pre data-code>// Salin clients/typescript/pqe-client.ts (tanpa dependency). checkFile tidak pernah throw.
 import { PhotoQualityClient } from "./pqe-client.ts";
 const pqe = new PhotoQualityClient({ baseUrl: "{{BASE}}", apiKey: process.env.PQE_API_KEY!, lang: "id" });
 
-const d = await pqe.checkObject(objectKey, { awb, photo_type: "pod_recipient", courier_id: courierId });
-if (d.message) res.locals.pesanFoto = d.message;                 // tampilkan ke kurir
-if (!d.allowStatusUpdate) return res.status(422).json({ fotoUlang: true, pesan: d.message }); // status TIDAK diupdate
-await shipment.updateStatus("DELIVERED");                        // engine mati/lambat -> tetap sampai sini</pre></div>
-        <div class="tabpane" data-pane="fast:curl"><pre data-code>curl -s -m 5 -X POST "{{BASE}}/v1/analyze?sync=true&amp;timeout_ms=3000" \
-  -H "X-API-Key: $PQE_API_KEY" -H "Content-Type: application/json" -H "Accept-Language: id" \
-  -d '{"object_key":"pod/2026/10/22/AWB123.jpg","awb":"AWB123","photo_type":"pod_recipient"}'
-# -> {"allow_status_update": false, "courier_message": "Wajib foto ulang. Foto buram. Pegang HP ...", ...}</pre></div>
+const d = await pqe.checkFile(photoBlob, "foto.jpg", { awb, photo_type: "pod_recipient", courier_id: courierId, source: "camera" });
+if (!d.allowStatusUpdate) return res.status(422).json({ fotoUlang: true, pesan: d.message }); // ditolak, tidak disimpan
+const link = d.stored?.url ?? (await uploadKeSiloSendiri(photoBlob));  // null = engine tidak menjawab (fail-open)
+await shipment.update({ photoUrl: link, status: "DELIVERED" });
+res.json({ ok: true, pesan: d.message });</pre></div>
+        <div class="tabpane" data-pane="fast:curl"><pre data-code>curl -s -m 8 -X POST "{{BASE}}/v1/analyze?sync=true&amp;timeout_ms=3000" \
+  -H "X-API-Key: $PQE_API_KEY" -H "Accept-Language: id" \
+  -F "file=@foto.jpg" -F "awb=AWB123" -F "photo_type=pod_recipient" -F "source=camera"
+# diterima -> {"allow_status_update": true,  "stored": {"url": "https://s3.pcpexpress.com/photos-processed/...jpg"}, ...}
+# ditolak  -> {"allow_status_update": false, "stored": null, "courier_message": "Wajib foto ulang. Foto buram. ...", ...}</pre></div>
         <div class="tabpane" data-pane="fast:py"><pre data-code>import requests
 
-def check(object_key, awb):
-    """Return (allow_status_update, courier_message). Engine bermasalah -> (True, None)."""
+def check(path, awb):
+    """Return (allow, courier_message, stored_url). Engine bermasalah -> (True, None, None): simpan sendiri."""
     try:
-        r = requests.post("{{BASE}}/v1/analyze", params={"sync": "true", "timeout_ms": 3000},
-                          headers={"X-API-Key": PQE_API_KEY, "Accept-Language": "id"},
-                          json={"object_key": object_key, "awb": awb, "photo_type": "pod_recipient"}, timeout=(2, 5))
+        with open(path, "rb") as f:
+            r = requests.post("{{BASE}}/v1/analyze", params={"sync": "true", "timeout_ms": 3000},
+                              headers={"X-API-Key": PQE_API_KEY, "Accept-Language": "id"},
+                              files={"file": f}, data={"awb": awb, "photo_type": "pod_recipient"}, timeout=(2, 8))
         p = r.json() if r.status_code == 200 else {}
-        return p.get("allow_status_update", True), p.get("courier_message")
+        return p.get("allow_status_update", True), p.get("courier_message"), (p.get("stored") or {}).get("url")
     except requests.RequestException:
-        return True, None  # fail-open</pre></div>
-        <div class="tabpane" data-pane="fast:kt"><pre data-code>// Kotlin di SERVER (Ktor/Spring). Aplikasi Android memanggil backend Anda, bukan engine langsung.
-fun check(objectKey: String, awb: String): Pair&lt;Boolean, String?&gt; = runCatching {
-    val body = """{"object_key":"$objectKey","awb":"$awb","photo_type":"pod_recipient"}"""
-    val req = Request.Builder().url("{{BASE}}/v1/analyze?sync=true&amp;timeout_ms=3000")
-        .header("X-API-Key", System.getenv("PQE_API_KEY")).header("Accept-Language", "id")
-        .post(body.toRequestBody("application/json".toMediaType())).build()
-    client.newCall(req).execute().use { res ->
-        if (res.code != 200) return@use true to null
-        val p = JSONObject(res.body!!.string())
-        p.optBoolean("allow_status_update", true) to p.optString("courier_message").takeIf { it.isNotEmpty() &amp;&amp; it != "null" }
-    }
-}.getOrDefault(true to null) // fail-open</pre></div>
-        <p class="muted small">Belum menyimpan ke SILO? Kirim file langsung: <code>checkFile(...)</code> di client, atau
-          <code>-F "file=@foto.jpg"</code> pada curl (engine yang menyimpan ke SILO). Kurir hanya ditahan jika foto
-          <code>REJECT</code> dan mode tenant <code>enforce</code> (atau ops menandai "minta foto ulang"); di mode
-          <code>shadow</code>/<code>warn</code> foto tidak pernah menahan status.</p>
+        return True, None, None  # fail-open</pre></div>
+        <p class="muted small">Foto sudah terlanjur disimpan ke SILO oleh aplikasi? Pakai <code>checkObject(objectKey, ...)</code> (kirim key, bukan file);
+          keputusannya sama, tetapi foto yang ditolak sudah terlanjur ada di bucket aplikasi. Kurir hanya ditahan jika foto <code>REJECT</code>
+          dan mode tenant <code>enforce</code> (atau ops menandai "minta foto ulang"); di mode <code>shadow</code>/<code>warn</code> foto tidak pernah menahan status.</p>
       </section>
 
       <section id="coba">
@@ -192,17 +183,21 @@ fun check(objectKey: String, awb: String): Pair&lt;Boolean, String?&gt; = runCat
         <table class="when">
           <tr><th>Urutan</th><th>Siapa</th><th>Apa yang terjadi</th></tr>
           <tr><td>1</td><td>Kurir</td><td>Ambil foto POD, tekan <b>Kirim</b> di aplikasi.</td></tr>
-          <tr><td>2</td><td>Aplikasi pengiriman (backend)</td><td>Terima foto asli, simpan ke SILO seperti sekarang. Status pengiriman <b>belum</b> diupdate.</td></tr>
-          <tr><td>3 · kirim</td><td>Aplikasi pengiriman → engine</td><td><b>Foto dikirim ke engine</b> saat itu juga: <code>POST /v1/analyze?sync=true</code> dengan key objek SILO
-            (atau file-nya langsung). Satu request, tunggu maks. 3 detik.</td></tr>
-          <tr><td>4 · validasi</td><td>Engine</td><td><b>Validasi gambar</b> di dalam request itu (biasanya 0,2–2 detik): ambil foto dari SILO, cek ketajaman, pecah,
-            resolusi, cahaya, EXIF, duplikat, OCR → verdict. Lalu optimasi + kompres &lt; 1 MB dan simpan.</td></tr>
-          <tr><td>5</td><td>Engine → aplikasi pengiriman</td><td>Jawaban: <code>allow_status_update</code> + <code>courier_message</code>.</td></tr>
-          <tr><td>6</td><td>Aplikasi pengiriman</td><td><code>true</code> → update status (tampilkan pesan jika ada). <code>false</code> → status <b>tidak</b> diupdate, kurir foto ulang (kembali ke 1).
-            Engine tidak menjawab dalam 3 detik → update status (fail-open).</td></tr>
+          <tr><td>2 · kirim</td><td>Aplikasi pengiriman → engine</td><td><b>Foto langsung dikirim ke engine</b> (belum ke SILO, status belum diupdate):
+            <code>POST /v1/analyze?sync=true</code> dengan file foto. Satu request, tunggu maks. 3 detik.</td></tr>
+          <tr><td>3 · scan</td><td>Engine</td><td><b>Validasi gambar</b> (biasanya 0,2–2 detik): ketajaman, pecah, resolusi, cahaya, EXIF, duplikat, OCR → verdict.</td></tr>
+          <tr><td>4a · diterima</td><td>Engine → SILO</td><td>Optimasi + kompres &lt; 1 MB (tanpa manipulasi), lalu <b>disimpan ke SILO</b> (versi optimasi + asli untuk verifikasi keaslian).
+            Engine menjawab <code>allow_status_update: true</code> + link <code>stored.url</code>.</td></tr>
+          <tr><td>4b · ditolak</td><td>Engine → aplikasi → kurir</td><td>Tidak disimpan sebagai foto pengiriman, tanpa link. Engine menjawab <code>allow_status_update: false</code> +
+            <code>courier_message</code>, aplikasi mengirim balik pesan itu ke kurir untuk foto ulang (kembali ke 1).</td></tr>
+          <tr><td>5</td><td>Aplikasi pengiriman</td><td>Diterima → simpan <code>stored.url</code> + update status. Ditolak → status <b>tidak</b> diupdate.
+            Engine tidak menjawab dalam 3 detik → simpan foto ke SILO sendiri (kode lama) + update status (fail-open).</td></tr>
         </table>
-        <p class="muted small">Level 0/1 (aplikasi tidak memanggil engine): engine mengambil foto sendiri dari SILO lewat bucket notification
-          beberapa detik setelah upload dan memvalidasinya di belakang layar. Hasilnya untuk laporan dan evidence, tetapi tidak bisa menahan status.</p>
+        <p class="muted small">Foto asli dari kurir disimpan di bucket internal engine (<code>photos-upload</code>) sebagai arsip untuk verifikasi keaslian
+          (hash, EXIF), agar foto tidak hilang jika engine mati di tengah proses, dan agar ops bisa meninjau foto yang ditolak. Bucket itu tidak pernah
+          diberikan sebagai link foto pengiriman; link <code>stored</code> selalu menunjuk ke versi hasil di <code>photos-processed</code>.
+          Level 0/1 (aplikasi tidak memanggil engine): aplikasi menyimpan ke SILO sendiri, engine memeriksa belakangan lewat bucket notification;
+          hasilnya untuk laporan dan evidence, tetapi tidak bisa menahan status.</p>
         <p class="muted small mobile-only">Di HP: geser diagram ke samping, atau putar HP ke posisi lanskap.</p>
         <h3 id="alur-onboarding">A. Alur integrasi sampai go-live</h3>
         <div class="diagram" id="dg-onboarding"></div>
@@ -211,14 +206,13 @@ fun check(objectKey: String, awb: String): Pair&lt;Boolean, String?&gt; = runCat
 
         <h3 id="alur-pakai">B. Alur penggunaan saat aplikasi berjalan (level 2)</h3>
         <div class="diagram" id="dg-pakai"></div>
-        <p class="caption">Garis putus-putus = balasan/asinkron. Status pengiriman ada di aplikasi pengiriman (langkah 9); engine hanya
-          memberi keputusan. Foto ditolak → status ditahan; engine mati/lambat → status tetap diupdate (fail-open).
-          Level 0/1 cukup langkah 2 (engine mengambil foto lewat bucket notification/polling), tanpa langkah 3, 7, 8, dan tanpa penahanan status.</p>
+        <p class="caption">Garis putus-putus = balasan. Foto masuk engine dulu, baru disimpan ke SILO jika diterima. Status pengiriman ada di
+          aplikasi pengiriman; engine hanya memberi keputusan dan link. Engine mati/lambat → aplikasi menyimpan sendiri dan status tetap diupdate (fail-open).</p>
 
-        <h3 id="alur-kurir">C. Keputusan di aplikasi pengiriman</h3>
+        <h3 id="alur-kurir">C. Keputusan: scan dulu, baru simpan</h3>
         <div class="diagram" id="dg-kurir"></div>
-        <p class="caption">Cukup baca <code>allow_status_update</code> dan <code>courier_message</code>. Nilainya mengikuti mode yang diatur admin
-          (<code>false</code> hanya di mode <code>enforce</code>), jadi kode aplikasi tidak berubah saat mode dinaikkan.</p>
+        <p class="caption">Cukup baca <code>allow_status_update</code>, <code>courier_message</code>, dan <code>stored.url</code>. Nilainya mengikuti mode yang
+          diatur admin (<code>false</code> hanya di mode <code>enforce</code>), jadi kode aplikasi tidak berubah saat mode dinaikkan.</p>
 
         <h3 id="alur-engine">D. Proses di dalam engine</h3>
         <div class="diagram" id="dg-engine"></div>
@@ -359,6 +353,7 @@ val result = runCatching { client.newCall(req).execute().use { it.body?.string()
   "action": "reject",             // log | notify | reject (sesuai mode yang diatur admin)
   "reasons": [{ "code": "BLURRY", "severity": "reject", "message": "Foto buram",
                 "suggestion": "Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang." }],
+  "stored": null,                 // diterima: {"bucket","key","url"} lokasi permanen di SILO; ditolak: null
   "evidence_eligible": false,     // apakah foto masuk bukti penagihan pelanggan
   "urls": { "processed": "https://...", "thumbnail": "https://...", "expires_in": 900 }
 }</pre>
@@ -366,6 +361,8 @@ val result = runCatching { client.newCall(req).execute().use { it.body?.string()
           <tr><th>Field</th><th>Arti</th></tr>
           <tr><td><code>allow_status_update</code></td><td><b>Paling penting.</b> <code>false</code> hanya jika foto ditolak (<code>REJECT</code> di mode <code>enforce</code>, atau ops meminta foto ulang): aplikasi pengiriman <b>tidak boleh</b> update status. Selain itu <code>true</code>.</td></tr>
           <tr><td><code>courier_message</code></td><td>Kalimat siap tampil untuk kurir, atau <code>null</code> jika kurir tidak perlu melihat apa pun (PASS / mode shadow).</td></tr>
+          <tr><td><code>stored</code></td><td>Lokasi permanen foto pengiriman di SILO (<code>bucket</code>, <code>key</code>, <code>url</code>): versi optimasi, atau foto asli jika tidak perlu dikompres.
+            Simpan <code>url</code>-nya di database aplikasi. <code>null</code> jika foto ditolak. <code>urls.*</code> (presigned) hanya untuk ditampilkan sementara.</td></tr>
           <tr><td><code>retake_required</code></td><td><code>true</code> = kualitas tidak memenuhi syarat (buram berat, pecah, terlalu kecil, terlalu gelap). Di mode <code>warn</code> kurir hanya diberi tahu; di mode <code>enforce</code> status ditahan.</td></tr>
           <tr><td><code>verdict</code></td><td><code>PASS</code> layak, <code>WARN</code> kurang ideal tapi masih terbaca (tetap disimpan &amp; masuk evidence), <code>REJECT</code> tidak layak.</td></tr>
           <tr><td><code>reasons[].code</code></td><td>Kode stabil untuk logika aplikasi. <code>message</code>/<code>suggestion</code> sudah diterjemahkan (header <code>Accept-Language: id|en</code>).</td></tr>
@@ -522,52 +519,49 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
     });
     D.seq(document.getElementById("dg-pakai"), {
       title: "Alur penggunaan saat runtime", colW: 190,
-      actors: ["Kurir\n(aplikasi HP)", "Aplikasi pengiriman\n(backend)", "SILO\ns3.pcpexpress.com", "Photo Quality\nEngine", "Penagihan /\npelanggan"],
+      actors: ["Kurir\n(aplikasi HP)", "Aplikasi pengiriman\n(backend)", "Photo Quality\nEngine", "SILO\ns3.pcpexpress.com", "Penagihan /\npelanggan"],
       steps: [
         { f: 0, t: 1, text: "1. Kurir tekan Kirim: foto asli + resi" },
-        { f: 1, t: 2, text: "2. Simpan foto ke SILO (seperti sekarang)" },
-        { note: "① FOTO DIKIRIM KE ENGINE: langsung setelah tersimpan, sebelum update status", span: [1, 3], tone: "info" },
-        { f: 1, t: 3, text: "3. POST /v1/analyze?sync=true (key SILO, tunggu ≤ 3 dtk)" },
-        { f: 3, t: 2, text: "4. Engine ambil foto asli" },
-        { note: "② VALIDASI GAMBAR: ketajaman · pecah · resolusi · cahaya · EXIF · duplikat · OCR", span: [2, 4], tone: "engine" },
-        { self: 3, text: "5. Optimasi + kompres < 1 MB" },
-        { f: 3, t: 2, text: "6. Simpan versi kompres + thumbnail" },
-        { f: 3, t: 1, dash: true, text: "7. Jawab: allow_status_update · courier_message" },
-        { note: "Engine tidak menjawab ≤ 3 dtk / error → anggap allow_status_update = true (fail-open)", span: [1, 3] },
-        { f: 1, t: 0, dash: true, text: "8. Tampilkan courier_message (jika ada)" },
-        { self: 1, text: "9. true → update status pengiriman · false → tahan, kurir foto ulang (ke langkah 1)" },
-        { f: 3, t: 1, dash: true, text: "10. Webhook analysis.completed (HMAC, opsional)" },
-        { f: 4, t: 3, text: "11. GET /v1/evidence/{awb}/pdf" },
-        { f: 3, t: 4, dash: true, text: "12. Bukti foto PASS + WARN" },
+        { note: "① FOTO LANGSUNG DIKIRIM KE ENGINE (belum ke SILO, status belum diupdate)", span: [1, 2], tone: "info" },
+        { f: 1, t: 2, text: "2. POST /v1/analyze?sync=true (file, tunggu ≤ 3 dtk)" },
+        { note: "② SCAN / VALIDASI: ketajaman · pecah · resolusi · cahaya · EXIF · duplikat · OCR", span: [1, 3], tone: "engine" },
+        { note: "Jika DITERIMA", span: [2, 3], tone: "info" },
+        { self: 2, text: "3. Optimasi + kompres < 1 MB" },
+        { f: 2, t: 3, text: "4. Simpan ke SILO (versi optimasi + asli)" },
+        { f: 2, t: 1, dash: true, text: "5. allow_status_update: true + stored.url" },
+        { self: 1, text: "6. Simpan stored.url + update status pengiriman" },
+        { note: "Jika DITOLAK (REJECT, mode enforce): tidak disimpan sebagai foto pengiriman", span: [1, 3] },
+        { f: 2, t: 1, dash: true, text: "5'. allow_status_update: false + courier_message" },
+        { f: 1, t: 0, dash: true, text: "6'. Kirim balik pesan → kurir foto ulang (ke langkah 1)" },
+        { note: "Engine tidak menjawab ≤ 3 dtk: aplikasi simpan ke SILO sendiri + update status (fail-open)", span: [1, 3] },
+        { f: 4, t: 2, text: "7. GET /v1/evidence/{awb}/pdf" },
+        { f: 2, t: 4, dash: true, text: "8. Bukti foto PASS + WARN" },
       ],
     });
     D.flow(document.getElementById("dg-kurir"), {
-      title: "Keputusan di aplikasi pengiriman", cols: 4,
+      title: "Keputusan: scan dulu, baru simpan", cols: 4,
       nodes: {
         k0: { c: 1.5, r: 0, k: "start", w: 220, t: "1. Kurir ambil foto,\ntekan Kirim" },
-        k1: { c: 1.5, r: 1, w: 320, t: "2. Aplikasi pengiriman terima foto,\nsimpan ke SILO (status belum diupdate)" },
-        k2: { c: 1.5, r: 2, w: 320, tone: "info", t: "3. FOTO DIKIRIM KE ENGINE\nPOST /v1/analyze?sync=true (key SILO)" },
-        k3: { c: 1.5, r: 3, w: 380, h: 66, tone: "engine", t: "4. ENGINE VALIDASI GAMBAR (≤ 3 dtk)\nketajaman · pecah · resolusi · cahaya · EXIF · duplikat · OCR\nlalu optimasi + kompres < 1 MB" },
-        k4: { c: 1.5, r: 4, k: "dec", w: 240, t: "5. Engine menjawab\ndalam 3 detik?" },
-        k4n: { c: 3, r: 4, tone: "info", h: 60, t: "Tanpa pesan,\nstatus diupdate\n(fail-open)" },
-        k5: { c: 1.5, r: 5, k: "dec", w: 260, t: "6. allow_status_update?" },
-        k6a: { c: 0.5, r: 6, tone: "pass", h: 60, w: 210, t: "true: tampilkan\ncourier_message jika ada\n(PASS / WARN / shadow)" },
-        k6b: { c: 2.5, r: 6, tone: "reject", h: 60, w: 210, t: "false: tampilkan\ncourier_message,\nwajib foto ulang" },
-        k7: { c: 0.5, r: 7, k: "end", w: 230, t: "7. Aplikasi pengiriman\nupdate status" },
-        k7n: { c: 2.5, r: 7, tone: "reject", w: 230, t: "Status TIDAK diupdate\n(tunggu foto ulang)" },
+        k1: { c: 1.5, r: 1, w: 330, tone: "info", t: "2. FOTO LANGSUNG DIKIRIM KE ENGINE\nPOST /v1/analyze?sync=true (file)" },
+        k1n: { c: 3.1, r: 1, tone: "info", h: 66, w: 200, t: "Engine tidak menjawab:\naplikasi simpan ke SILO\nsendiri + update status" },
+        k2: { c: 1.5, r: 2, w: 380, h: 60, tone: "engine", t: "3. ENGINE SCAN / VALIDASI (≤ 3 dtk)\nketajaman · pecah · resolusi · cahaya · EXIF · duplikat · OCR" },
+        k3: { c: 1.5, r: 3, k: "dec", w: 250, t: "4. Diterima?" },
+        k4a: { c: 0.5, r: 4, tone: "pass", h: 66, w: 220, t: "Ya: optimasi + kompres,\nSIMPAN KE SILO,\njawab stored.url" },
+        k4b: { c: 2.5, r: 4, tone: "reject", h: 66, w: 220, t: "Tidak (REJECT): TIDAK\ndisimpan, jawab\ncourier_message" },
+        k5a: { c: 0.5, r: 5, k: "end", w: 240, t: "5. Aplikasi simpan link\n+ update status" },
+        k5b: { c: 2.5, r: 5, tone: "reject", w: 240, t: "Kirim balik ke kurir,\nstatus TIDAK diupdate" },
       },
       edges: [
-        { f: "k0", t: "k1" }, { f: "k1", t: "k2", label: "langsung" }, { f: "k2", t: "k3" }, { f: "k3", t: "k4" },
-        { f: "k4", t: "k4n", label: "tidak / error" }, { f: "k4", t: "k5", label: "ya" },
-        { f: "k5", t: "k6a", label: "true" }, { f: "k5", t: "k6b", label: "false" },
-        { f: "k6a", t: "k7" }, { f: "k6b", t: "k7n" },
-        { f: "k7n", t: "k0", route: "right", dash: true, label: "Foto ulang" },
+        { f: "k0", t: "k1" }, { f: "k1", t: "k1n", label: "error / > 3 dtk" }, { f: "k1", t: "k2" }, { f: "k2", t: "k3" },
+        { f: "k3", t: "k4a", label: "ya" }, { f: "k3", t: "k4b", label: "tidak" },
+        { f: "k4a", t: "k5a" }, { f: "k4b", t: "k5b" },
+        { f: "k5b", t: "k0", route: "right", dash: true, label: "Foto ulang" },
       ],
     });
     D.flow(document.getElementById("dg-engine"), {
       title: "Proses di dalam engine", cols: 4, rowH: 84,
       nodes: {
-        i1: { c: 0, r: 0, tone: "info", t: "API upload file\n(multipart)" },
+        i1: { c: 0, r: 0, tone: "info", t: "API upload file\n(cara utama)" },
         i2: { c: 1, r: 0, tone: "info", t: "API referensi objek\nSILO (JSON)" },
         i3: { c: 2, r: 0, tone: "info", t: "Bucket notification\nSILO (real-time)" },
         i4: { c: 3, r: 0, tone: "info", t: "Polling bucket /\nDB aplikasi (cadangan)" },
@@ -576,8 +570,8 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
         ck: { c: 1.5, r: 3, w: 330, t: "Pemeriksaan: ketajaman, resolusi/pecah,\npencahayaan, EXIF, duplikat, OCR resi" },
         vd: { c: 1.5, r: 4, w: 300, t: "Verdict PASS / WARN / REJECT\n(threshold per jenis foto)" },
         cp: { c: 1.5, r: 5, w: 330, tone: "pass", t: "Optimasi tanpa manipulasi: perkecil bila perlu +\nkompres < 1 MB (foto kecil tidak disentuh)" },
-        st: { c: 1.5, r: 6, w: 300, t: "Simpan versi kompres ke SILO + hasil\nke DB (foto asli tidak diubah)" },
-        rs: { c: 1.5, r: 7, k: "dec", w: 340, t: "Keputusan: allow_status_update ·\ncourier_message · retake_required" },
+        st: { c: 1.5, r: 6, w: 340, t: "Simpan ke SILO + hasil ke DB (foto asli tidak diubah);\nlink stored hanya untuk foto yang diterima" },
+        rs: { c: 1.5, r: 7, k: "dec", w: 340, t: "Keputusan: allow_status_update ·\ncourier_message · stored" },
         o1: { c: 0, r: 8, t: "Respons API (sync)\n/ GET /v1/photos/{id}" },
         o2: { c: 1, r: 8, t: "Webhook HMAC\nke backend (retry)" },
         o3: { c: 2, r: 8, t: "Web UI: dashboard,\nreview (opsional)" },

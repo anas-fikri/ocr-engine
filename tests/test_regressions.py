@@ -216,6 +216,8 @@ def test_trial_page_endpoints(client, admin_headers, samples):
         Image.open(io.BytesIO(f.content)).verify()
     processed = client.get(f"/v1/photos/{pid}/file", headers=admin_headers).content
     assert len(processed) < len(big)  # versi kompres, bukan original
+    stored = r.json()["stored"]  # link permanen = versi optimasi, bukan original
+    assert stored["bucket"] == "photos-processed" and stored["key"].endswith(".jpg")
     assert client.get(f"/v1/photos/{pid}/file", params={"variant": "lain"}, headers=admin_headers).status_code == 422
     assert client.get("/v1/photos/tidak-ada/file", headers=admin_headers).status_code == 404
 
@@ -267,8 +269,12 @@ def test_reject_blocks_status_update_and_enhance_is_opt_in(client, admin_headers
 
     ok = analyze("pass_sharp_large", awb="AWB901")  # pertama, sebelum ada foto mirip (cek duplikat)
     assert ok["verdict"] == "PASS" and ok["allow_status_update"] is True and ok["courier_message"] is None
+    # "scan dulu": foto diterima -> engine sudah menyimpannya di SILO dan memberi link permanen
+    assert ok["stored"]["url"].endswith(f"/{ok['stored']['bucket']}/{ok['stored']['key']}")
+    assert ok["stored"]["bucket"] == "photos-processed"  # foto kecil pun tidak diberi link ke bucket upload
     rej = analyze("reject_blur_severe", awb="AWB900")
     assert rej["action"] == "reject" and rej["allow_status_update"] is False and rej["retake_required"] is True
+    assert rej["stored"] is None  # ditolak: tidak diberi link foto pengiriman
     assert rej["courier_message"] == ("Wajib foto ulang. Foto buram. "
                                       "Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.")
     warn = analyze("warn_blur_mild", awb="AWB902")

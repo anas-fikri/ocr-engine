@@ -6,11 +6,13 @@
  * PRINSIP: engine TIDAK BOLEH menghambat proses kurir. Semua method "fail-open":
  * jika engine lambat/mati, hasil ['ok' => false, 'unavailable' => true] dan TIDAK melempar exception.
  *
- * Cara tercepat (satu panggilan, satu keputusan):
+ * Cara utama ("scan dulu", satu panggilan, satu keputusan):
  *   $pqe = new PhotoQualityClient('https://photo-quality.pcpexpress.com', getenv('PQE_API_KEY'));
- *   $d = $pqe->checkObject('pod/2026/10/22/AWB123.jpg', ['awb' => 'AWB123', 'photo_type' => 'pod_recipient']);
+ *   $d = $pqe->checkFile($pathFoto, ['awb' => 'AWB123', 'photo_type' => 'pod_recipient']);
  *   if ($d['message']) { ... kirim $d['message'] ke aplikasi kurir ... }
- *   if ($d['allow_status_update']) { ... update status pengiriman ... } // false = foto ditolak: minta foto ulang
+ *   if (!$d['allow_status_update']) { ... foto ditolak: tidak disimpan, minta foto ulang, status JANGAN diupdate ... }
+ *   $link = $d['stored']['url'] ?? simpanKeSiloSendiri($pathFoto);   // null = engine tidak menjawab (fail-open)
+ *   ... update status pengiriman + simpan $link ...
  */
 
 class PhotoQualityClient
@@ -31,7 +33,7 @@ class PhotoQualityClient
     }
 
     /**
-     * CARA TERCEPAT. Foto sudah di SILO: kirim key-nya, tunggu keputusan maks. $timeoutMs. Tidak pernah throw.
+     * Alternatif jika foto sudah terlanjur disimpan ke SILO: kirim key-nya, tunggu keputusan maks. $timeoutMs. Tidak pernah throw.
      * Return: allow_status_update (false = JANGAN update status, minta foto ulang), message (tampilkan ke kurir jika
      * tidak null), retake_required, decided (false = engine mati/lambat/error -> fail-open), photo_id, verdict.
      */
@@ -40,7 +42,11 @@ class PhotoQualityClient
         return self::toDecision($this->analyzeObject($objectKey, $fields, true, $timeoutMs, $bucket));
     }
 
-    /** Sama dengan checkObject, tetapi file dikirim langsung (engine yang menyimpan ke SILO). */
+    /**
+     * CARA UTAMA ("scan dulu"). Kirim file ke engine: engine memeriksa dulu, lalu HANYA foto yang diterima disimpan
+     * ke SILO (link di 'stored'). Ditolak -> allow_status_update false + message, tanpa link.
+     * decided false (engine mati/lambat) -> simpan foto ke SILO sendiri seperti sekarang, lalu lanjut.
+     */
     public function checkFile(string $path, array $fields = [], int $timeoutMs = 3000): array
     {
         return self::toDecision($this->analyzeFile($path, $fields, true, $timeoutMs));
@@ -50,13 +56,13 @@ class PhotoQualityClient
     public static function toDecision(array $r): array
     {
         $open = ['allow_status_update' => true, 'message' => null, 'retake_required' => false, 'decided' => false,
-                 'photo_id' => null, 'verdict' => null];
+                 'photo_id' => null, 'verdict' => null, 'stored' => null];
         if (!$r['ok']) {
             return $open + ['error' => $r['error']];
         }
         $p = $r['data'];
         if (($p['status'] ?? null) === 'pending') {
-            return array_merge($open, ['photo_id' => $p['id'] ?? null]);
+            return array_merge($open, ['photo_id' => $p['id'] ?? null, 'stored' => $p['stored'] ?? null]);
         }
         return [
             'allow_status_update' => $p['allow_status_update'] ?? (($p['action'] ?? null) !== 'reject'),
@@ -65,6 +71,7 @@ class PhotoQualityClient
             'decided' => true,
             'photo_id' => $p['id'] ?? null,
             'verdict' => $p['verdict'] ?? null,
+            'stored' => $p['stored'] ?? null, // ['bucket','key','url'] jika diterima; simpan url-nya di database Anda
         ];
     }
 
