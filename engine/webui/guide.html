@@ -49,6 +49,11 @@
     .dg .dg-node.reject rect, .dg .dg-node.reject polygon { fill: var(--reject-bg); stroke: var(--reject); }
     .dg .dg-node.info rect, .dg .dg-node.info polygon { fill: var(--info-bg); stroke: var(--info); }
     .dg .dg-node.note rect { fill: var(--warn-bg); stroke: var(--warn); stroke-dasharray: 4 3; }
+    .dg .dg-node.note.info rect { fill: var(--info-bg); stroke: var(--info); }
+    .dg .dg-node.note.engine rect { fill: #fde8eb; stroke: var(--brand); stroke-dasharray: none; }
+    .dg .dg-node.engine rect, .dg .dg-node.engine polygon { fill: #fde8eb; stroke: var(--brand); stroke-width: 2; }
+    .dg .dg-node.engine text { font-weight: 600; }
+    .when td:first-child { white-space: nowrap; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -64,6 +69,7 @@
       <a href="#cepat"><b>Cara tercepat (1 panggilan)</b></a>
       <a href="#coba">Uji coba tanpa aplikasi</a>
       <a href="#alur">Diagram alur</a>
+      <a class="sub" href="#kapan">Kapan foto dikirim &amp; divalidasi</a>
       <a class="sub" href="#alur-onboarding">Alur integrasi sampai go-live</a>
       <a class="sub" href="#alur-pakai">Alur penggunaan (runtime)</a>
       <a class="sub" href="#alur-kurir">Keputusan di aplikasi pengiriman</a>
@@ -97,7 +103,9 @@
       <section id="cepat">
         <h2>Cara tercepat: 1 panggilan, 2 field</h2>
         <p>Setelah aplikasi pengiriman menyimpan foto ke SILO (seperti sekarang), panggil engine <b>sekali</b> dengan key objeknya
-          dan tunggu maks. 3 detik. Tidak ada upload ulang, tidak perlu polling, tidak perlu webhook. Lalu baca 2 field:</p>
+          dan tunggu maks. 3 detik. Tidak ada upload ulang, tidak perlu polling, tidak perlu webhook. <b>Validasi gambar terjadi di dalam
+          panggilan ini</b>, sebelum aplikasi mengupdate status (urutan lengkap: <a href="#kapan">kapan foto dikirim &amp; divalidasi</a>).
+          Lalu baca 2 field:</p>
         <table>
           <tr><th>Field</th><th>Yang dilakukan aplikasi pengiriman</th></tr>
           <tr><td><code>courier_message</code></td><td>Jika tidak <code>null</code>: tampilkan ke kurir apa adanya (sudah dalam bahasa ID/EN).</td></tr>
@@ -180,6 +188,21 @@ fun check(objectKey: String, awb: String): Pair&lt;Boolean, String?&gt; = runCat
 
       <section id="alur">
         <h2>Diagram alur</h2>
+        <h3 id="kapan">Kapan foto dikirim ke engine, dan kapan divalidasi?</h3>
+        <table class="when">
+          <tr><th>Urutan</th><th>Siapa</th><th>Apa yang terjadi</th></tr>
+          <tr><td>1</td><td>Kurir</td><td>Ambil foto POD, tekan <b>Kirim</b> di aplikasi.</td></tr>
+          <tr><td>2</td><td>Aplikasi pengiriman (backend)</td><td>Terima foto asli, simpan ke SILO seperti sekarang. Status pengiriman <b>belum</b> diupdate.</td></tr>
+          <tr><td>3 · kirim</td><td>Aplikasi pengiriman → engine</td><td><b>Foto dikirim ke engine</b> saat itu juga: <code>POST /v1/analyze?sync=true</code> dengan key objek SILO
+            (atau file-nya langsung). Satu request, tunggu maks. 3 detik.</td></tr>
+          <tr><td>4 · validasi</td><td>Engine</td><td><b>Validasi gambar</b> di dalam request itu (biasanya 0,2–2 detik): ambil foto dari SILO, cek ketajaman, pecah,
+            resolusi, cahaya, EXIF, duplikat, OCR → verdict. Lalu optimasi + kompres &lt; 1 MB dan simpan.</td></tr>
+          <tr><td>5</td><td>Engine → aplikasi pengiriman</td><td>Jawaban: <code>allow_status_update</code> + <code>courier_message</code>.</td></tr>
+          <tr><td>6</td><td>Aplikasi pengiriman</td><td><code>true</code> → update status (tampilkan pesan jika ada). <code>false</code> → status <b>tidak</b> diupdate, kurir foto ulang (kembali ke 1).
+            Engine tidak menjawab dalam 3 detik → update status (fail-open).</td></tr>
+        </table>
+        <p class="muted small">Level 0/1 (aplikasi tidak memanggil engine): engine mengambil foto sendiri dari SILO lewat bucket notification
+          beberapa detik setelah upload dan memvalidasinya di belakang layar. Hasilnya untuk laporan dan evidence, tetapi tidak bisa menahan status.</p>
         <p class="muted small mobile-only">Di HP: geser diagram ke samping, atau putar HP ke posisi lanskap.</p>
         <h3 id="alur-onboarding">A. Alur integrasi sampai go-live</h3>
         <div class="diagram" id="dg-onboarding"></div>
@@ -501,16 +524,18 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
       title: "Alur penggunaan saat runtime", colW: 190,
       actors: ["Kurir\n(aplikasi HP)", "Aplikasi pengiriman\n(backend)", "SILO\ns3.pcpexpress.com", "Photo Quality\nEngine", "Penagihan /\npelanggan"],
       steps: [
-        { f: 0, t: 1, text: "1. Foto asli + resi (tanpa kompres di HP)" },
-        { f: 1, t: 2, text: "2. PUT objek + metadata awb, photo-type" },
-        { f: 1, t: 3, text: "3. POST /v1/analyze?sync=true (timeout 3 dtk)" },
-        { f: 3, t: 2, text: "4. Ambil foto asli" },
-        { self: 3, text: "5. Periksa kualitas · optimasi + kompres < 1 MB" },
+        { f: 0, t: 1, text: "1. Kurir tekan Kirim: foto asli + resi" },
+        { f: 1, t: 2, text: "2. Simpan foto ke SILO (seperti sekarang)" },
+        { note: "① FOTO DIKIRIM KE ENGINE: langsung setelah tersimpan, sebelum update status", span: [1, 3], tone: "info" },
+        { f: 1, t: 3, text: "3. POST /v1/analyze?sync=true (key SILO, tunggu ≤ 3 dtk)" },
+        { f: 3, t: 2, text: "4. Engine ambil foto asli" },
+        { note: "② VALIDASI GAMBAR: ketajaman · pecah · resolusi · cahaya · EXIF · duplikat · OCR", span: [2, 4], tone: "engine" },
+        { self: 3, text: "5. Optimasi + kompres < 1 MB" },
         { f: 3, t: 2, text: "6. Simpan versi kompres + thumbnail" },
-        { f: 3, t: 1, dash: true, text: "7. allow_status_update · courier_message" },
-        { note: "Engine lambat / error / 202 → anggap allow_status_update = true (fail-open)", span: [1, 3] },
+        { f: 3, t: 1, dash: true, text: "7. Jawab: allow_status_update · courier_message" },
+        { note: "Engine tidak menjawab ≤ 3 dtk / error → anggap allow_status_update = true (fail-open)", span: [1, 3] },
         { f: 1, t: 0, dash: true, text: "8. Tampilkan courier_message (jika ada)" },
-        { self: 1, text: "9. allow_status_update true → update status pengiriman; false → tahan, minta foto ulang" },
+        { self: 1, text: "9. true → update status pengiriman · false → tahan, kurir foto ulang (ke langkah 1)" },
         { f: 3, t: 1, dash: true, text: "10. Webhook analysis.completed (HMAC, opsional)" },
         { f: 4, t: 3, text: "11. GET /v1/evidence/{awb}/pdf" },
         { f: 3, t: 4, dash: true, text: "12. Bukti foto PASS + WARN" },
@@ -519,22 +544,24 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
     D.flow(document.getElementById("dg-kurir"), {
       title: "Keputusan di aplikasi pengiriman", cols: 4,
       nodes: {
-        k0: { c: 1.5, r: 0, k: "start", t: "Kurir ambil foto" },
-        k1: { c: 1.5, r: 1, w: 270, t: "Aplikasi pengiriman simpan ke SILO +\nPOST /v1/analyze (≤ 3 dtk)" },
-        k2: { c: 1.5, r: 2, k: "dec", w: 220, t: "Ada jawaban?\n(HTTP 200, status done)" },
-        k2n: { c: 3, r: 2, tone: "info", h: 60, t: "Tanpa pesan,\nstatus diupdate\n(fail-open)" },
-        k3: { c: 1.5, r: 3, k: "dec", w: 260, t: "allow_status_update?" },
-        k4a: { c: 0.5, r: 4, tone: "pass", h: 60, w: 210, t: "true: tampilkan\ncourier_message jika ada\n(PASS / WARN / shadow)" },
-        k4b: { c: 2.5, r: 4, tone: "reject", h: 60, w: 210, t: "false: tampilkan\ncourier_message,\nwajib foto ulang" },
-        k5: { c: 0.5, r: 5, k: "end", w: 230, t: "Aplikasi pengiriman\nupdate status" },
-        k5n: { c: 2.5, r: 5, tone: "reject", w: 230, t: "Status TIDAK diupdate\n(tunggu foto ulang)" },
+        k0: { c: 1.5, r: 0, k: "start", w: 220, t: "1. Kurir ambil foto,\ntekan Kirim" },
+        k1: { c: 1.5, r: 1, w: 320, t: "2. Aplikasi pengiriman terima foto,\nsimpan ke SILO (status belum diupdate)" },
+        k2: { c: 1.5, r: 2, w: 320, tone: "info", t: "3. FOTO DIKIRIM KE ENGINE\nPOST /v1/analyze?sync=true (key SILO)" },
+        k3: { c: 1.5, r: 3, w: 380, h: 66, tone: "engine", t: "4. ENGINE VALIDASI GAMBAR (≤ 3 dtk)\nketajaman · pecah · resolusi · cahaya · EXIF · duplikat · OCR\nlalu optimasi + kompres < 1 MB" },
+        k4: { c: 1.5, r: 4, k: "dec", w: 240, t: "5. Engine menjawab\ndalam 3 detik?" },
+        k4n: { c: 3, r: 4, tone: "info", h: 60, t: "Tanpa pesan,\nstatus diupdate\n(fail-open)" },
+        k5: { c: 1.5, r: 5, k: "dec", w: 260, t: "6. allow_status_update?" },
+        k6a: { c: 0.5, r: 6, tone: "pass", h: 60, w: 210, t: "true: tampilkan\ncourier_message jika ada\n(PASS / WARN / shadow)" },
+        k6b: { c: 2.5, r: 6, tone: "reject", h: 60, w: 210, t: "false: tampilkan\ncourier_message,\nwajib foto ulang" },
+        k7: { c: 0.5, r: 7, k: "end", w: 230, t: "7. Aplikasi pengiriman\nupdate status" },
+        k7n: { c: 2.5, r: 7, tone: "reject", w: 230, t: "Status TIDAK diupdate\n(tunggu foto ulang)" },
       },
       edges: [
-        { f: "k0", t: "k1" }, { f: "k1", t: "k2" }, { f: "k2", t: "k2n", label: "tidak / timeout" },
-        { f: "k2", t: "k3", label: "ya" },
-        { f: "k3", t: "k4a", label: "true" }, { f: "k3", t: "k4b", label: "false" },
-        { f: "k4a", t: "k5" }, { f: "k4b", t: "k5n" },
-        { f: "k5n", t: "k0", route: "right", dash: true, label: "Foto ulang" },
+        { f: "k0", t: "k1" }, { f: "k1", t: "k2", label: "langsung" }, { f: "k2", t: "k3" }, { f: "k3", t: "k4" },
+        { f: "k4", t: "k4n", label: "tidak / error" }, { f: "k4", t: "k5", label: "ya" },
+        { f: "k5", t: "k6a", label: "true" }, { f: "k5", t: "k6b", label: "false" },
+        { f: "k6a", t: "k7" }, { f: "k6b", t: "k7n" },
+        { f: "k7n", t: "k0", route: "right", dash: true, label: "Foto ulang" },
       ],
     });
     D.flow(document.getElementById("dg-engine"), {

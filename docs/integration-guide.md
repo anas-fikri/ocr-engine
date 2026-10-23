@@ -47,6 +47,37 @@ tidak perlu webhook. Lalu baca 2 field:
 
 Status pengiriman **milik aplikasi pengiriman**. Engine tidak pernah mengubahnya; engine hanya memberi keputusan.
 
+**Kapan foto dikirim ke engine, dan kapan divalidasi?**
+
+| Urutan | Siapa | Apa yang terjadi |
+|---|---|---|
+| 1 | Kurir | Ambil foto POD, tekan **Kirim** |
+| 2 | Aplikasi pengiriman (backend) | Terima foto asli, simpan ke SILO seperti sekarang. Status **belum** diupdate |
+| 3 · kirim | Aplikasi pengiriman → engine | **Foto dikirim ke engine** saat itu juga: `POST /v1/analyze?sync=true` dengan key objek SILO (atau file langsung). Satu request, tunggu maks. 3 detik |
+| 4 · validasi | Engine | **Validasi gambar** di dalam request itu (biasanya 0,2–2 detik): ambil foto dari SILO, cek ketajaman, pecah, resolusi, cahaya, EXIF, duplikat, OCR → verdict. Lalu optimasi + kompres < 1 MB dan simpan |
+| 5 | Engine → aplikasi pengiriman | Jawaban `allow_status_update` + `courier_message` |
+| 6 | Aplikasi pengiriman | `true` → update status (tampilkan pesan jika ada). `false` → status **tidak** diupdate, kurir foto ulang. Tidak ada jawaban dalam 3 detik → update status (fail-open) |
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor K as Kurir
+    participant BE as Aplikasi Pengiriman
+    participant S as SILO
+    participant E as Engine
+    K->>BE: Foto + resi (tekan Kirim)
+    BE->>S: Simpan foto
+    BE->>E: ① Kirim ke engine: POST /v1/analyze?sync=true
+    E->>S: Ambil foto asli
+    note over E: ② Validasi gambar ≤ 3 dtk
+    E-->>BE: allow_status_update + courier_message
+    alt true (atau engine tidak menjawab)
+        BE->>BE: Update status pengiriman
+    else false
+        BE-->>K: courier_message, wajib foto ulang (status tidak diupdate)
+    end
+```
+
 **PHP / Laravel** (salin [`clients/php/PhotoQualityClient.php`](../clients/php/PhotoQualityClient.php); `checkObject` tidak pernah throw):
 
 ```php

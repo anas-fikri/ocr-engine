@@ -322,7 +322,7 @@ flowchart TB
 
     A1 -->|upload| B1
     A2 -->|upload| B1
-    A1 -.->|fase 3: POST /v1/analyze| API
+    A1 -->|setelah simpan ke SILO, sebelum update status:<br/>POST /v1/analyze sync ≤ 3 dtk| API
     B1 -->|bucket event / polling| I
     ADB -.->|read-only mapping| I
     API --> Q
@@ -637,45 +637,64 @@ Untuk multi-tenant, kredensial per tenant direferensikan dari config (`dsn_ref`/
 
 ## 4. Flow Proses
 
-### 4.1 Flow utama: kurir memotret sampai foto dianalisis
+### 4.1 Flow utama: kurir memotret sampai foto divalidasi
 
-Jalur kurir **tidak berubah** (integrasi level 0/1). Engine bekerja setelahnya, terpisah. Di integrasi level 2
-(disarankan), aplikasi pengiriman memanggil `POST /v1/analyze?sync=true` setelah upload dan **sebelum** update status:
-`allow_status_update: false` (foto `REJECT` di mode `enforce`) = status tidak diupdate, kurir foto ulang; engine
-mati/lambat = status diupdate seperti di bawah (fail-open). Diagram level 2 ada di `/ui/guide.html#alur-pakai`.
+Ini alur integrasi level 2 (disarankan). Foto **dikirim ke engine tepat setelah tersimpan di SILO**, dan **validasi
+gambar terjadi di dalam panggilan itu** (sinkron, maks. 3 detik), **sebelum** aplikasi pengiriman mengupdate status.
+Status pengiriman tetap milik aplikasi pengiriman; engine hanya menjawab `allow_status_update` dan `courier_message`.
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor K as Kurir
-    participant App as Aplikasi Kurir
-    participant BE as Backend Aplikasi
-    participant S as SILO (photos-original)
+    participant App as Aplikasi Kurir (HP)
+    participant BE as Aplikasi Pengiriman (backend)
+    participant S as SILO
+    participant E as Photo Quality Engine
+
+    K->>App: Ambil foto POD, tekan Kirim
+    App->>BE: Foto asli + resi
+    BE->>S: Simpan foto (seperti sekarang)
+    rect rgb(230, 235, 250)
+    note over BE,E: ① FOTO DIKIRIM KE ENGINE (langsung, sebelum update status)
+    BE->>E: POST /v1/analyze?sync=true {object_key, awb, photo_type}
+    E->>S: Ambil foto asli
+    note over E: ② VALIDASI GAMBAR (≤ 3 dtk)<br/>ketajaman, pecah, resolusi, cahaya,<br/>EXIF, duplikat, OCR → verdict
+    E->>E: Optimasi + kompres < 1 MB (tanpa manipulasi)
+    E->>S: Simpan versi kompres + thumbnail
+    E-->>BE: allow_status_update + courier_message
+    end
+    alt allow_status_update = true, atau engine tidak menjawab ≤ 3 dtk (fail-open)
+        BE->>BE: Update status pengiriman
+        BE-->>App: OK (+ courier_message jika ada)
+        App-->>K: Terkirim ✅
+    else allow_status_update = false (REJECT di mode enforce)
+        BE-->>App: Ditolak + courier_message (status TIDAK diupdate)
+        App-->>K: Wajib foto ulang → kembali ke langkah 1
+    end
+```
+
+**Level 0/1** (aplikasi belum memanggil engine): jalur kurir tidak berubah dan status diupdate seperti biasa. Engine
+mengambil foto sendiri beberapa detik setelah upload (bucket notification, polling sebagai cadangan) lalu memvalidasinya
+di belakang layar. Hasilnya dipakai untuk laporan, review ops, dan evidence, tetapi tidak bisa menahan status.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant BE as Aplikasi Pengiriman
+    participant S as SILO
     participant I as Ingestor
     participant Q as Queue
     participant W as Worker
-    participant DB as Postgres Engine
 
-    rect rgb(230, 245, 230)
-    note over K,S: JALUR KURIR (tidak berubah, tidak menunggu engine)
-    K->>App: Ambil foto POD
-    App->>S: Upload foto (+ metadata jika Level 1)
-    App->>BE: Update status pengiriman
-    BE-->>App: OK
-    App-->>K: Status terkirim ✅
-    end
-
-    rect rgb(230, 235, 250)
-    note over S,DB: JALUR ENGINE (async, terpisah)
+    BE->>S: Simpan foto (+ metadata jika Level 1)
+    BE->>BE: Update status pengiriman (tidak menunggu engine)
     S-->>I: Bucket event (atau terdeteksi via polling)
-    I->>I: Mapping metadata + cek duplikat hash
-    I->>Q: Enqueue job
+    I->>Q: Enqueue job (idempotent)
     Q->>W: Ambil job
-    W->>S: Baca foto original
-    W->>W: Analisis + kompres + verdict
-    W->>S: Simpan processed + thumb
-    W->>DB: Simpan hasil analisis
-    end
+    W->>S: Baca foto asli
+    W->>W: Validasi gambar + optimasi/kompres + verdict
+    W->>S: Simpan versi kompres + thumbnail
 ```
 
 ### 4.2 Flow pemrosesan di worker

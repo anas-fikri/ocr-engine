@@ -36,7 +36,7 @@ Engine bisa dipakai oleh aplikasi apa pun (Android, iOS, Flutter, web, Laravel, 
 ```mermaid
 flowchart LR
     App[Aplikasi kurir / lainnya] -->|upload foto| SILO[(SILO<br/>s3.pcpexpress.com)]
-    App -.->|opsional: POST /v1/analyze| API
+    App -->|setelah upload, sebelum update status:<br/>POST /v1/analyze sync ≤ 3 dtk → validasi| API
     SILO -->|bucket event / polling| ING[Ingestor]
     ING --> Q[[Antrean<br/>PostgreSQL]]
     API[API + Web UI] --> Q
