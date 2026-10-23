@@ -114,12 +114,14 @@ Panel kanan yang terbuka saat baris foto diklik.
 
 **Kotak status tambahan:**
 
-- **Wajib foto ulang** (merah): kualitas tidak bisa dimaksimalkan (verdict REJECT setelah percobaan perbaikan, atau
-  ops memilih "Minta foto ulang"). Berisi pesan yang sama dengan yang diterima aplikasi kurir (`retake_message`).
-- **Diperbaiki otomatis** (biru): pencahayaan foto diperbaiki dengan kurva global tanpa AI dan lolos verifikasi
-  eksak (tidak ada teks/angka yang berubah). Ditampilkan kurva yang dipakai (contoh `levels:12-140, gamma:0.62`) dan
-  verdict + kode alasan **sebelum** perbaikan. Gambar utama dan "versi kompres" adalah hasil perbaikan; **Buka
-  original** selalu membuka file asli yang tidak diubah. Foto hasil perbaikan tidak diberi label/watermark apa pun.
+- **Wajib foto ulang** (merah): kualitas tidak memenuhi syarat (verdict REJECT, atau ops memilih "Minta foto ulang").
+  Berisi pesan yang sama dengan yang diterima aplikasi kurir (`retake_message`). Di mode `enforce`, aplikasi
+  pengiriman menahan update status pengiriman (`allow_status_update: false`) sampai foto ulang diterima.
+- **Diperbaiki otomatis** (biru): hanya muncul jika admin mengaktifkan koreksi pencahayaan opsional di profile
+  (`enhance.enabled: true`, bawaan nonaktif). Ditampilkan kurva yang dipakai (contoh `levels:12-140, gamma:0.62`) dan
+  verdict + kode alasan **sebelum** koreksi. **Buka original** selalu membuka file asli yang tidak diubah.
+
+Secara bawaan engine tidak memanipulasi isi gambar: "versi kompres" hanya diperkecil/dikompres dari original.
 
 **Skor:** batang 0-100 per pemeriksaan. Warna hanya panduan visual (hijau ≥ 55, oranye ≥ 30, merah < 30). Verdict tetap ditentukan threshold profile.
 
@@ -173,8 +175,9 @@ Evidence (`/v1/evidence/...`, termasuk PDF) **hanya** menampilkan foto yang suda
 | `WARN` | **Langsung masuk** | Masuk setelah **Setujui** |
 | `REJECT` | Masuk hanya setelah **Setujui** | Masuk hanya setelah **Setujui** |
 
-Foto yang diminta ulang atau ditandai curang tidak pernah tampil ke pelanggan. Jika pencahayaan diperbaiki otomatis,
-evidence memakai versi yang sudah diperbaiki, sedangkan kode verifikasi (SHA-256) tetap merujuk ke file original.
+Foto yang diminta ulang atau ditandai curang tidak pernah tampil ke pelanggan (dan `allow_status_update` menjadi
+`false`). Evidence memakai versi kompres (isi tidak dimanipulasi), sedangkan kode verifikasi (SHA-256) tetap merujuk
+ke file original.
 Skor internal dan risiko keaslian tidak pernah ditampilkan ke pelanggan.
 
 ---
@@ -187,7 +190,7 @@ Menganalisis foto **tanpa menyimpan apa pun**. Dipakai untuk mencoba threshold, 
 2. Pilih **Jenis foto / profile**. Tanpa tenant, daftar berisi profile bawaan engine (`default`, `pod_recipient`, `pod_document`, `package`, `goods`, `location`). Setelah tenant dipilih, daftar berganti ke semua profile tenant tersebut (termasuk profile buatan tenant).
 3. Pilih file, lalu klik **Analisis**.
 
-Hasilnya: verdict, profile, mode, aksi, kotak **Wajib foto ulang** / **Diperbaiki otomatis** (jika berlaku, dengan verdict sebelum perbaikan), skor, catatan beserta saran, hasil kompresi (ukuran sebelum → sesudah, dimensi, quality, SSIM), waktu proses, dan JSON lengkap.
+Hasilnya: verdict, profile, mode, aksi, kotak **Wajib foto ulang** / **Diperbaiki otomatis** (yang kedua hanya jika profile mengaktifkan koreksi pencahayaan opsional), skor, catatan beserta saran, hasil kompresi (ukuran sebelum → sesudah, dimensi, quality, SSIM), waktu proses, dan JSON lengkap.
 
 Catatan: cek duplikat tidak dijalankan di sini (tidak dibandingkan dengan foto lain), dan tidak ada data yang tersimpan maupun webhook yang terkirim.
 
@@ -203,7 +206,7 @@ bisa uji cepat). API key tersimpan di browser yang sama dengan Web UI, jadi cuku
 |---|---|
 | **1. Pengaturan uji** | **Simulasi aplikasi kurir** (foto disimpan, alur sama dengan aplikasi asli: upload → antrean → worker → SILO, tunggu maks. 3 detik) atau **Uji cepat** (tidak disimpan). Tenant (bawaan `uji-coba`), jenis foto, **Tampilkan sebagai mode** (`shadow`/`warn`/`enforce`, hanya mengubah tampilan), nomor resi (otomatis `UJI...`, berganti setelah foto diterima; tetap sama saat foto ulang), ID kurir, lokasi GPS (butuh HTTPS) |
 | **2. Ambil foto** | **📷 Ambil foto**: kamera bawaan HP (seperti aplikasi kurir, EXIF ikut). **🎥 Kamera langsung**: viewfinder di browser dengan tombol jepret, balik kamera, dan lampu (jika HP mendukung). Butuh HTTPS atau localhost. **🖼 Galeri / file** |
-| **3. Hasil** | **Yang dilihat kurir**: tiruan layar aplikasi dengan pesan dan tombol (Foto ulang / Tetap kirim / Lapor ke SPV / Lanjut) sesuai `action` dan `retake_required`, plus waktu tunggu kurir. **Detail untuk tim**: verdict, wajib foto ulang, aksi, waktu tunggu & proses engine, ukuran sebelum → sesudah, masuk evidence atau tidak, perbandingan foto asli vs hasil engine, perbaikan otomatis, skor, catatan, kompresi, EXIF, JSON respons. Di mode simulasi ada tombol **Buka di Web UI** dan **Evidence PDF resi ini** |
+| **3. Hasil** | **Yang dilihat kurir**: tiruan layar aplikasi dengan `courier_message` dan tombol (Foto ulang / Tetap kirim / Lanjut) sesuai `action` dan `retake_required`, baris **Status pengiriman: diupdate / TIDAK diupdate** (sesuai `allow_status_update`; foto ditolak di mode `enforce` hanya punya tombol Foto ulang), plus waktu tunggu kurir. **Detail untuk tim**: verdict, boleh update status, wajib foto ulang, aksi, waktu tunggu & proses engine, ukuran sebelum → sesudah, masuk evidence atau tidak, perbandingan foto asli vs hasil engine, skor, catatan, kompresi, EXIF, JSON respons. Di mode simulasi ada tombol **Buka di Web UI** dan **Evidence PDF resi ini** |
 | **Riwayat sesi ini** | Thumbnail percobaan sebelumnya; klik untuk melihat hasilnya lagi (hanya di browser, hilang saat halaman ditutup) |
 
 Cara membuka dari HP dan menyalakan HTTPS untuk kamera langsung: [getting-started.md §4b](getting-started.md#4b-uji-coba-dari-hp-tanpa-membangun-aplikasi).

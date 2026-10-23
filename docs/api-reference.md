@@ -79,12 +79,16 @@ ditambah field metadata yang sama seperti di atas (semua opsional). File disimpa
 
 **Respons:** `200` (hasil ada) atau `202` (masih diproses, ada `poll_url`). Isi: [objek foto](#objek-foto).
 
+Cara tercepat untuk aplikasi pengiriman: `sync=true&timeout_ms=3000`, lalu cukup baca `allow_status_update` (false =
+jangan update status pengiriman, minta foto ulang) dan `courier_message` (tampilkan ke kurir jika tidak null).
+`202`/error/timeout = fail-open. Client: `checkObject` / `checkFile` di [clients/](../clients/README.md).
+
 ### `POST /v1/analyze/preview`
 
 Menganalisis file **tanpa menyimpan apa pun** (tidak ada di DB maupun SILO). Untuk kalibrasi dan onboarding.
 
 **Query:** `tenant` (opsional, pakai profile tenant), `photo_type` (nama profile), `lang`, `include_output`
-(`true` = sertakan foto hasil engine, yang sudah diperbaiki/dikompres, sebagai data URL di field `output_image`;
+(`true` = sertakan foto hasil engine, yang sudah dioptimasi/dikompres, sebagai data URL di field `output_image`;
 `null` jika foto disimpan apa adanya). Dipakai halaman Uji Coba Kamera untuk membandingkan sebelum/sesudah.
 **Body:** `multipart/form-data` field `file`.
 
@@ -93,6 +97,7 @@ Menganalisis file **tanpa menyimpan apa pun** (tidak ada di DB maupun SILO). Unt
 ```json
 {
   "verdict": "WARN", "action": "log", "profile": "default", "mode": "shadow",
+  "allow_status_update": true, "courier_message": null,
   "retake_required": false, "retake_message": null,
   "enhancement": {"attempted": false, "applied": false},
   "scores": {"sharpness": 29.9, "resolution": 100.0, "exposure": 100.0, "authenticity": 100.0},
@@ -107,9 +112,11 @@ Menganalisis file **tanpa menyimpan apa pun** (tidak ada di DB maupun SILO). Unt
 }
 ```
 
-`retake_required`, `retake_message`, dan `enhancement` sama artinya dengan di [objek foto](#objek-foto). Jika
-perbaikan otomatis dipakai, `scores`/`verdict` adalah hasil **setelah** perbaikan, `enhancement.before` berisi hasil
-sebelumnya, dan `timings_ms.enhance` terisi.
+`allow_status_update`, `courier_message`, `retake_required`, `retake_message`, dan `enhancement` sama artinya dengan
+di [objek foto](#objek-foto) (di preview, `allow_status_update` = `action != "reject"`). Secara bawaan `enhancement`
+selalu `{"attempted": false, "applied": false}` (engine tidak memanipulasi gambar). Jika profile mengaktifkan
+`enhance.enabled` dan koreksi dipakai, `scores`/`verdict` adalah hasil **setelah** koreksi, `enhancement.before`
+berisi hasil sebelumnya, dan `timings_ms.enhance` terisi.
 
 ---
 
@@ -145,12 +152,12 @@ tidak ada. Aplikasi produksi sebaiknya tetap memakai `urls.*` (presigned) agar t
 Detail lengkap: [objek foto](#objek-foto) + field detail (`enhancement`, `compression`, `exif`, `metrics`, `image`,
 `location`, `input_fields`, `config_version`, `duration_ms`, `phash`, `ingest_source`, `capture_source`).
 
-`enhancement` (perbaikan pencahayaan otomatis, lihat
-[integration-guide.md §7.1](integration-guide.md#71-perbaikan-otomatis-tanpa-ai)):
+`enhancement` (koreksi pencahayaan **opsional**, nonaktif secara bawaan sehingga nilainya
+`{"attempted": false, "applied": false}`; lihat [integration-guide.md §7.1](integration-guide.md#71-optimasi-tanpa-manipulasi)):
 
 | Field | Keterangan |
 |---|---|
-| `attempted` | bool. Perbaikan dicoba (ada alasan `TOO_DARK`/`TOO_BRIGHT`/`LOW_CONTRAST`/`GLARE` dan `enhance.enabled`) |
+| `attempted` | bool. Koreksi dicoba (profile `enhance.enabled: true` dan ada alasan `TOO_DARK`/`TOO_BRIGHT`/`LOW_CONTRAST`/`GLARE`) |
 | `applied` | bool. Hasil perbaikan dipakai untuk verdict dan versi processed |
 | `operations` | contoh `["levels:12-140", "gamma:0.62"]` |
 | `verified` | `global_monotonic_curve` jika lolos verifikasi eksak |
@@ -163,9 +170,9 @@ Keputusan ops. Body: `{"action": "approve" | "request_retake" | "mark_fraud" | "
 
 | `action` | `review.status` | Efek ke evidence pelanggan |
 |---|---|---|
-| `approve` | `approved` | Foto WARN/REJECT ikut tampil di evidence, `retake_required` menjadi `false` |
-| `request_retake` | `retake_requested` | Tidak tampil, `retake_required` menjadi `true` |
-| `mark_fraud` | `fraud` | Tidak tampil |
+| `approve` | `approved` | Foto WARN/REJECT ikut tampil di evidence, `retake_required` menjadi `false`, `allow_status_update` menjadi `true` |
+| `request_retake` | `retake_requested` | Tidak tampil, `retake_required` menjadi `true`, `allow_status_update` menjadi `false` |
+| `mark_fraud` | `fraud` | Tidak tampil, `allow_status_update` menjadi `false` |
 | `reset` | `none` | Kembali ke aturan verdict (hanya PASS yang tampil) |
 
 Memicu webhook `review.updated` dan tercatat di audit log.
@@ -192,7 +199,7 @@ Riwayat keputusan review: `[{"action", "note", "actor", "at"}]`.
 `image_url` adalah presigned URL dengan masa berlaku `ENGINE_PRESIGN_TTL_CUSTOMER` (default 7 hari).
 Foto yang muncul = foto dengan `evidence_eligible: true`: dengan `review_required: false` (bawaan tenant) `PASS` dan
 `WARN`; dengan `review_required: true` hanya `PASS` atau yang di-approve ops. `REJECT` hanya muncul jika di-approve ops.
-Gambar yang dipakai adalah versi processed (jika pencahayaan diperbaiki otomatis, versi yang sudah diperbaiki);
+Gambar yang dipakai adalah versi processed (teroptimasi, isi tidak dimanipulasi);
 `sha256`/`verify_url` selalu merujuk ke file original.
 
 ---
@@ -374,9 +381,11 @@ Arti error yang sering muncul: [troubleshooting.md](troubleshooting.md#pengatura
 | `status` | `pending` / `done` / `error` | |
 | `verdict` | `PASS` / `WARN` / `REJECT` / null | null selama `pending` |
 | `verdict_text` | string | Teks verdict sesuai bahasa |
-| `action` | `log` / `notify` / `reject` / null | Saran perilaku aplikasi sesuai mode profile |
-| `retake_required` | bool | `true` = kualitas tidak bisa dimaksimalkan (verdict `REJECT` setelah percobaan perbaikan otomatis, termasuk file rusak), atau ops memilih "minta foto ulang". `false` jika ops meng-*approve*. Tidak bergantung pada mode. Ada juga di webhook |
-| `retake_message` | string / null | Pesan siap tampil untuk kurir (sesuai bahasa) jika `retake_required: true` |
+| `action` | `log` / `notify` / `reject` / null | Saran perilaku aplikasi sesuai mode profile (`shadow` → `log`, `warn` → `notify`, `enforce` → `reject` untuk `REJECT`; `PASS` → `log`) |
+| `allow_status_update` | bool | Boleh aplikasi pengiriman mengupdate status pengiriman (status milik aplikasi pengiriman, bukan engine). `false` hanya jika `action = reject` (verdict `REJECT` di mode `enforce`) atau ops memilih "minta foto ulang"/"tandai kecurangan". `true` jika ops meng-*approve*, selama `pending`, dan saat gagal karena sistem (fail-open). File rusak (`UNREADABLE_FILE`) diperlakukan seperti `REJECT` (ditahan di mode `enforce`). Ada juga di webhook |
+| `courier_message` | string / null | Satu kalimat siap tampil untuk kurir (sesuai bahasa): `<message>. <suggestion>` dari alasan pertama non-info, diawali `Wajib foto ulang.` / `Retake required.` jika `retake_required`. `null` jika `action` bukan `notify`/`reject` (atau ops meng-*approve*) |
+| `retake_required` | bool | `true` = kualitas tidak memenuhi syarat (verdict `REJECT`, termasuk file rusak), atau ops memilih "minta foto ulang". `false` jika ops meng-*approve*. Tidak bergantung pada mode. Ada juga di webhook |
+| `retake_message` | string / null | Pesan foto ulang (sesuai bahasa) jika `retake_required: true`: "Kualitas foto tidak memenuhi syarat. Silakan ambil foto ulang." |
 | `photo_type`, `profile` | string | Jenis foto & profile yang dipakai |
 | `awb`, `courier_id`, `customer_id`, `branch`, `external_id` | string / null | Hasil mapping metadata |
 | `captured_at`, `received_at`, `analyzed_at` | ISO-8601 / null | |
@@ -387,7 +396,7 @@ Arti error yang sering muncul: [troubleshooting.md](troubleshooting.md#pengatura
 | `object` | objek | `{bucket, key}` lokasi foto original |
 | `sha256` | string | Hash file original (untuk verifikasi) |
 | `error` | objek / null | `{code, message}` jika `status = error` |
-| `urls` | objek | Presigned URL `original` (tidak pernah diubah), `processed` (kompres; versi yang sudah diperbaiki jika `enhancement.applied`), `thumbnail`, `expires_in` (detik). Tidak ada di webhook |
+| `urls` | objek | Presigned URL `original` (tidak pernah diubah), `processed` (teroptimasi/kompres, isi tidak dimanipulasi; versi koreksi pencahayaan hanya jika profile mengaktifkannya dan `enhancement.applied`), `thumbnail`, `expires_in` (detik). Tidak ada di webhook |
 | `poll_url` | string | Hanya pada respons `202` |
 
 ---
@@ -422,8 +431,10 @@ Arti error yang sering muncul: [troubleshooting.md](troubleshooting.md#pengatura
 
 Saran (`suggestion`) untuk setiap kode bisa dilihat lewat `GET /v1/meta/reason-codes`.
 Kode alasan keaslian (`authenticity`) tidak pernah menyebabkan `REJECT` dengan konfigurasi bawaan.
-`TOO_DARK`, `TOO_BRIGHT`, `GLARE`, dan `LOW_CONTRAST` memicu percobaan perbaikan otomatis; jika berhasil, kode itu
-tidak lagi muncul (atau turun severity-nya) dan kode aslinya tercatat di `enhancement.before.codes`.
+Secara bawaan engine tidak memperbaiki foto: `TOO_DARK`, `TOO_BRIGHT`, `GLARE`, dan `LOW_CONTRAST` langsung dinilai
+apa adanya (bisa `REJECT` → foto ulang). Hanya jika profile mengaktifkan `enhance.enabled`, kode-kode itu memicu
+percobaan koreksi pencahayaan; jika berhasil, kode itu tidak lagi muncul (atau turun severity-nya) dan kode aslinya
+tercatat di `enhancement.before.codes`.
 
 ## Kode error khusus admin
 
@@ -436,3 +447,11 @@ tidak lagi muncul (atau turun severity-nya) dan kode aslinya tercatat di `enhanc
 ## Webhook
 
 Format, header, tanda tangan, dan aturan retry: [integration-guide.md#8-menerima-webhook](integration-guide.md#8-menerima-webhook).
+Payload berisi objek foto yang sama dengan respons API (tanpa `urls`), termasuk `allow_status_update`,
+`courier_message`, `retake_required`, dan `retake_message`:
+
+```json
+{"event": "analysis.completed", "photo": {"id": "e350...", "status": "done", "verdict": "REJECT", "action": "reject",
+ "allow_status_update": false, "courier_message": "Wajib foto ulang. Foto buram. Pegang HP dengan stabil, ...",
+ "retake_required": true, "retake_message": "Kualitas foto tidak memenuhi syarat. Silakan ambil foto ulang.", "...": "..."}}
+```

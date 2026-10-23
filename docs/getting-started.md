@@ -53,9 +53,9 @@ ke bucket `ekas-pcptransport` lengkap dengan metadata resi/kurir. Dalam beberapa
 1. Buka http://localhost:8000/ui dan masuk dengan API key admin.
 2. **Dashboard**: ringkasan PASS/WARN/REJECT, alasan terbanyak, kurir/cabang bermasalah.
 3. **Review**: antrean foto WARN/REJECT (opsional: foto WARN sudah otomatis masuk evidence). Klik satu foto untuk
-   melihat skor, alasan, saran, EXIF, ukuran sebelum dan sesudah kompres. Foto gelap/terlalu terang yang berhasil diperbaiki
-   bertanda **Diperbaiki otomatis**, foto buram berat bertanda **Wajib foto ulang**. Coba juga tombol **Setujui** /
-   **Minta foto ulang**.
+   melihat skor, alasan, saran, EXIF, ukuran sebelum dan sesudah kompres. Foto yang kualitasnya tidak memenuhi syarat
+   (buram berat, pecah, terlalu gelap) bertanda **Wajib foto ulang**; engine tidak memperbaiki/memanipulasi gambar,
+   hanya mengoptimasi ukuran. Coba juga tombol **Setujui** / **Minta foto ulang**.
 4. **Uji foto**: upload foto dari HP Anda sendiri untuk melihat penilaian engine tanpa menyimpan apa pun.
 5. **Pengaturan SILO** (admin): koneksi ke SILO. Di compose lokal sudah terisi dari env; untuk mencoba SILO lain,
    tempel JSON `mc` lalu **Test koneksi** (jangan pakai `127.0.0.1` dari dalam Docker, lihat
@@ -79,13 +79,14 @@ engine, lalu lihat pesan yang akan tampil di layar kurir beserta detail analisis
      retensi 30 hari), jadi tidak tercampur dengan data aplikasi kurir. Foto muncul di Web UI dan evidence resi uji.
    - **Uji cepat**: hanya dianalisis, tidak disimpan.
 4. Tekan **📷 Ambil foto** (membuka kamera bawaan HP, EXIF ikut terkirim) atau **Pilih dari galeri**.
-5. Hasil: tampilan **layar kurir** (pesan foto ulang / tetap kirim / diterima, sesuai `action` dan
-   `retake_required`), waktu tunggu kurir, perbandingan foto asli vs hasil engine, skor, alasan, perbaikan otomatis,
-   kompresi, dan EXIF. **Tampilkan sebagai mode** memperlihatkan pengalaman kurir di `shadow`/`warn`/`enforce` tanpa
+5. Hasil: tampilan **layar kurir** (pesan `courier_message`, tombol Foto ulang / Tetap kirim / Lanjut, dan baris
+   **Status pengiriman: diupdate / TIDAK diupdate** sesuai `allow_status_update`), waktu tunggu kurir, perbandingan foto
+   asli vs hasil engine (hanya dioptimasi/dikompres), skor, alasan, kompresi, dan EXIF. **Tampilkan sebagai mode** memperlihatkan pengalaman kurir di `shadow`/`warn`/`enforce` tanpa
    mengubah config. Tombol **Buka di Web UI** langsung membuka detail foto tersebut.
 
-Tips menguji: foto resi yang jelas, lalu foto sambil bergerak (buram), di tempat gelap (diperbaiki otomatis),
-zoom digital berlebihan (pecah), dan foto layar/screenshot.
+Tips menguji: foto resi yang jelas, lalu foto sambil bergerak (buram), di tempat gelap (tidak diperbaiki: wajib foto
+ulang), zoom digital berlebihan (pecah), dan foto layar/screenshot. Di tenant `uji-coba` (mode `enforce`) foto `REJECT`
+memperlihatkan status pengiriman yang ditahan.
 
 **Kamera langsung di browser** (viewfinder di halaman, tanpa membuka aplikasi kamera) butuh HTTPS. Jalankan proxy
 HTTPS bawaan:

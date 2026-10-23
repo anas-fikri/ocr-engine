@@ -8,7 +8,7 @@ menghubungkan aplikasinya ke Photo Quality Engine. Ikuti dari atas ke bawah. Sem
 > **Versi ringkas di browser:** buka `https://<server-engine>/ui/guide.html` (tanpa login). Isinya sama dengan
 > dokumen ini dalam bentuk interaktif: contoh kode curl/PHP/TypeScript/Python/Kotlin dengan URL server yang sudah
 > terisi otomatis dan tombol salin, plus **diagram alur** (integrasi sampai go-live, alur penggunaan saat runtime,
-> keputusan di aplikasi kurir, proses di dalam engine). Link-nya juga ada di menu Web UI (**Panduan Integrasi ↗**) dan di halaman login.
+> keputusan di aplikasi pengiriman, proses di dalam engine). Link-nya juga ada di menu Web UI (**Panduan Integrasi ↗**) dan di halaman login.
 >
 > **Coba dulu sebelum menulis kode:** buka `https://<server-engine>/ui/coba.html` dari HP. Halaman itu berperan sebagai
 > aplikasi kurir (ambil foto → kirim → tampil pesan untuk kurir + detail analisis), lihat
@@ -16,13 +16,14 @@ menghubungkan aplikasinya ke Photo Quality Engine. Ikuti dari atas ke bawah. Sem
 
 ## Daftar isi
 
+0. [Cara tercepat: 1 panggilan, 2 field](#0-cara-tercepat-1-panggilan-2-field)
 1. [Aturan emas (wajib dibaca)](#1-aturan-emas-wajib-dibaca)
 2. [Pilih cara integrasi](#2-pilih-cara-integrasi)
 3. [Persiapan: tenant & API key](#3-persiapan-tenant--api-key)
 4. [Level 0: tanpa mengubah aplikasi](#4-level-0-tanpa-mengubah-aplikasi)
 5. [Level 1: tambahkan metadata saat upload ke SILO](#5-level-1-tambahkan-metadata-saat-upload-ke-silo)
 6. [Level 2: panggil API engine](#6-level-2-panggil-api-engine)
-7. [Menampilkan hasil ke kurir](#7-menampilkan-hasil-ke-kurir) (termasuk `retake_required` dan perbaikan otomatis)
+7. [Menampilkan hasil ke kurir](#7-menampilkan-hasil-ke-kurir) (termasuk `allow_status_update`, `retake_required`, dan optimasi tanpa manipulasi)
 8. [Menerima webhook](#8-menerima-webhook)
 9. [Evidence untuk pelanggan (penagihan)](#9-evidence-untuk-pelanggan-penagihan)
 10. [Kode error](#10-kode-error)
@@ -31,11 +32,81 @@ menghubungkan aplikasinya ke Photo Quality Engine. Ikuti dari atas ke bawah. Sem
 
 ---
 
+## 0. Cara tercepat: 1 panggilan, 2 field
+
+Setelah aplikasi pengiriman menyimpan foto ke SILO (seperti sekarang), panggil engine **sekali** dengan key objeknya
+dan tunggu maks. 3 detik: `POST /v1/analyze?sync=true&timeout_ms=3000`. Tidak ada upload ulang, tidak perlu polling,
+tidak perlu webhook. Lalu baca 2 field:
+
+| Field | Yang dilakukan aplikasi pengiriman |
+|---|---|
+| `courier_message` | Jika tidak `null`: tampilkan ke kurir apa adanya (sudah dalam bahasa ID/EN) |
+| `allow_status_update: true` | Lanjut update status pengiriman seperti biasa |
+| `allow_status_update: false` | **Jangan update status pengiriman.** Foto ditolak: kurir wajib foto ulang, lalu kirim lagi |
+| Engine error / timeout / `202` | Anggap `allow_status_update: true` (fail-open), kurir tidak boleh tertahan karena engine |
+
+Status pengiriman **milik aplikasi pengiriman**. Engine tidak pernah mengubahnya; engine hanya memberi keputusan.
+
+**PHP / Laravel** (salin [`clients/php/PhotoQualityClient.php`](../clients/php/PhotoQualityClient.php); `checkObject` tidak pernah throw):
+
+```php
+$pqe = new PhotoQualityClient(env('PQE_URL'), env('PQE_API_KEY'), 5000, 'id');
+$d = $pqe->checkObject($objectKey, ['awb' => $awb, 'photo_type' => 'pod_recipient', 'courier_id' => $courierId]);
+
+$response = [];
+if ($d['message']) {
+    $response['pesan_foto'] = $d['message'];          // tampilkan ke kurir
+}
+if (!$d['allow_status_update']) {
+    return response()->json($response + ['foto_ulang' => true], 422);   // status TIDAK diupdate
+}
+$shipment->updateStatus('DELIVERED');                  // engine mati/lambat -> tetap sampai sini
+```
+
+**TypeScript / Node** (salin [`clients/typescript/pqe-client.ts`](../clients/typescript/pqe-client.ts); `checkObject` tidak pernah throw):
+
+```ts
+import { PhotoQualityClient } from "./pqe-client.ts";
+const pqe = new PhotoQualityClient({ baseUrl: process.env.PQE_URL!, apiKey: process.env.PQE_API_KEY!, lang: "id" });
+
+const d = await pqe.checkObject(objectKey, { awb, photo_type: "pod_recipient", courier_id: courierId });
+if (d.message) res.locals.pesanFoto = d.message;                 // tampilkan ke kurir
+if (!d.allowStatusUpdate) return res.status(422).json({ fotoUlang: true, pesan: d.message }); // status TIDAK diupdate
+await shipment.updateStatus("DELIVERED");                        // engine mati/lambat -> tetap sampai sini
+```
+
+**curl:**
+
+```bash
+curl -s -m 5 -X POST "$PQE_URL/v1/analyze?sync=true&timeout_ms=3000" \
+  -H "X-API-Key: $PQE_API_KEY" -H "Content-Type: application/json" -H "Accept-Language: id" \
+  -d '{"object_key":"pod/2026/10/22/AWB123.jpg","awb":"AWB123","photo_type":"pod_recipient"}'
+# -> {"allow_status_update": false, "courier_message": "Wajib foto ulang. Foto buram. Pegang HP ...", ...}
+```
+
+Keputusan dari `checkObject` / `checkFile`:
+
+| TypeScript | PHP | Arti |
+|---|---|---|
+| `allowStatusUpdate` | `allow_status_update` | `false` = foto ditolak: **jangan** update status, minta foto ulang |
+| `message` | `message` | Tampilkan ke kurir jika tidak `null` |
+| `retakeRequired` | `retake_required` | Kualitas tidak memenuhi syarat (verdict `REJECT`) |
+| `decided` | `decided` | `false` = belum ada keputusan (engine mati/lambat/error, atau lewat 3 detik) → fail-open, status boleh diupdate |
+| `photoId`, `verdict` | `photo_id`, `verdict` | Untuk disimpan/dilacak |
+
+Belum menyimpan ke SILO? Pakai `checkFile(...)` (file dikirim langsung, engine yang menyimpan ke SILO). Kurir hanya
+ditahan jika foto `REJECT` **dan** mode tenant `enforce`; di mode `shadow`/`warn` `allow_status_update` selalu `true`.
+Menahan status hanya bisa di level 2 (sinkron); level 0/1 menganalisis setelahnya. Contoh Python dan Kotlin ada di
+panduan browser `/ui/guide.html#cepat`.
+
+---
+
 ## 1. Aturan emas (wajib dibaca)
 
-1. **Engine tidak boleh memperlambat atau menggagalkan proses kurir.** Update status pengiriman *tidak boleh*
-   bergantung pada engine. Upload foto dan update status jalan seperti biasa. Engine hanya memberi penilaian.
-2. **Selalu pakai timeout dan fail-open.** Kalau engine lambat, error, atau mati, anggap saja "tidak ada hasil"
+1. **Status pengiriman milik aplikasi pengiriman, dan engine tidak boleh menahan kurir karena dirinya sendiri.**
+   Engine tidak pernah mengubah status; engine hanya menjawab `allow_status_update`. Satu-satunya yang menahan update
+   status adalah `allow_status_update: false` (foto ditolak di mode `enforce`): status baru diupdate setelah foto ulang diterima.
+2. **Selalu pakai timeout dan fail-open.** Kalau engine lambat, error, atau mati, anggap `allow_status_update: true`
    lalu lanjutkan proses. Batas waktu yang disarankan: **3 detik** untuk mode sinkron, 5 detik untuk request lain.
    Client resmi di [`clients/`](../clients) sudah fail-open secara bawaan.
 3. **API key adalah rahasia server.** Jangan menaruh API key di aplikasi Android/iOS/Flutter atau JavaScript
@@ -66,10 +137,11 @@ flowchart TD
 |---|---|---|---|
 | **0** | Tidak ada. Upload ke SILO seperti biasa | Laporan & review ops, evidence pelanggan | Aplikasi lama yang belum bisa diubah |
 | **1** | Tambah metadata (`awb`, `photo-type`, ...) saat upload | Sama dengan level 0, tapi data resi/kurir akurat | Aplikasi yang sedang dikembangkan (disarankan minimal) |
-| **2A** | Level 1 + panggil API setelah upload | Hasil per foto langsung, bisa memberi notif/menolak | Ingin memberi feedback ke kurir |
+| **2A** | Level 1 + panggil API setelah upload ([cara tercepat](#0-cara-tercepat-1-panggilan-2-field)) | Keputusan per foto langsung (`courier_message`, `allow_status_update`), bisa memberi notif/menahan status | Ingin memberi feedback ke kurir atau menahan status saat foto ditolak (disarankan) |
 | **2B** | Kirim file ke engine | Sama dengan 2A, engine yang menyimpan file | Aplikasi tanpa penyimpanan S3 sendiri |
 
-Semua level bisa naik bertahap tanpa mengubah engine.
+Semua level bisa naik bertahap tanpa mengubah engine. Menahan update status saat foto ditolak hanya bisa di level 2,
+karena aplikasi butuh jawaban engine **sebelum** update status. Level 0/1 menganalisis setelahnya (laporan, evidence, kalibrasi).
 
 ---
 
@@ -291,8 +363,8 @@ Respons:
 
 | HTTP | Arti | Yang dilakukan aplikasi |
 |---|---|---|
-| `200` | Hasil sudah ada (`status: done` atau `error`) | Baca `verdict`, `action`, `reasons` |
-| `202` | Diterima, masih diproses | Lanjutkan proses. Ambil hasil nanti via `poll_url` atau webhook |
+| `200` | Hasil sudah ada (`status: done` atau `error`) | Baca `allow_status_update` dan `courier_message` |
+| `202` | Diterima, masih diproses | Lanjutkan proses (`allow_status_update` bernilai `true`). Ambil hasil nanti via `poll_url` atau webhook |
 | `4xx` | Request salah (lihat [kode error](#10-kode-error)) | Perbaiki request, jangan diulang terus |
 | `5xx` / timeout | Engine bermasalah | **Fail-open**: lanjutkan proses seperti biasa |
 
@@ -321,9 +393,11 @@ curl -s -H "X-API-Key: $PQE_API_KEY" "$PQE_URL/v1/photos/<id>"
   "status": "done",
   "verdict": "REJECT",
   "verdict_text": "Foto tidak layak",
-  "action": "notify",
+  "action": "reject",
+  "allow_status_update": false,
+  "courier_message": "Wajib foto ulang. Foto buram. Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.",
   "retake_required": true,
-  "retake_message": "Kualitas foto tidak memenuhi syarat dan tidak bisa diperbaiki otomatis. Silakan ambil foto ulang.",
+  "retake_message": "Kualitas foto tidak memenuhi syarat. Silakan ambil foto ulang.",
   "photo_type": "pod_recipient",
   "profile": "pod_recipient",
   "awb": "AWB123",
@@ -367,21 +441,24 @@ Arti field penting:
 |---|---|---|
 | `status` | `pending` / `done` / `error` | `error` = file rusak atau gagal diproses (lihat `error.code`) |
 | `verdict` | `PASS` / `WARN` / `REJECT` | Penilaian kualitas |
-| `action` | `log` / `notify` / `reject` | **Yang sebaiknya dilakukan aplikasi**, sudah memperhitungkan mode tenant |
-| `retake_required` | `true` / `false` | `true` = kualitas tidak bisa dimaksimalkan (sudah dicoba diperbaiki otomatis tapi tetap `REJECT`, atau ops meminta foto ulang): **foto harus diambil ulang**. Lihat [§7](#7-menampilkan-hasil-ke-kurir) |
-| `retake_message` | teks / `null` | Pesan siap tampil untuk kurir (ID/EN sesuai `Accept-Language`). Hanya terisi jika `retake_required: true` |
+| `allow_status_update` | `true` / `false` | **Paling penting.** `false` = foto ditolak (`action: reject`, yaitu `REJECT` di mode `enforce`, atau ops meminta foto ulang / menandai kecurangan): aplikasi pengiriman **tidak boleh** update status pengiriman sampai foto ulang diterima. `pending` atau gagal karena sistem (`status: error` selain file rusak) = `true` (fail-open). File rusak (`UNREADABLE_FILE`) diperlakukan seperti `REJECT`. Lihat [§7](#7-menampilkan-hasil-ke-kurir) |
+| `courier_message` | teks / `null` | Satu kalimat siap tampil untuk kurir (ID/EN sesuai `Accept-Language`): `<message>. <suggestion>` dari alasan pertama, diawali `Wajib foto ulang.` jika `retake_required`. `null` = kurir tidak perlu melihat apa pun (`action: log`) |
+| `action` | `log` / `notify` / `reject` | Ketegasan saat ini, sudah memperhitungkan mode tenant (`shadow` → `log`, `warn` → `notify`, `enforce` → `reject` untuk `REJECT`) |
+| `retake_required` | `true` / `false` | `true` = kualitas tidak memenuhi syarat (verdict `REJECT`, termasuk file rusak), atau ops meminta foto ulang |
+| `retake_message` | teks / `null` | Pesan foto ulang (ID/EN). Hanya terisi jika `retake_required: true` |
 | `evidence_eligible` | `true` / `false` | Apakah foto ini tampil di evidence pelanggan (lihat [§9](#9-evidence-untuk-pelanggan-penagihan)) |
 | `reasons[].severity` | `reject` / `warn` / `info` | `info` hanya informasi, jangan ditampilkan sebagai kesalahan |
 | `scores` | 0-100 | Makin tinggi makin baik. `authenticity_risk` makin tinggi makin mencurigakan |
-| `urls.processed` | URL sementara | Versi terkompres (<1 MB). Jika pencahayaan diperbaiki otomatis, ini versi yang sudah diperbaiki. Berlaku `expires_in` detik |
+| `urls.processed` | URL sementara | Versi teroptimasi (<1 MB), isi gambar tidak dimanipulasi. Foto kecil: sama dengan original. Berlaku `expires_in` detik |
 | `urls.original` | URL sementara | File asli dari kamera, **tidak pernah diubah**. `sha256` selalu merujuk ke file ini |
 
 Detail foto (`GET /v1/photos/{id}`) dan endpoint uji `POST /v1/analyze/preview` juga berisi objek `enhancement`
-(apakah perbaikan otomatis dicoba/dipakai). Penjelasannya di [§7.1](#71-perbaikan-otomatis-tanpa-ai).
+(koreksi pencahayaan opsional; bawaan `{"attempted": false, "applied": false}`). Penjelasannya di [§7.1](#71-optimasi-tanpa-manipulasi).
 
 ### 6.4 Laravel (backend) dengan fail-open
 
-Cara paling sederhana: salin [`clients/php/PhotoQualityClient.php`](../clients/php/PhotoQualityClient.php).
+Cara paling sederhana: salin [`clients/php/PhotoQualityClient.php`](../clients/php/PhotoQualityClient.php) dan pakai
+`checkObject` (lihat [§0](#0-cara-tercepat-1-panggilan-2-field)). Jika butuh seluruh hasil, pakai `analyzeObject`:
 
 ```php
 // config/services.php
@@ -394,18 +471,17 @@ $r = $pqe->analyzeObject($path, [
     'captured_at' => now()->toIso8601String(), 'external_id' => (string) $photo->id,
 ], true, 3000);
 
-// Status pengiriman SUDAH di-update sebelum baris ini. Hasil engine hanya pelengkap.
-$quality = null;
+$allow = true;    // fail-open: engine mati/lambat/error -> status tetap diupdate
+$message = null;
 if ($r['ok'] && ($r['data']['status'] ?? null) === 'done') {
-    $quality = [
-        'verdict' => $r['data']['verdict'],
-        'action'  => $r['data']['action'],
-        'retake_required' => $r['data']['retake_required'],   // true = minta kurir foto ulang
-        'retake_message'  => $r['data']['retake_message'],
-        'reasons' => array_values(array_filter($r['data']['reasons'], fn ($x) => $x['severity'] !== 'info')),
-    ];
+    $allow = $r['data']['allow_status_update'];   // false = foto ditolak
+    $message = $r['data']['courier_message'];     // null = tidak perlu menampilkan apa pun
 }
-return response()->json(['ok' => true, 'photo_quality' => $quality]);   // null = belum ada hasil, lanjut saja
+if (!$allow) {
+    return response()->json(['ok' => false, 'foto_ulang' => true, 'pesan' => $message], 422);  // status TIDAK diupdate
+}
+$shipment->updateStatus('DELIVERED');
+return response()->json(['ok' => true, 'pesan' => $message]);
 ```
 
 Tanpa client, dengan `Http` bawaan Laravel:
@@ -420,15 +496,17 @@ try {
         ->post(config('services.pqe.url') . '/v1/analyze?sync=true&timeout_ms=3000', [
             'object_key' => $path, 'awb' => $awb, 'photo_type' => 'pod_recipient',
         ]);
-    $quality = $res->successful() ? $res->json() : null;
+    $quality = $res->status() === 200 ? $res->json() : null;
 } catch (ConnectionException $e) {
     $quality = null; // engine tidak tersedia: lanjutkan proses, JANGAN gagalkan request kurir
 }
+$allow = $quality['allow_status_update'] ?? true;   // null/tidak ada hasil -> fail-open
 ```
 
 ### 6.5 Node.js / TypeScript (backend)
 
-Salin [`clients/typescript/pqe-client.ts`](../clients/typescript/pqe-client.ts) (tanpa dependency).
+Salin [`clients/typescript/pqe-client.ts`](../clients/typescript/pqe-client.ts) (tanpa dependency). Paling ringkas:
+`checkObject` / `checkFile` (lihat [§0](#0-cara-tercepat-1-panggilan-2-field)). Jika butuh seluruh hasil:
 
 ```ts
 import { PhotoQualityClient } from "./pqe-client.ts";
@@ -436,10 +514,10 @@ import { PhotoQualityClient } from "./pqe-client.ts";
 const pqe = new PhotoQualityClient({ baseUrl: process.env.PQE_URL!, apiKey: process.env.PQE_API_KEY!, lang: "id" });
 
 const r = await pqe.analyzeObject(objectKey, { awb, photo_type: "pod_recipient", courier_id: courierId }, { sync: true, timeoutMs: 3000 });
-if (r.ok && r.photo.status === "done") {
-  // r.photo.retake_required (true = minta foto ulang), r.photo.retake_message, r.photo.action, r.photo.reasons
+if (r.ok && r.photo?.status === "done") {
+  // r.photo.allow_status_update (false = JANGAN update status), r.photo.courier_message, r.photo.reasons
 } else {
-  // r.unavailable === true -> engine lambat/mati. Lanjutkan proses seperti biasa.
+  // r.unavailable === true / pending -> engine lambat/mati. Lanjutkan proses (fail-open).
 }
 ```
 
@@ -485,79 +563,81 @@ curl -s -H "X-API-Key: $PQE_API_KEY" "$PQE_URL/v1/photos?external_id=foto-998877
 
 ## 7. Menampilkan hasil ke kurir
 
-Dua field menentukan apa yang ditampilkan:
+Status pengiriman **milik aplikasi pengiriman**; engine hanya memberi keputusan. Dua field menentukan semuanya:
 
-- **`retake_required`** menjawab *"apakah foto ini harus diambil ulang?"*. Engine selalu mencoba memperbaiki
-  pencahayaan dulu (lihat [§7.1](#71-perbaikan-otomatis-tanpa-ai)). Jika hasilnya tetap `REJECT` (buram berat,
-  pecah, terlalu kecil, putih/hitam total), `retake_required` = `true` dan `retake_message` berisi pesan siap tampil.
-  Foto `WARN` (kurang ideal tapi masih terbaca) **tidak** perlu diulang.
-- **`action`** menjawab *"seberapa tegas aplikasi boleh bertindak saat ini?"*. Nilainya sudah memperhitungkan mode
-  yang diatur admin (`shadow` → `warn` → `enforce`), jadi aplikasi tidak perlu diubah saat mode dinaikkan.
+- **`allow_status_update`** menjawab *"boleh update status pengiriman sekarang?"*. `false` hanya jika foto ditolak:
+  `REJECT` di mode `enforce` (`action: reject`), atau ops meminta foto ulang / menandai kecurangan. Selama `false`,
+  aplikasi pengiriman **tidak boleh** mengupdate status; kurir mengambil foto ulang dan aplikasi mengirim lagi.
+  Engine mati, lambat, error, atau masih `pending` = `true` (fail-open).
+- **`courier_message`** adalah kalimat siap tampil untuk kurir, atau `null` jika kurir tidak perlu melihat apa pun.
+
+Nilai keduanya sudah memperhitungkan mode yang diatur admin (`shadow` → `warn` → `enforce`), jadi aplikasi tidak perlu
+diubah saat mode dinaikkan. `retake_required` (kualitas tidak memenuhi syarat) dan `action` tetap tersedia jika
+aplikasi butuh detail.
 
 | Kondisi | Perilaku aplikasi yang disarankan |
 |---|---|
-| `retake_required: true` dan `action: reject` | Tampilkan `retake_message` + `suggestion` alasan pertama, minta foto ulang. Sediakan jalur darurat (misal "Lapor ke SPV") agar kurir tidak terjebak |
-| `retake_required: true` dan `action: notify` | Tampilkan `retake_message` + saran, beri pilihan **"Foto ulang"** atau **"Tetap kirim"** |
-| `action: notify` (verdict `WARN`) | Opsional: tampilkan saran ringan. Foto tetap diterima dan masuk evidence (bawaan) |
-| `action: log` (mode `shadow`, atau verdict `PASS`) | Tidak menampilkan apa-apa |
-| *(tidak ada hasil / engine tidak tersedia)* | Lanjutkan seperti biasa, jangan tampilkan apa-apa |
+| `allow_status_update: false` (`action: reject`) | Tampilkan `courier_message` + tombol **Foto ulang**. **Status pengiriman tidak diupdate** sampai foto ulang diterima |
+| `action: notify` + `retake_required: true` (mode `warn`) | Tampilkan `courier_message`, beri pilihan **"Foto ulang"** atau **"Tetap kirim"**. Status boleh diupdate |
+| `action: notify` (verdict `WARN`) | Opsional: tampilkan `courier_message` sebagai saran ringan. Foto diterima dan masuk evidence (bawaan), status diupdate |
+| `action: log` (verdict `PASS`, atau mode `shadow`) | Tidak menampilkan apa-apa (`courier_message: null`). Status diupdate |
+| *(tidak ada hasil / engine tidak tersedia / `202`)* | Tidak menampilkan apa-apa. Update status seperti biasa (fail-open) |
 
-Contoh teks (pakai `retake_message`, lalu `message` dan `suggestion` dari alasan; bahasa mengikuti `Accept-Language`):
+Contoh tampilan (`courier_message` apa adanya; bahasa mengikuti `Accept-Language`):
 
 ```
-⚠ Foto buram
-Kualitas foto tidak memenuhi syarat dan tidak bisa diperbaiki otomatis. Silakan ambil foto ulang.
-Saran: Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.
-[ Foto ulang ]   [ Tetap kirim ]      <- "Tetap kirim" hanya jika action = notify
+⚠ Wajib foto ulang. Foto buram. Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.
+[ Foto ulang ]                      (status pengiriman belum berubah)
 ```
 
-Flutter (contoh widget):
+Di mode `warn` tambahkan tombol **Tetap kirim** (status boleh diupdate karena `allow_status_update: true`).
+
+Flutter (contoh widget, data dari backend Anda):
 
 ```dart
 Widget qualityBanner(Map<String, dynamic>? q) {
-  if (q == null || q['action'] == 'log') return const SizedBox.shrink();
-  final reasons = (q['reasons'] as List).where((r) => r['severity'] != 'info').toList();
+  final msg = q?['courier_message'] as String?;
+  if (msg == null) return const SizedBox.shrink();
+  final blocked = q!['allow_status_update'] == false;
   return Card(
-    color: q['retake_required'] == true ? Colors.red.shade50 : Colors.orange.shade50,
-    child: Column(children: [
-      if (q['retake_required'] == true) ListTile(title: Text(q['retake_message'])),
-      for (final r in reasons)
-        ListTile(title: Text(r['message']), subtitle: Text(r['suggestion'])),
-    ]),
+    color: blocked ? Colors.red.shade50 : Colors.orange.shade50,
+    child: ListTile(
+      title: Text(msg),
+      trailing: blocked ? const Text('Foto ulang') : null,
+    ),
   );
 }
 ```
 
 Daftar semua kode alasan dan pesannya: `GET /v1/meta/reason-codes?lang=id` atau [api-reference.md](api-reference.md#kode-alasan).
 
-### 7.1 Perbaikan otomatis (tanpa AI)
+### 7.1 Optimasi tanpa manipulasi
 
-Foto yang **gelap, terlalu terang, pudar, atau silau** (kode `TOO_DARK`, `TOO_BRIGHT`, `LOW_CONTRAST`, `GLARE`)
-diperbaiki otomatis sebelum diputuskan. Aplikasi **tidak perlu melakukan apa-apa**: versi yang sudah diperbaiki
-ada di `urls.processed`, dan verdict/`retake_required` sudah dihitung dari hasil perbaikan.
+Engine **tidak memanipulasi isi gambar**: tidak ada AI, filter, penajaman, crop, atau koreksi warna/cahaya. Yang
+dilakukan hanya optimasi dan kompresi dinamis, sehingga keabsahan dokumen bukti penagihan terjaga:
 
-Metodenya sengaja dibuat aman untuk dokumen bukti penagihan:
+- **Foto kecil tidak disentuh** (sudah di bawah target dan ukurannya wajar): disimpan apa adanya, `urls.processed`
+  menunjuk ke original.
+- Foto besar **diperkecil proporsional** bila perlu, lalu dicari kualitas JPEG tertinggi yang muat < 1 MB. Pengaman
+  SSIM memastikan teks tetap terbaca; jika target tidak tercapai tanpa merusak keterbacaan, keterbacaan diutamakan
+  (kode info `COMPRESSION_TARGET_NOT_MET`).
+- Rotasi mengikuti orientasi kamera (EXIF) agar foto tidak miring saat ditampilkan.
+- **Original selalu disimpan utuh** di SILO; `sha256`/kode verifikasi selalu merujuk ke original.
+- Foto yang kualitasnya tidak memenuhi syarat (buram, pecah, terlalu kecil, terlalu gelap/terang/pudar) **tidak
+  "dibenarkan"**: engine mengembalikan `retake_required: true` dan kurir diminta foto ulang.
 
-- **Tanpa AI / model generatif.** Tidak ada piksel yang "dikarang".
-- **Satu-satunya operasi** adalah satu tabel kurva pencahayaan (levels + gamma, seperti fitur *Levels/Curves* di
-  aplikasi foto) yang sama untuk **seluruh piksel dan ketiga kanal warna**. Nilai baru tiap piksel hanya bergantung
-  pada nilai piksel itu sendiri, bukan posisi atau tetangganya. Kurvanya selalu naik (monoton).
-- **Kenapa mustahil menambah/mengubah teks atau angka:** untuk menggambar huruf baru, piksel yang nilainya sama harus
-  diberi nilai berbeda di tempat yang berbeda. Kurva selalu memberi nilai yang sama untuk nilai yang sama, dan
-  karena naik terus, urutan terang-gelap (bentuk tulisan) tidak pernah terbalik.
-- **Verifikasi eksak setiap foto:** setelah koreksi, engine memeriksa bahwa setiap nilai masukan pada setiap kanal
-  menghasilkan tepat satu nilai keluaran dan urutannya tidak terbalik. Satu pelanggaran saja = hasil dibuang dan
-  foto dinilai apa adanya.
-- **Tanpa penajaman, tanpa resize/crop/rotasi** pada langkah perbaikan, dan **tanpa label/watermark** di foto hasil.
-- **Original tidak disentuh.** File asli tetap di SILO dan `sha256`/kode verifikasi selalu merujuk ke original.
-- Setelah perbaikan, hanya skor `exposure` dan `ocr` yang dihitung ulang. Skor ketajaman dan resolusi tetap dari
-  foto asli, jadi foto buram/pecah tidak bisa "lolos" karena perbaikan.
-- Hasil perbaikan hanya dipakai jika verdict **membaik** (misal `REJECT` → `WARN`/`PASS`).
+#### Koreksi pencahayaan opsional (nonaktif secara bawaan)
 
-Foto **buram berat, pecah, atau terlalu kecil** tidak bisa diperbaiki secara jujur, sehingga engine langsung
-mengembalikan `retake_required: true`.
+Admin bisa mengizinkan koreksi pencahayaan per profile (`enhance.enabled: true`, lihat
+[configuration.md](configuration.md#perbaikan-pencahayaan-otomatis-enhance)). Jika aktif, foto `TOO_DARK`,
+`TOO_BRIGHT`, `LOW_CONTRAST`, atau `GLARE` dikoreksi dengan satu kurva pencahayaan global (levels + gamma) yang sama
+untuk seluruh piksel dan ketiga kanal warna, lalu diverifikasi eksak (setiap nilai masukan → tepat satu nilai keluaran,
+urutan tidak terbalik). Karena kurva memberi nilai yang sama untuk nilai yang sama di mana pun posisinya, koreksi ini
+tidak bisa menambah atau mengubah teks/angka. Hasil hanya dipakai jika verdict membaik; skor ketajaman dan resolusi
+tetap dari foto asli.
 
-Objek `enhancement` di detail foto (`GET /v1/photos/{id}`) dan di `POST /v1/analyze/preview`:
+Objek `enhancement` di detail foto (`GET /v1/photos/{id}`) dan di `POST /v1/analyze/preview`. Bawaan (nonaktif):
+`{"attempted": false, "applied": false}`. Jika aktif dan dipakai:
 
 ```json
 "enhancement": {
@@ -571,14 +651,11 @@ Objek `enhancement` di detail foto (`GET /v1/photos/{id}`) dan di `POST /v1/anal
 
 | Field | Arti |
 |---|---|
-| `attempted` | Perbaikan dicoba (hanya jika ada alasan `TOO_DARK`/`TOO_BRIGHT`/`LOW_CONTRAST`/`GLARE` dan profile mengizinkan) |
-| `applied` | Hasil perbaikan dipakai untuk versi processed dan verdict |
+| `attempted` | Koreksi dicoba (hanya jika `enhance.enabled: true` dan ada alasan `TOO_DARK`/`TOO_BRIGHT`/`LOW_CONTRAST`/`GLARE`) |
+| `applied` | Hasil koreksi dipakai untuk versi processed dan verdict |
 | `operations` | Kurva yang dipakai: `levels:<min>-<max>` dan/atau `gamma:<nilai>` |
-| `before` | Verdict, skor, dan kode alasan **sebelum** perbaikan |
+| `before` | Verdict, skor, dan kode alasan **sebelum** koreksi |
 | `reason` | Jika tidak dipakai: `nothing_to_fix` (kurva tidak perlu), `verification_failed` (verifikasi gagal, dibuang), `no_improvement` (verdict tidak membaik) |
-
-Admin bisa mematikan perbaikan per profile (`enhance.enabled: false`, lihat
-[configuration.md](configuration.md#25-profiles-aturan-per-jenis-foto)).
 
 ---
 
@@ -604,7 +681,7 @@ X-PQE-Delivery: 1234
 X-PQE-Timestamp: 1761151010
 X-PQE-Signature: sha256=5f2c...
 
-{"event":"analysis.completed","photo":{ ...objek foto, sama dengan respons API tanpa field urls (termasuk retake_required & retake_message)... }}
+{"event":"analysis.completed","photo":{ ...objek foto, sama dengan respons API tanpa field urls (termasuk allow_status_update, courier_message, retake_required & retake_message)... }}
 ```
 
 | Event | Kapan |
@@ -729,13 +806,13 @@ Untuk foto yang gagal diproses setelah diterima, `status` = `error` dan `error.c
 
 ## 11. Checklist sebelum go-live
 
-- [ ] Status pengiriman kurir **tidak bergantung** pada respons engine (uji dengan engine dimatikan)
+- [ ] Engine mati/lambat **tidak menahan** update status pengiriman (uji dengan engine dimatikan: status tetap diupdate)
+- [ ] `allow_status_update: false` → status pengiriman **tidak** diupdate, kurir diminta foto ulang (uji dengan foto buram di mode `enforce`, bisa lewat halaman Uji Coba Kamera)
 - [ ] Semua panggilan ke engine punya timeout (≤ 3 dtk sync, ≤ 5 dtk lainnya) dan fail-open
 - [ ] API key hanya ada di server (env), tidak di aplikasi mobile/browser, tidak di git
 - [ ] Foto dikirim asli dari kamera (tanpa `imageQuality`/`maxWidth` kecil)
 - [ ] Metadata `awb`, `photo-type`, `courier-id`, `customer-id` terkirim (cek di Web UI → detail foto)
-- [ ] Teks ke kurir memakai `retake_message`/`message`/`suggestion`, logika memakai `retake_required`/`code`/`action`
-- [ ] `retake_required: true` ditangani di aplikasi kurir (pesan + tombol **Foto ulang**, dengan jalur darurat)
+- [ ] Teks ke kurir memakai `courier_message` apa adanya (saat tidak `null`); logika memakai `allow_status_update` (detail: `retake_required`/`code`/`action`)
 - [ ] Webhook (jika dipakai): tanda tangan diverifikasi, balas 2xx cepat, idempotent
 - [ ] Runtime Node/PHP sudah versi patch 21 Okt 2026 (lihat [clients/README.md](../clients/README.md))
 - [ ] Tenant berjalan di mode `shadow` minimal 1-2 minggu sebelum `warn`/`enforce`
@@ -747,7 +824,7 @@ Untuk foto yang gagal diproses setelah diterima, `status` = `error` dan `error.c
 
 **Apakah engine membuat upload kurir lebih lambat?**
 Tidak. Di Level 0/1 engine bekerja setelah upload, terpisah dari aplikasi. Di Level 2 Anda memanggilnya dengan
-timeout dan fail-open. Analisis umumnya 0,2-1,5 detik per foto (foto resi dengan OCR bisa sampai ~3 detik di CPU biasa).
+timeout 3 detik dan fail-open: jika lewat batas, `allow_status_update` dianggap `true` dan kurir lanjut. Analisis umumnya 0,2-1,5 detik per foto (foto resi dengan OCR bisa sampai ~3 detik di CPU biasa).
 
 **Bolehkah aplikasi mobile memanggil engine langsung?**
 Tidak disarankan karena API key akan bocor. Panggil lewat backend Anda. Jika terpaksa dari web (misal portal
@@ -761,10 +838,14 @@ Engine mendeteksi perubahan ETag dan menganalisis ulang.
 
 **HEIC dari iPhone didukung?** Ya. JPEG, PNG, HEIC/HEIF, dan WebP didukung. Hasil kompres berupa JPEG.
 
-**Apakah foto yang diperbaiki otomatis masih sah sebagai bukti?**
-Ya. Perbaikan hanya mengubah pencahayaan dengan satu kurva global yang diverifikasi eksak, tanpa AI, sehingga tidak
-mungkin menambah/mengubah teks atau angka (lihat [§7.1](#71-perbaikan-otomatis-tanpa-ai)). File original tetap
-tersimpan utuh di SILO dan kode verifikasi (SHA-256) di PDF evidence merujuk ke original.
+**Apakah engine mengubah isi foto?**
+Tidak. Engine hanya mengoptimasi ukuran dan mengompres (lihat [§7.1](#71-optimasi-tanpa-manipulasi)); tidak ada AI,
+filter, atau koreksi cahaya secara bawaan. File original tetap tersimpan utuh di SILO dan kode verifikasi (SHA-256)
+di PDF evidence merujuk ke original. Foto gelap/buram tidak "dibenarkan", kurir diminta foto ulang.
+
+**Apakah engine mengubah status pengiriman?**
+Tidak. Status pengiriman milik aplikasi pengiriman. Engine hanya menjawab `allow_status_update`; aplikasi yang
+memutuskan update status (dan wajib menahannya jika `false`).
 
 **Foto `WARN` perlu menunggu persetujuan ops?**
 Tidak, dengan setelan bawaan (`review_required: false`) foto `WARN` langsung masuk evidence. Hanya tenant yang

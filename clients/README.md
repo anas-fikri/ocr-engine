@@ -3,15 +3,48 @@
 Satu file per bahasa, tanpa dependency. Salin ke project Anda. Panduan lengkap: [docs/integration-guide.md](../docs/integration-guide.md),
 atau versi interaktif di `<server-engine>/ui/guide.html` (tanpa login).
 
-Field terpenting untuk aplikasi kurir: `retake_required` (`true` = minta kurir foto ulang) dan `retake_message`
-(pesan siap tampil). Keduanya ada di objek foto yang dikembalikan client (`r.photo` di TypeScript, `$r['data']` di PHP).
-
 | Bahasa | File | Runtime minimal (wajib versi yang sudah di-patch) |
 |---|---|---|
 | TypeScript / JavaScript (Node, browser, React Native, Deno, Bun) | [typescript/pqe-client.ts](typescript/pqe-client.ts) | Node **22.23.4** / **24.22.1** (disarankan) / **26.12.1** |
 | PHP (Laravel, CodeIgniter, native) | [php/PhotoQualityClient.php](php/PhotoQualityClient.php) | PHP **8.2.35** / **8.3.36** / **8.4.27** (disarankan) / **8.5.12** |
 
 Kotlin (Android), Swift (iOS), Dart (Flutter), dan Python: contoh kode ada di panduan integrasi.
+
+## Cara tercepat: `checkObject` / `checkFile`
+
+Satu panggilan, satu keputusan. Tunggu maks. 3 detik, **tidak pernah throw**, dan fail-open (engine mati, lambat,
+error, atau lewat batas waktu = status boleh diupdate).
+
+```ts
+// TypeScript / Node
+const pqe = new PhotoQualityClient({ baseUrl: process.env.PQE_URL!, apiKey: process.env.PQE_API_KEY!, lang: "id" });
+const d = await pqe.checkObject(objectKey, { awb, photo_type: "pod_recipient" });   // foto sudah di SILO
+// atau: await pqe.checkFile(blob, "foto.jpg", { awb })                              // kirim file langsung
+if (d.message) kirimKeKurir(d.message);
+if (d.allowStatusUpdate) await updateStatusPengiriman();   // false = foto ditolak: JANGAN update, minta foto ulang
+```
+
+```php
+// PHP / Laravel
+$pqe = new PhotoQualityClient(env('PQE_URL'), env('PQE_API_KEY'), 5000, 'id');
+$d = $pqe->checkObject($objectKey, ['awb' => $awb, 'photo_type' => 'pod_recipient']);
+// atau: $pqe->checkFile('/tmp/foto.jpg', ['awb' => $awb]);
+if ($d['message']) { /* tampilkan ke kurir */ }
+if ($d['allow_status_update']) { /* update status pengiriman */ }
+```
+
+| TypeScript | PHP | Arti |
+|---|---|---|
+| `allowStatusUpdate` | `allow_status_update` | `false` = foto ditolak (`REJECT` di mode `enforce`): **jangan** update status pengiriman, minta foto ulang |
+| `message` | `message` | Kalimat siap tampil untuk kurir, `null` = tidak perlu menampilkan apa pun |
+| `retakeRequired` | `retake_required` | Kualitas tidak memenuhi syarat (verdict `REJECT`) |
+| `decided` | `decided` | `false` = belum ada keputusan (engine mati/lambat/error/`202`) → fail-open |
+| `photoId`, `verdict` | `photo_id`, `verdict` | Untuk disimpan/dilacak |
+| `error` (opsional) | `error` (opsional) | Pesan error jika engine tidak memberi hasil |
+
+Status pengiriman milik aplikasi pengiriman; engine tidak pernah mengubahnya. Butuh seluruh hasil? Pakai
+`analyzeObject` / `analyzeFile` (objek foto lengkap di `r.photo` / `$r['data']`, termasuk `allow_status_update`,
+`courier_message`, `retake_required`, `reasons`), lalu `toDecision(...)` untuk keputusan yang sama.
 
 ## Kenapa versi minimal ini?
 

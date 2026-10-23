@@ -13,7 +13,7 @@ Daftar isi:
 - [Autentikasi & akses API](#autentikasi--akses-api)
 - [Foto tidak muncul / tidak diproses](#foto-tidak-muncul--tidak-diproses)
 - [Hasil analisis terasa salah](#hasil-analisis-terasa-salah)
-- [Perbaikan otomatis & foto ulang](#perbaikan-otomatis--foto-ulang)
+- [Foto ulang, status pengiriman & koreksi opsional](#foto-ulang-status-pengiriman--koreksi-opsional)
 - [Gambar, webhook, dan integrasi](#gambar-webhook-dan-integrasi)
 - [Pengaturan SILO: test koneksi gagal](#pengaturan-silo-test-koneksi-gagal)
 - [Infrastruktur & deployment](#infrastruktur--deployment)
@@ -70,16 +70,17 @@ Daftar isi:
 | Threshold sudah diubah tapi foto lama tidak berubah | Perubahan config hanya berlaku untuk analisis berikutnya | Klik **Analisis ulang** di detail foto, atau `POST /v1/photos/<id>/reprocess` |
 | Perubahan config belum terasa | Cache config ≤ 5 detik | Tunggu beberapa detik. Pastikan **Simpan** sukses dan versi config naik |
 
-## Perbaikan otomatis & foto ulang
+## Foto ulang, status pengiriman & koreksi opsional
 
 | Gejala | Penyebab | Solusi |
 |---|---|---|
-| Foto gelap tidak diperbaiki (`enhancement.attempted: false`) | Tidak ada alasan `TOO_DARK`/`TOO_BRIGHT`/`LOW_CONTRAST`/`GLARE` (misal hanya `BLURRY`), check `exposure` tidak aktif di profile, atau `enhance.enabled: false` | Normal untuk buram/pecah: tidak bisa diperbaiki secara jujur. Cek `checks` dan `enhance` di profile ([configuration.md](configuration.md#perbaikan-pencahayaan-otomatis-enhance)) |
-| `enhancement.reason: no_improvement` | Kurva sudah diterapkan tapi verdict tidak membaik (misal foto juga buram, atau terlalu gelap sampai detailnya hilang) | Foto dinilai apa adanya. Jika tetap `REJECT`, kurir diminta foto ulang (`retake_required: true`) |
-| `enhancement.reason: verification_failed` | Verifikasi eksak menolak hasil (sangat jarang). Hasil dibuang demi keamanan dokumen | Tidak perlu tindakan; foto dinilai apa adanya |
-| `enhancement.reason: nothing_to_fix` | Statistik foto tidak butuh kurva (rentang dan kecerahan tengah sudah normal), misal hanya sebagian kecil area yang silau | Normal |
-| Ops ragu apakah foto hasil perbaikan "diedit" | — | Bandingkan dengan **Buka original** di detail foto. Perbaikan hanya kurva pencahayaan global yang diverifikasi eksak; `sha256` dan kode verifikasi merujuk ke original. Penjelasan untuk pelanggan/auditor: [integration-guide.md §7.1](integration-guide.md#71-perbaikan-otomatis-tanpa-ai) |
-| `retake_required: true` padahal mode `shadow` | `retake_required` menilai kualitas, tidak bergantung mode | Aplikasi sebaiknya tetap memakai `action` untuk menentukan seberapa tegas (`log` = jangan ganggu kurir). Lihat [integration-guide.md §7](integration-guide.md#7-menampilkan-hasil-ke-kurir) |
+| Foto gelap tidak diperbaiki (`enhancement.attempted: false`) | Sesuai desain: engine tidak memanipulasi gambar, koreksi pencahayaan nonaktif secara bawaan | Kurir foto ulang di tempat terang. Jika admin memang ingin koreksi untuk profile tertentu: `enhance.enabled: true` ([configuration.md](configuration.md#perbaikan-pencahayaan-otomatis-enhance)) |
+| `allow_status_update: false` | Foto `REJECT` di mode `enforce`, atau ops memilih "Minta foto ulang"/"Tandai kecurangan" | Benar: aplikasi pengiriman jangan update status, tampilkan `courier_message`, minta foto ulang. Ops bisa **Setujui** jika foto sebenarnya layak |
+| Status pengiriman tertahan padahal engine mati | Aplikasi tidak fail-open (menganggap tidak ada jawaban = ditolak) | Hanya `allow_status_update: false` yang menahan status. Error/timeout/`202` = update status seperti biasa. Pakai `checkObject` di [clients/](../clients/README.md) yang sudah fail-open |
+| `retake_required: true` tapi `allow_status_update: true` | Mode `shadow`/`warn`: kualitas dinilai `REJECT`, tapi kurir belum ditahan | Sesuai desain. Kurir hanya ditahan di mode `enforce`. Lihat [integration-guide.md §7](integration-guide.md#7-menampilkan-hasil-ke-kurir) |
+| `courier_message` `null` padahal foto `REJECT` | Mode `shadow` (`action: log`): kurir tidak perlu melihat apa pun | Sesuai desain. Naikkan mode ke `warn`/`enforce` setelah kalibrasi |
+| `enhancement.reason: no_improvement` / `verification_failed` / `nothing_to_fix` | Hanya jika koreksi opsional diaktifkan: kurva tidak membuat verdict membaik, verifikasi eksak menolak hasil, atau foto tidak butuh kurva | Foto dinilai apa adanya. Jika `REJECT`, kurir diminta foto ulang |
+| Ops ragu apakah foto "diedit" | — | Bandingkan dengan **Buka original** di detail foto. Secara bawaan versi kompres hanya diperkecil/dikompres; `sha256` dan kode verifikasi merujuk ke original. Penjelasan untuk pelanggan/auditor: [integration-guide.md §7.1](integration-guide.md#71-optimasi-tanpa-manipulasi) |
 | Foto `WARN` tidak muncul di evidence | Tenant memakai `review_required: true` | Ops **Setujui** foto tersebut, atau ubah tenant ke `review_required: false` (bawaan) |
 | Foto `REJECT` muncul di evidence | Ops pernah **Setujui** foto itu | Sesuai desain. **Reset** atau **Minta foto ulang** untuk mengeluarkannya |
 

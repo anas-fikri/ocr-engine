@@ -27,11 +27,13 @@ Per 23 Oktober 2026 (versi engine 0.1.0):
 | 2 | API evidence + PDF + verifikasi hash | ✅ |
 | 2 | Webhook bertanda tangan HMAC | ✅ |
 | 2 | Source DB aplikasi (read-only) + job migrasi foto lama | ✅ |
-| 2 | Perbaikan pencahayaan otomatis **tanpa AI** (kurva global + verifikasi eksak, original & hash tidak berubah) | ✅ |
-| 2 | `retake_required` + `retake_message` (wajib foto ulang jika kualitas tidak bisa dimaksimalkan) | ✅ |
+| 2 | Optimasi tanpa manipulasi isi gambar (hanya perkecil proporsional + kompresi dinamis); koreksi pencahayaan kurva global terverifikasi tersedia sebagai **opsi per profile, nonaktif bawaan** | ✅ |
+| 2 | `retake_required` + `retake_message` (wajib foto ulang jika kualitas tidak memenuhi syarat) | ✅ |
+| 2 | Keputusan siap pakai `allow_status_update` + `courier_message`: `REJECT` di mode `enforce` menahan update status di aplikasi pengiriman; engine mati/lambat = fail-open | ✅ |
+| 2 | Integrasi tercepat: 1 panggilan sinkron, client `checkObject`/`checkFile` (TS & PHP) yang fail-open | ✅ |
 | 2 | Review ops opsional per tenant (`review_required`, bawaan `false`: PASS + WARN langsung masuk evidence) | ✅ |
 | 2 | Halaman Pengaturan SILO di Web UI (impor JSON `mc`, test koneksi, secret terenkripsi, tanpa restart) | ✅ |
-| 2 | Panduan integrasi developer di browser (`/ui/guide.html`, tanpa login) + 4 diagram alur (integrasi, penggunaan, keputusan kurir, proses engine) | ✅ |
+| 2 | Panduan integrasi developer di browser (`/ui/guide.html`, tanpa login) + 4 diagram alur (integrasi, penggunaan, keputusan di aplikasi pengiriman, proses engine) | ✅ |
 | 2 | Halaman Uji Coba Kamera untuk HP (`/ui/coba.html`): simulasi aplikasi kurir tanpa membangun aplikasi, tenant `uji-coba`, HTTPS opsional | ✅ |
 | 2 | Laporan export CSV/Excel | ⏳ belum |
 | 3 | Manifest Kubernetes + CI | ✅ (belum dideploy) |
@@ -46,15 +48,21 @@ Per 23 Oktober 2026 (versi engine 0.1.0):
    menyebut Redis dibaca sebagai "antrean di PostgreSQL".
 2. **Web UI memakai HTML + JavaScript tanpa build step, bukan React.** Disajikan langsung oleh engine di `/ui`,
    tidak butuh Node.js di server maupun pipeline build terpisah.
-3. **Perbaikan foto otomatis dibatasi ke kurva pencahayaan global, tanpa AI.** Foto adalah bukti penagihan
-   (nominal, nama, resi), jadi tidak boleh ada risiko teks/angka bertambah atau berubah. Kurva yang sama untuk semua
-   piksel tidak bisa menggambar huruf baru, dan setiap hasil diverifikasi eksak. Foto buram/pecah tidak "diperbaiki"
-   tetapi langsung dibalas wajib foto ulang (`retake_required`). Tidak ada label di foto hasil perbaikan; jejaknya ada
-   di field `enhancement` dan original tetap utuh.
+3. **Engine tidak memanipulasi isi gambar; hanya optimasi dan kompresi dinamis.** Foto adalah bukti penagihan
+   (nominal, nama, resi), jadi tidak boleh ada risiko isi berubah. Foto yang kualitasnya tidak memenuhi syarat (buram,
+   pecah, terlalu gelap/terang) tidak "diperbaiki" tetapi langsung dibalas wajib foto ulang (`retake_required`).
+   Koreksi pencahayaan dengan kurva global yang diverifikasi eksak (tanpa AI) tetap tersedia sebagai opsi per profile
+   (`enhance.enabled: true`), **nonaktif secara bawaan**.
 4. **Review ops opsional.** Bawaan `review_required: false` agar foto layak tidak tertahan menunggu ops: `PASS` dan
    `WARN` langsung masuk evidence, `REJECT` dibalas foto ulang. Tenant yang butuh pengecekan manual bisa menyalakannya.
 5. **Koneksi SILO bisa diatur dari Web UI** (selain env), dengan secret terenkripsi `PQE_SECRET_KEY`, supaya
    pergantian kredensial tidak butuh redeploy.
+6. **Status pengiriman milik aplikasi pengiriman, dan foto ditolak menahan update status.** Engine tidak pernah
+   mengubah status; engine memberi `allow_status_update` dan `courier_message`. Di mode `enforce`, foto `REJECT`
+   menghasilkan `allow_status_update: false`: aplikasi pengiriman tidak mengupdate status sampai foto ulang diterima.
+   Engine mati/lambat/error tetap fail-open (status diupdate). Menahan status butuh integrasi level 2 (sinkron); di
+   level 0/1 engine tetap bekerja setelahnya seperti flow 4.1. Integrasi paling cepat: satu panggilan
+   `POST /v1/analyze?sync=true` atau `checkObject` di client.
 
 ## Daftar Isi
 
@@ -89,7 +97,7 @@ Per 23 Oktober 2026 (versi engine 0.1.0):
 | T2 | Mendeteksi foto buram / pecah / gelap | Akurasi deteksi ≥ 90% terhadap sampel berlabel (target awal, dikalibrasi ulang) |
 | T3 | Kompresi dinamis < 1 MB tanpa merusak keterbacaan | ≥ 95% foto besar turun < 1 MB, skor ketajaman/OCR tidak turun melewati batas |
 | T4 | Validasi keaslian foto | Duplikat/reuse terdeteksi, risk score keaslian tersedia per foto |
-| T5 | **Tidak memperlambat kurir dan proses lain** | Tidak ada penambahan latency di alur upload & update status kurir |
+| T5 | **Tidak memperlambat kurir dan proses lain** | Tidak ada penambahan latency berarti di alur upload & update status kurir (level 2: maks. 3 detik, fail-open; status hanya ditahan jika foto ditolak) |
 | T6 | Bukti penagihan ke pelanggan lebih bersih | Penurunan sengketa/penolakan tagihan karena foto tidak valid |
 
 ### 1.3 Ruang lingkup
@@ -631,7 +639,10 @@ Untuk multi-tenant, kredensial per tenant direferensikan dari config (`dsn_ref`/
 
 ### 4.1 Flow utama: kurir memotret sampai foto dianalisis
 
-Jalur kurir **tidak berubah**. Engine bekerja setelahnya, terpisah.
+Jalur kurir **tidak berubah** (integrasi level 0/1). Engine bekerja setelahnya, terpisah. Di integrasi level 2
+(disarankan), aplikasi pengiriman memanggil `POST /v1/analyze?sync=true` setelah upload dan **sebelum** update status:
+`allow_status_update: false` (foto `REJECT` di mode `enforce`) = status tidak diupdate, kurir foto ulang; engine
+mati/lambat = status diupdate seperti di bawah (fail-open). Diagram level 2 ada di `/ui/guide.html#alur-pakai`.
 
 ```mermaid
 sequenceDiagram
@@ -687,15 +698,15 @@ flowchart TD
     G --> G6[OCR - jika profile dokumen]
     G1 & G2 & G3 & G4 & G5 & G6 --> H[Hitung skor 0-100 per dimensi]
     H --> I[Tentukan verdict + alasan + saran]
-    I --> I1{Gelap / terlalu terang /<br/>pudar / silau?}
+    I --> I1{enhance.enabled = true<br/>DAN gelap / terang / pudar / silau?<br/>bawaan: nonaktif}
     I1 -- Ya --> I2[Kurva pencahayaan global<br/>+ verifikasi eksak<br/>nilai ulang exposure & OCR]
     I2 --> I3{Verdict membaik?}
     I3 -- Ya --> I4[Pakai hasil perbaikan<br/>untuk processed & verdict]
     I3 -- Tidak --> I5[Pakai foto asli]
     I1 -- Tidak --> I5
-    I4 & I5 --> I6[REJECT = retake_required]
+    I4 & I5 --> I6[REJECT = retake_required<br/>enforce + REJECT = allow_status_update false]
     I6 --> J[Kompresi dinamis - lihat 4.4]
-    J --> K[Buat thumbnail]
+    J --> K[Buat thumbnail<br/>optimasi saja, isi gambar tidak dimanipulasi]
     K --> L[Simpan processed & thumb ke SILO]
     L --> M[Simpan hasil ke Postgres]
     M --> N{Ada sink/webhook?}

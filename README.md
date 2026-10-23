@@ -17,15 +17,15 @@ Engine bisa dipakai oleh aplikasi apa pun (Android, iOS, Flutter, web, Laravel, 
 |---|---|
 | Deteksi kualitas | Ketajaman (per tile), resolusi, blocking JPEG, foto kecil yang diperbesar, exposure, glare, kontras, OCR resi |
 | Verdict + alasan + saran | `PASS` / `WARN` / `REJECT` dengan pesan ID/EN yang bisa langsung ditampilkan ke kurir |
-| Perbaikan otomatis yang aman | Foto gelap/terlalu terang/pudar/silau diperbaiki **tanpa AI**: hanya satu kurva pencahayaan global yang diverifikasi eksak, sehingga mustahil menambah/mengubah teks atau angka. Original dan hash tidak berubah |
-| Wajib foto ulang | Jika kualitas tidak bisa dimaksimalkan (buram/pecah/terlalu kecil), respons langsung berisi `retake_required: true` + pesan untuk kurir |
-| Kompresi dinamis | < 1 MB dengan pengaman SSIM. Foto yang sudah kecil tidak disentuh. Keterbacaan diutamakan |
+| Keputusan siap pakai | `allow_status_update` (false = foto ditolak: aplikasi pengiriman **jangan** update status, minta foto ulang) + `courier_message` (kalimat siap tampil). Status pengiriman tetap milik aplikasi pengiriman; engine mati/lambat = fail-open |
+| Wajib foto ulang | Jika kualitas tidak memenuhi syarat (buram/pecah/terlalu kecil/terlalu gelap), respons langsung berisi `retake_required: true` + pesan untuk kurir |
+| Optimasi tanpa manipulasi | Isi gambar tidak diubah (tanpa AI, filter, penajaman, crop, koreksi cahaya). Hanya diperkecil proporsional bila perlu + kompresi dinamis < 1 MB dengan pengaman SSIM. Foto yang sudah kecil tidak disentuh. Original dan hash tidak berubah. Koreksi pencahayaan terverifikasi tersedia sebagai opsi per profile (nonaktif bawaan) |
 | Indikasi keaslian | EXIF (kamera, waktu, GPS, software editing), foto lama, beda waktu/lokasi, foto identik/mirip dipakai ulang |
 | Multi-aplikasi & multi-jenis foto | Tenant per aplikasi, profile per jenis foto (POD penerima, resi, paket, lokasi, barang), semua lewat config |
 | Mode bertahap | `shadow` → `warn` → `enforce` per tenant/profile tanpa deploy ulang |
-| 3 cara integrasi | Tanpa ubah aplikasi (baca SILO) · tambah metadata saat upload · panggil REST API |
+| Integrasi tercepat | Satu panggilan `POST /v1/analyze?sync=true` (key SILO atau file), baca 2 field. Client TS/PHP: `checkObject`/`checkFile` (fail-open, tidak pernah throw). Alternatif tanpa ubah aplikasi: baca SILO / metadata saat upload |
 | Web UI | Dashboard, antrean review ops (opsional), pencarian, uji foto, editor config tenant, API key, **Pengaturan SILO** (impor JSON mc, tes koneksi), status sistem |
-| Panduan developer di browser | `/ui/guide.html`: panduan integrasi interaktif tanpa login, diagram alur (integrasi, penggunaan, keputusan kurir, proses engine), contoh kode curl/PHP/TS/Python/Kotlin dengan URL server terisi otomatis |
+| Panduan developer di browser | `/ui/guide.html`: panduan integrasi interaktif tanpa login, diagram alur (integrasi, penggunaan, keputusan di aplikasi pengiriman, proses engine), contoh kode curl/PHP/TS/Python/Kotlin dengan URL server terisi otomatis |
 | Uji coba tanpa aplikasi | `/ui/coba.html`: buka dari HP, ambil foto dengan kamera, lihat pesan yang tampil di layar kurir + detail analisis (simulasi penuh atau uji cepat) |
 | Evidence pelanggan | JSON/PDF per resi atau per invoice, hanya foto layak (bawaan: PASS + WARN; REJECT tidak pernah), dengan hash verifikasi keaslian |
 | Andal | Antrean dengan retry & dead-letter, reconciliation harian, idempotent, webhook bertanda tangan HMAC |
@@ -62,6 +62,14 @@ docker compose exec engine pqe demo-upload
 # uji coba dari HP (kamera): http://<IP-PC>:8000/ui/coba.html
 ```
 
+Integrasi tercepat dari aplikasi pengiriman (satu panggilan, dua field):
+
+```php
+$d = $pqe->checkObject($objectKey, ['awb' => $awb, 'photo_type' => 'pod_recipient']);   // maks. 3 detik, fail-open
+if ($d['message']) { /* tampilkan ke kurir */ }
+if ($d['allow_status_update']) { /* update status pengiriman */ }   // false = foto ditolak, minta foto ulang
+```
+
 Langkah lengkap: [docs/getting-started.md](docs/getting-started.md).
 
 ## Dokumentasi
@@ -69,7 +77,7 @@ Langkah lengkap: [docs/getting-started.md](docs/getting-started.md).
 | Untuk | Dokumen |
 |---|---|
 | Semua orang | [Memulai dalam 10 menit](docs/getting-started.md) |
-| **Programmer aplikasi** | Panduan di browser: `http://<server-engine>/ui/guide.html` · [Panduan integrasi](docs/integration-guide.md) · [Referensi API](docs/api-reference.md) · [Client siap pakai](clients/README.md) |
+| **Programmer aplikasi** | [Cara tercepat (1 panggilan)](docs/integration-guide.md#0-cara-tercepat-1-panggilan-2-field) · Panduan di browser: `http://<server-engine>/ui/guide.html` · [Panduan integrasi](docs/integration-guide.md) · [Referensi API](docs/api-reference.md) · [Client siap pakai](clients/README.md) |
 | Admin engine | [Konfigurasi (env, tenant, profile, mapping, kalibrasi)](docs/configuration.md) |
 | Ops / finance | [Panduan Web UI](docs/web-ui-guide.md) |
 | DevOps / infra | [Operasional (deploy, SILO, K8s, monitoring, backup, runbook)](docs/operations.md) |

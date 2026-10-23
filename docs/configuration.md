@@ -4,7 +4,7 @@ Semua yang bisa diatur di Photo Quality Engine ada di tiga tempat:
 
 1. **Environment variable**: koneksi (SILO, database), keamanan, dan perilaku worker. Berlaku untuk seluruh engine, diubah lewat `.env` / K8s ConfigMap+Secret, dan butuh restart.
 2. **Pengaturan SILO (Web UI, admin)**: koneksi ke SILO (endpoint, access/secret key, bucket). Menimpa environment variable SILO dan berlaku **tanpa restart**. Lihat [1.6](#16-pengaturan-silo-lewat-web-ui).
-3. **Config tenant (YAML)**: aturan per aplikasi, yaitu sumber foto, mapping metadata, profile per jenis foto, threshold, perbaikan otomatis, kompresi, review, webhook, dan retensi. Diubah lewat Web UI atau API **tanpa restart**.
+3. **Config tenant (YAML)**: aturan per aplikasi, yaitu sumber foto, mapping metadata, profile per jenis foto, threshold, koreksi pencahayaan opsional, kompresi, review, webhook, dan retensi. Diubah lewat Web UI atau API **tanpa restart**.
 
 Daftar isi:
 
@@ -435,7 +435,7 @@ Cek hasil akhir: Web UI → Tenant → Ubah → **Validasi** → "Profile hasil 
 | `checks` | `[sharpness, resolution, exposure, exif, duplicate]` | Pemeriksaan yang dijalankan. Pilihan: `sharpness`, `resolution`, `exposure`, `exif`, `duplicate`, `ocr`. `pod_document` menambah `ocr` |
 | `thresholds` | lihat tabel di bawah | Batas skor per pemeriksaan |
 | `params` | lihat [bagian 3](#3-cara-skor-dihitung) | Parameter perhitungan |
-| `enhance` | `{enabled: true}` | Perbaikan pencahayaan otomatis tanpa AI. Lihat [di bawah](#perbaikan-pencahayaan-otomatis-enhance) |
+| `enhance` | `{enabled: false}` | Koreksi pencahayaan opsional tanpa AI. Bawaan nonaktif: engine tidak memanipulasi gambar. Lihat [di bawah](#perbaikan-pencahayaan-otomatis-enhance) |
 | `compression` | lihat [bagian 4](#4-kompresi--thumbnail) | Kompresi |
 | `thumbnail` | `{long_side_px: 320, quality: 70}` | Thumbnail |
 
@@ -465,17 +465,25 @@ Nilai bawaan:
 
 **authenticity** (keaslian) defaultnya hanya bisa WARN (`reject: null`). Temuan keaslian adalah indikasi untuk ditinjau manusia, bukan bukti.
 
-#### Perbaikan pencahayaan otomatis (enhance)
+<a id="perbaikan-pencahayaan-otomatis-enhance"></a>
+
+#### Koreksi pencahayaan opsional (enhance)
+
+**Bawaan: nonaktif.** Engine fokus memproses gambar tanpa manipulasi: hanya optimasi (perkecil proporsional bila
+perlu, orientasi EXIF) dan kompresi dinamis (lihat [bagian 4](#4-kompresi--thumbnail)). Foto gelap/terang/pudar
+dinilai apa adanya dan, jika `REJECT`, kurir diminta foto ulang.
+
+Admin bisa mengizinkan koreksi pencahayaan untuk profile tertentu:
 
 ```yaml
 profiles:
-  default:
+  package:
     enhance:
-      enabled: true     # bawaan. false = foto dinilai apa adanya, tanpa percobaan perbaikan
+      enabled: true     # bawaan false. true = coba koreksi kurva global sebelum verdict final
 ```
 
-Jika ada alasan `TOO_DARK`, `TOO_BRIGHT`, `LOW_CONTRAST`, atau `GLARE` (severity `warn`/`reject`), engine mencoba
-memperbaiki pencahayaan **sebelum** verdict final diputuskan:
+Jika diaktifkan dan ada alasan `TOO_DARK`, `TOO_BRIGHT`, `LOW_CONTRAST`, atau `GLARE` (severity `warn`/`reject`),
+engine mencoba mengoreksi pencahayaan **sebelum** verdict final diputuskan:
 
 1. Susun **satu** kurva pencahayaan (LUT 256 nilai) dari statistik foto: *levels* (rentang persentil 0,5-99,5
    direntangkan ke 0-255 jika rentangnya < 200) lalu *gamma* (jika median kecerahan < 90 atau > 170, digeser ke ±120;
@@ -492,9 +500,10 @@ memperbaiki pencahayaan **sebelum** verdict final diputuskan:
 
 Karena kurva memberi nilai yang sama untuk nilai piksel yang sama di mana pun posisinya, perbaikan ini **tidak bisa
 menambah atau mengubah huruf/angka**. Foto original dan `sha256` tidak pernah berubah. Detail hasil tersimpan di
-field `enhancement` foto (lihat [integration-guide.md §7.1](integration-guide.md#71-perbaikan-otomatis-tanpa-ai)).
+field `enhancement` foto (lihat [integration-guide.md §7.1](integration-guide.md#71-optimasi-tanpa-manipulasi)).
+Tanpa `enhance.enabled: true`, `enhancement` selalu `{"attempted": false, "applied": false}`.
 
-Foto yang tetap `REJECT` setelah percobaan ini (buram berat, pecah, terlalu kecil) mendapat `retake_required: true`.
+Foto yang `REJECT` (termasuk yang tetap `REJECT` setelah koreksi, jika diaktifkan) mendapat `retake_required: true`.
 
 ---
 
@@ -578,6 +587,10 @@ Catatan:
 
 ## 4. Kompresi & thumbnail
 
+Ini satu-satunya pemrosesan gambar bawaan engine: **optimasi tanpa manipulasi**. Foto hanya diperkecil proporsional
+(bila perlu) dan di-encode ulang; tidak ada filter, penajaman, crop, atau koreksi warna/cahaya. Original selalu
+disimpan utuh.
+
 | Field `compression` | Default `default` | `pod_document` | Arti |
 |---|---|---|---|
 | `enabled` | `true` | | `false` = tidak pernah kompres |
@@ -613,7 +626,7 @@ Lokasi file (jika `store_mode: processed`): `<ENGINE_BUCKET_PROCESSED>/<tenant>/
 | `WARN` | Ada skor di bawah `warn` (tapi tidak di bawah `reject`), atau ada indikasi keaslian |
 | `REJECT` | Ada skor di bawah `reject`, atau file tidak bisa dibuka (`UNREADABLE_FILE`) |
 
-`action` adalah **saran untuk aplikasi**, sesuai `mode` profile. Engine sendiri tidak pernah menahan upload atau status kurir.
+`action` adalah **saran untuk aplikasi**, sesuai `mode` profile. Engine sendiri tidak pernah menahan upload atau mengubah status pengiriman (status milik aplikasi pengiriman); engine hanya memberi keputusan `allow_status_update`.
 
 | mode | PASS | WARN | REJECT |
 |---|---|---|---|
@@ -621,18 +634,22 @@ Lokasi file (jika `store_mode: processed`): `<ENGINE_BUCKET_PROCESSED>/<tenant>/
 | `warn` | `log` | `notify` | `notify` |
 | `enforce` | `log` | `notify` | `reject` |
 
-- `log` = cukup dicatat, jangan ganggu kurir.
-- `notify` = tampilkan pesan + saran ke kurir, tapi foto tetap diterima.
-- `reject` = minta kurir foto ulang dengan penjelasan (`reasons[].message` + `suggestion`).
+- `log` = cukup dicatat, jangan ganggu kurir. `allow_status_update: true`, `courier_message: null`.
+- `notify` = tampilkan `courier_message` ke kurir, tapi foto tetap diterima. `allow_status_update: true`.
+- `reject` = foto ditolak: tampilkan `courier_message`, minta kurir foto ulang. `allow_status_update: false`, artinya
+  aplikasi pengiriman **tidak boleh** mengupdate status pengiriman sampai foto ulang diterima. Status pengiriman milik
+  aplikasi pengiriman; engine hanya memberi keputusan.
 
 Alur yang disarankan: semua tenant mulai di `shadow` (1-2 minggu, kalibrasi), lalu `warn`, lalu `enforce` setelah disetujui ops & finance. Mode bisa berbeda per profile (contoh `pod_document: enforce`, `location: warn`).
 
-Verdict dihitung **setelah** percobaan perbaikan otomatis (lihat [enhance](#perbaikan-pencahayaan-otomatis-enhance)).
-Selain `action`, setiap foto punya dua field turunan:
+Verdict dihitung dari foto apa adanya (atau setelah koreksi pencahayaan jika profile mengaktifkan
+[enhance](#perbaikan-pencahayaan-otomatis-enhance)). Selain `action`, setiap foto punya field turunan:
 
 | Field | Aturan |
 |---|---|
-| `retake_required` | `true` jika verdict `REJECT` (kualitas tidak bisa dimaksimalkan), atau ops memilih "minta foto ulang". `false` jika ops meng-*approve*. Disertai `retake_message` (ID/EN) untuk kurir. Tidak bergantung pada `mode` |
+| `allow_status_update` | `false` jika `action = reject` atau ops memilih "minta foto ulang"/"tandai kecurangan"; `true` jika ops meng-*approve*, selama `pending`, dan saat gagal karena sistem (fail-open). File rusak (`UNREADABLE_FILE`) diperlakukan seperti `REJECT`. Hanya bisa `false` di mode `enforce` |
+| `courier_message` | Kalimat siap tampil untuk kurir (ID/EN) jika `action` `notify`/`reject`: `<message>. <suggestion>` dari alasan pertama, diawali `Wajib foto ulang.` jika `retake_required`. Selain itu `null` |
+| `retake_required` | `true` jika verdict `REJECT` (kualitas tidak memenuhi syarat), atau ops memilih "minta foto ulang". `false` jika ops meng-*approve*. Disertai `retake_message` (ID/EN). Tidak bergantung pada `mode` |
 | `evidence_eligible` | `review_required: false` (bawaan): `PASS` dan `WARN` = `true`, `REJECT` = `false` (kecuali di-*approve* ops). `review_required: true`: hanya `PASS` atau yang di-*approve* ops. Foto "minta foto ulang"/"kecurangan" atau yang gagal diproses selalu `false` |
 
 ---

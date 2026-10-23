@@ -275,6 +275,13 @@ def test_reject_blocks_status_update_and_enhance_is_opt_in(client, admin_headers
     assert warn["action"] == "notify" and warn["allow_status_update"] is True
     assert warn["courier_message"] == "Foto buram. Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang."
 
+    # file rusak = foto tidak layak: di mode enforce juga menahan status
+    r = client.post("/v1/analyze", params={"tenant": "test-app", "sync": True}, headers=admin_headers,
+                    files={"file": ("rusak.jpg", b"bukan gambar", "image/jpeg")}, data={"awb": "AWB905"})
+    broken = r.json()
+    assert broken["status"] == "error" and broken["allow_status_update"] is False and broken["retake_required"] is True
+    assert broken["courier_message"].startswith("Wajib foto ulang. File tidak bisa dibuka sebagai gambar.")
+
     # ops menyetujui foto yang ditolak -> status boleh diupdate, tidak ada pesan
     r = client.post(f"/v1/photos/{rej['id']}/review", json={"action": "approve"}, headers=admin_headers)
     assert r.status_code == 200

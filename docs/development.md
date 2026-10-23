@@ -28,7 +28,7 @@ ocr-engine/
 │   │   └── __init__.py         # REGISTRY analyzer
 │   ├── imaging/
 │   │   ├── loader.py           # decode sekali (EXIF orientation, HEIC, grayscale cache)
-│   │   ├── enhance.py          # perbaikan pencahayaan aman: kurva global monoton + verifikasi eksak (tanpa AI)
+│   │   ├── enhance.py          # koreksi pencahayaan OPSIONAL (nonaktif bawaan): kurva global monoton + verifikasi eksak
 │   │   └── compressor.py       # kompresi dinamis + SSIM guard + thumbnail
 │   ├── api/
 │   │   ├── app.py              # FastAPI: router, error handler, /healthz /readyz /metrics, mount /ui
@@ -102,8 +102,9 @@ Prinsip penting:
 
 - **`pipeline.analyze()` murni**: input bytes + `AnalysisContext` (profile, metadata, waktu terima, timezone, fungsi cek duplikat), output `PipelineResult`. Tidak menyentuh DB/S3. Dipakai worker, endpoint preview, CLI `pqe analyze`, dan test. Logika analisis baru ditaruh di sini (lewat analyzer), bukan di processor.
 - **Analyzer = plugin.** Setiap analyzer mengembalikan `CheckResult` (skor 0-100, makin tinggi makin baik, `issue_code`, metrik, `Finding` info/risk). `verdict.decide()` membandingkan skor dengan threshold profile, dan menghitung skor `authenticity` = 100 − total poin `Finding` bertipe `risk`.
-- **Perbaikan otomatis** (`pipeline._try_enhance` + `imaging/enhance.py`): hanya jika ada alasan `FIXABLE_CODES` dan `profile.enhance.enabled`. Satu-satunya operasi yang boleh ada di modul ini adalah LUT global monoton yang lolos `verify_tonal_only` (jangan menambah penajaman, filter lokal, inpainting, atau model ML: itu bisa mengubah isi dokumen). Hanya `RECHECK_AFTER_ENHANCE` (`exposure`, `ocr`) yang dinilai ulang; hasil dipakai hanya jika verdict membaik. `PipelineResult.image` tetap original (hash, EXIF), `output_image` dipakai untuk kompresi/thumbnail.
-- **`retake_required` / `evidence_eligible`** dihitung di `serializers.py` (bukan disimpan di DB), dari verdict, status review, dan `review_required` tenant.
+- **Tanpa manipulasi gambar secara bawaan.** Pemrosesan gambar bawaan hanya `compressor.py` (resize proporsional + encode ulang) dan orientasi EXIF di `loader.py`. Jangan menambah filter, penajaman, atau koreksi lain di jalur bawaan.
+- **Koreksi pencahayaan opsional** (`pipeline._try_enhance` + `imaging/enhance.py`): hanya jika `profile.enhance.enabled` (bawaan `false`) dan ada alasan `FIXABLE_CODES`. Satu-satunya operasi yang boleh ada di modul ini adalah LUT global monoton yang lolos `verify_tonal_only` (jangan menambah penajaman, filter lokal, inpainting, atau model ML: itu bisa mengubah isi dokumen). Hanya `RECHECK_AFTER_ENHANCE` (`exposure`, `ocr`) yang dinilai ulang; hasil dipakai hanya jika verdict membaik. `PipelineResult.image` tetap original (hash, EXIF), `output_image` dipakai untuk kompresi/thumbnail.
+- **`retake_required` / `evidence_eligible` / `allow_status_update` / `courier_message`** dihitung di `serializers.py` (bukan disimpan di DB), dari verdict, `action`, status review, dan `review_required` tenant. Aturan teks `courier_message` ada di `i18n.courier_message()` (dipakai juga oleh endpoint preview). Engine tidak pernah menyimpan atau mengubah status pengiriman; itu milik aplikasi pengiriman.
 - **Pengaturan SILO** (`storage_config.py`): nilai di tabel `settings` (key `storage`) menimpa env per field; secret dienkripsi `secretbox` (Fernet dari `PQE_SECRET_KEY`). `get_storage()` membuat ulang client saat versi berubah (cek tiap `REFRESH_SEC` = 10 detik). Kode baru yang butuh nama bucket/endpoint harus memakai `get_storage().s`, **bukan** `get_settings()`, agar ikut perubahan dari Web UI.
 - **Antrean di database** (`jobs.py`): `claim_job` memakai `with_for_update(skip_locked=True)`. Retry: backoff `10 × 2^(attempt-1)` detik (maks 1 jam) sampai `PQE_JOB_MAX_ATTEMPTS`, lalu `dead`. Job `running` lebih lama dari `PQE_JOB_STALE_AFTER_SEC` dikembalikan ke antrean oleh worker. Lihat [ADR 0001](adr/0001-queue-di-postgres.md).
 - **Error permanen vs sementara** (`processor.execute_job`): `UnreadableImage`, `ObjectNotFound`, `TenantNotFound` langsung menandai foto `error` tanpa retry. Exception lain dianggap sementara dan di-retry.

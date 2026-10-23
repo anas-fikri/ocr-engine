@@ -179,6 +179,15 @@ def process_photo(photo_id: str, storage: Storage | None = None) -> str:
     return "done"
 
 
+def _reject_action(tenant_code: str, profile: str | None) -> str:
+    """Aksi untuk verdict REJECT sesuai mode profile (sama dengan verdict.decide)."""
+    try:
+        mode = registry.get(tenant_code).config.resolve_profile(profile)[1].mode
+    except Exception:  # tenant/profile tidak valid: jangan menahan kurir
+        return "log"
+    return {"shadow": "log", "warn": "notify", "enforce": "reject"}[mode]
+
+
 def _mark_error(photo_id: str, code: str, message: str, *, mapped: dict | None = None,
                 profile: str | None = None, tz: str = "Asia/Jakarta") -> None:
     with session_scope() as s:
@@ -192,9 +201,9 @@ def _mark_error(photo_id: str, code: str, message: str, *, mapped: dict | None =
         p.error_code = code
         p.error_message = message[:2000]
         if code in ("UNREADABLE_FILE",):
-            # file rusak tetap harus terlihat di antrean review ops
+            # file rusak = foto tidak layak: terlihat di antrean review ops dan, di mode enforce, menahan status
             p.verdict = "REJECT"
-            p.action = "log"
+            p.action = _reject_action(p.tenant_code, p.profile)
             p.reasons = [{"code": code, "check": "decode", "severity": "reject", "score": None, "detail": {}}]
         p.analyzed_at = utcnow()
         s.flush()
