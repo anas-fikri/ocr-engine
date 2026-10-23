@@ -188,21 +188,26 @@ def test_trial_page_endpoints(client, admin_headers, samples):
 
     from PIL import Image
 
-    # preview: foto gelap diperbaiki, hasilnya ikut dikirim sebagai data URL (tidak disimpan)
+    # preview: foto besar dikompres, hasilnya ikut dikirim sebagai data URL (tidak disimpan)
+    big = samples["pass_huge_camera"]
     r = client.post("/v1/analyze/preview", params={"tenant": "test-app", "include_output": True},
-                    headers=admin_headers, files={"file": ("gelap.jpg", samples["reject_dark"], "image/jpeg")})
+                    headers=admin_headers, files={"file": ("besar.jpg", big, "image/jpeg")})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["enhancement"]["applied"] is True
+    assert body["compression"]["passthrough"] is False and body["allow_status_update"] is True
     head, data = body["output_image"].split(",", 1)
-    assert head.startswith("data:image/") and Image.open(io.BytesIO(base64.b64decode(data))).size[0] > 0
+    out = base64.b64decode(data)
+    assert head.startswith("data:image/") and len(out) <= 1024 * 1024 and Image.open(io.BytesIO(out)).size[0] > 0
+    small = client.post("/v1/analyze/preview", params={"include_output": True}, headers=admin_headers,
+                        files={"file": ("kecil.jpg", samples["pass_small_ok"], "image/jpeg")}).json()
+    assert small["output_image"] is None  # foto kecil tidak disentuh
     plain = client.post("/v1/analyze/preview", headers=admin_headers,
-                        files={"file": ("a.jpg", samples["reject_dark"], "image/jpeg")}).json()
+                        files={"file": ("a.jpg", big, "image/jpeg")}).json()
     assert "output_image" not in plain
 
     # simulasi aplikasi kurir: simpan, lalu ambil file lewat engine (HP tidak perlu akses ke SILO)
     r = client.post("/v1/analyze", params={"tenant": "test-app", "sync": True}, headers=admin_headers,
-                    files={"file": ("gelap.jpg", samples["reject_dark"], "image/jpeg")}, data={"awb": "UJI1"})
+                    files={"file": ("besar.jpg", big, "image/jpeg")}, data={"awb": "UJI1"})
     pid = r.json()["id"]
     for variant in ("processed", "original", "thumbnail"):
         f = client.get(f"/v1/photos/{pid}/file", params={"variant": variant}, headers=admin_headers)
@@ -210,7 +215,7 @@ def test_trial_page_endpoints(client, admin_headers, samples):
         assert f.headers["content-type"].startswith("image/")
         Image.open(io.BytesIO(f.content)).verify()
     processed = client.get(f"/v1/photos/{pid}/file", headers=admin_headers).content
-    assert processed != samples["reject_dark"]  # versi hasil perbaikan, bukan original
+    assert len(processed) < len(big)  # versi kompres, bukan original
     assert client.get(f"/v1/photos/{pid}/file", params={"variant": "lain"}, headers=admin_headers).status_code == 422
     assert client.get("/v1/photos/tidak-ada/file", headers=admin_headers).status_code == 404
 
@@ -244,3 +249,49 @@ def test_shipped_tenant_configs_are_valid():
     uji = TenantConfig.model_validate(yaml.safe_load(Path("config/tenants/uji-coba.yaml").read_text()))
     assert uji.sources == [] and uji.retention_days == 30
     assert uji.resolve_profile("pod_document")[1].mode == "enforce"
+
+
+def test_reject_blocks_status_update_and_enhance_is_opt_in(client, admin_headers, samples):
+    """Mode enforce + REJECT -> allow_status_update false. Engine tidak memanipulasi gambar kecuali diaktifkan."""
+    from tests.conftest import TENANT_YAML
+
+    h = {**admin_headers, "Content-Type": "application/x-yaml"}
+    enforce = TENANT_YAML.replace("mode: warn", "mode: enforce")
+    assert client.put("/v1/admin/tenants", content=enforce, headers=h).status_code == 200
+
+    def analyze(sample, **data):
+        r = client.post("/v1/analyze", params={"tenant": "test-app", "sync": True, "lang": "id"}, headers=admin_headers,
+                        files={"file": ("f.jpg", samples[sample], "image/jpeg")}, data=data)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    ok = analyze("pass_sharp_large", awb="AWB901")  # pertama, sebelum ada foto mirip (cek duplikat)
+    assert ok["verdict"] == "PASS" and ok["allow_status_update"] is True and ok["courier_message"] is None
+    rej = analyze("reject_blur_severe", awb="AWB900")
+    assert rej["action"] == "reject" and rej["allow_status_update"] is False and rej["retake_required"] is True
+    assert rej["courier_message"] == ("Wajib foto ulang. Foto buram. "
+                                      "Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.")
+    warn = analyze("warn_blur_mild", awb="AWB902")
+    assert warn["action"] == "notify" and warn["allow_status_update"] is True
+    assert warn["courier_message"] == "Foto buram. Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang."
+
+    # ops menyetujui foto yang ditolak -> status boleh diupdate, tidak ada pesan
+    r = client.post(f"/v1/photos/{rej['id']}/review", json={"action": "approve"}, headers=admin_headers)
+    assert r.status_code == 200
+    approved = client.get(f"/v1/photos/{rej['id']}", headers=admin_headers).json()
+    assert approved["allow_status_update"] is True and approved["courier_message"] is None
+
+    # preview mengikuti aturan yang sama
+    pv = client.post("/v1/analyze/preview", params={"tenant": "test-app"}, headers=admin_headers,
+                     files={"file": ("f.jpg", samples["reject_blur_severe"], "image/jpeg")}).json()
+    assert pv["allow_status_update"] is False and pv["courier_message"].startswith("Wajib foto ulang.")
+
+    # bawaan: foto gelap tidak dikoreksi (tanpa manipulasi)
+    dark = analyze("reject_dark", awb="AWB903")
+    assert dark["verdict"] == "REJECT" and dark["allow_status_update"] is False
+    # koreksi pencahayaan hanya jika diaktifkan eksplisit per profile
+    opt_in = enforce.replace("    mode: enforce\n", "    mode: enforce\n    enhance:\n      enabled: true\n")
+    assert client.put("/v1/admin/tenants", content=opt_in, headers=h).status_code == 200
+    fixed = analyze("reject_dark", awb="AWB904")
+    detail = client.get(f"/v1/photos/{fixed['id']}", headers=admin_headers).json()
+    assert detail["enhancement"]["applied"] is True and fixed["allow_status_update"] is True

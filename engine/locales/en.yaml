@@ -2,7 +2,8 @@ verdict:
   PASS: Photo accepted
   WARN: Photo is not ideal
   REJECT: Photo rejected
-retake: The photo quality does not meet the requirements and cannot be fixed automatically. Please retake the photo.
+retake: The photo quality does not meet the requirements. Please retake the photo.
+retake_short: Retake required.
 reasons:
   BLURRY:
     message: The photo is blurry

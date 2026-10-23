@@ -6,10 +6,11 @@
  * PRINSIP: engine TIDAK BOLEH menghambat proses kurir. Semua method "fail-open":
  * jika engine lambat/mati, hasil ['ok' => false, 'unavailable' => true] dan TIDAK melempar exception.
  *
- * Contoh:
+ * Cara tercepat (satu panggilan, satu keputusan):
  *   $pqe = new PhotoQualityClient('https://photo-quality.pcpexpress.com', getenv('PQE_API_KEY'));
- *   $r = $pqe->analyzeObject('pod/2026/10/22/AWB123.jpg', ['awb' => 'AWB123', 'photo_type' => 'pod_recipient'], true);
- *   if ($r['ok'] && $r['data']['verdict'] === 'REJECT') { ... tampilkan $r['data']['reasons'] ... }
+ *   $d = $pqe->checkObject('pod/2026/10/22/AWB123.jpg', ['awb' => 'AWB123', 'photo_type' => 'pod_recipient']);
+ *   if ($d['message']) { ... kirim $d['message'] ke aplikasi kurir ... }
+ *   if ($d['allow_status_update']) { ... update status pengiriman ... } // false = foto ditolak: minta foto ulang
  */
 
 class PhotoQualityClient
@@ -27,6 +28,44 @@ class PhotoQualityClient
         $this->timeoutMs = $timeoutMs;
         $this->lang = $lang;
         $this->tenant = $tenant;
+    }
+
+    /**
+     * CARA TERCEPAT. Foto sudah di SILO: kirim key-nya, tunggu keputusan maks. $timeoutMs. Tidak pernah throw.
+     * Return: allow_status_update (false = JANGAN update status, minta foto ulang), message (tampilkan ke kurir jika
+     * tidak null), retake_required, decided (false = engine mati/lambat/error -> fail-open), photo_id, verdict.
+     */
+    public function checkObject(string $objectKey, array $fields = [], int $timeoutMs = 3000, ?string $bucket = null): array
+    {
+        return self::toDecision($this->analyzeObject($objectKey, $fields, true, $timeoutMs, $bucket));
+    }
+
+    /** Sama dengan checkObject, tetapi file dikirim langsung (engine yang menyimpan ke SILO). */
+    public function checkFile(string $path, array $fields = [], int $timeoutMs = 3000): array
+    {
+        return self::toDecision($this->analyzeFile($path, $fields, true, $timeoutMs));
+    }
+
+    /** Ubah hasil API menjadi keputusan. Tanpa hasil (engine mati, timeout, error) -> fail-open. */
+    public static function toDecision(array $r): array
+    {
+        $open = ['allow_status_update' => true, 'message' => null, 'retake_required' => false, 'decided' => false,
+                 'photo_id' => null, 'verdict' => null];
+        if (!$r['ok']) {
+            return $open + ['error' => $r['error']];
+        }
+        $p = $r['data'];
+        if (($p['status'] ?? null) === 'pending') {
+            return array_merge($open, ['photo_id' => $p['id'] ?? null]);
+        }
+        return [
+            'allow_status_update' => $p['allow_status_update'] ?? (($p['action'] ?? null) !== 'reject'),
+            'message' => $p['courier_message'] ?? null,
+            'retake_required' => (bool) ($p['retake_required'] ?? false),
+            'decided' => true,
+            'photo_id' => $p['id'] ?? null,
+            'verdict' => $p['verdict'] ?? null,
+        ];
     }
 
     /** Foto sudah ada di SILO; kirim key objeknya saja. $fields: awb, photo_type, courier_id, customer_id, branch, captured_at, lat, lng, source, external_id */

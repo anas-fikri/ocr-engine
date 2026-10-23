@@ -222,32 +222,43 @@ function effectiveAction(r, viewMode) {
   return { shadow: "log", warn: "notify", enforce: r.verdict === "REJECT" ? "reject" : "notify" }[viewMode];
 }
 
+// Pesan kurir untuk mode tampilan yang dipilih (aturan sama dengan field courier_message di engine).
+function courierText(r, action) {
+  if (!["notify", "reject"].includes(action)) return null;
+  if (action === r.action && r.courier_message !== undefined) return r.courier_message;
+  const first = (r.reasons || []).find((x) => x.severity !== "info");
+  if (!first) return r.retake_required ? r.retake_message : null;
+  const text = `${first.message}. ${first.suggestion}`;
+  return r.retake_required ? `${$("#lang").value === "en" ? "Retake required." : "Wajib foto ulang."} ${text}` : text;
+}
+
 function courierScreen(run) {
   const r = run.r;
   const action = effectiveAction(r, run.viewMode);
-  const problems = (r.reasons || []).filter((x) => x.severity !== "info");
-  const first = problems[0] || {};
+  const allow = run.timedOut || action !== "reject";
+  const text = run.timedOut ? null : courierText(r, action);
   const modeLabel = run.viewMode || (state.profiles.find((p) => p.name === (r.profile || run.ptype)) || {}).mode || r.mode || "-";
   let msg;
   if (run.timedOut) {
-    msg = `<div class="msg none"><b>Foto terkirim</b>Engine belum menjawab dalam ${SYNC_TIMEOUT_MS / 1000} detik, jadi aplikasi lanjut tanpa pesan (fail-open). Hasil di bawah datang menyusul.</div>`;
-  } else if (action === "reject") {
-    msg = `<div class="msg reject"><b>⚠ ${esc(first.message || "Foto tidak memenuhi syarat")}</b>${esc(r.retake_message || "")}
-      ${first.suggestion ? `<span>Saran: ${esc(first.suggestion)}</span>` : ""}
-      <div class="btns"><button data-act="retake">Foto ulang</button><button class="alt" data-act="spv">Lapor ke SPV</button></div></div>`;
+    msg = `<div class="msg none"><b>Foto terkirim</b>Engine belum menjawab dalam ${SYNC_TIMEOUT_MS / 1000} detik, jadi aplikasi pengiriman lanjut tanpa pesan (fail-open). Hasil di bawah datang menyusul.</div>`;
+  } else if (!allow) {
+    msg = `<div class="msg reject"><b>⚠ Foto ditolak</b>${esc(text || "")}
+      <div class="btns" style="grid-template-columns:1fr"><button data-act="retake">Foto ulang</button></div></div>`;
   } else if (action === "notify" && r.retake_required) {
-    msg = `<div class="msg notify"><b>⚠ ${esc(first.message || "Kualitas foto kurang")}</b>${esc(r.retake_message || "")}
-      ${first.suggestion ? `<span>Saran: ${esc(first.suggestion)}</span>` : ""}
+    msg = `<div class="msg notify"><b>⚠ Kualitas foto kurang</b>${esc(text || "")}
       <div class="btns"><button data-act="retake">Foto ulang</button><button class="alt" data-act="send">Tetap kirim</button></div></div>`;
   } else if (action === "notify") {
-    msg = `<div class="msg notify"><b>Foto diterima</b>${esc(first.message || "")}${first.suggestion ? `<span>Saran: ${esc(first.suggestion)}</span>` : ""}
+    msg = `<div class="msg notify"><b>Foto diterima</b>${esc(text || "")}
       <div class="btns"><button data-act="send">Lanjut</button><button class="alt" data-act="retake">Foto ulang</button></div></div>`;
   } else {
-    msg = `<div class="msg ok"><b>✓ Foto tersimpan</b>Lanjutkan update status pengiriman.</div>` +
+    msg = `<div class="msg ok"><b>✓ Foto diterima</b></div>` +
       (r.verdict !== "PASS" ? `<p class="note">Mode shadow: engine mencatat ${esc(r.verdict)}, tetapi kurir tidak melihat pesan apa pun.</p>` : "");
   }
+  const status = allow
+    ? `<div class="msg ok" style="padding:8px 12px"><span>Status pengiriman: <b>diupdate</b> oleh aplikasi pengiriman</span></div>`
+    : `<div class="msg reject" style="padding:8px 12px"><span>Status pengiriman: <b>TIDAK diupdate</b> sampai foto ulang diterima</span></div>`;
   return `<div class="phone"><div class="bar"><span>Aplikasi Kurir</span><span class="small">${esc(run.awb || "uji cepat")}</span></div>
-    <div class="screen"><img src="${run.origUrl}" alt="foto">${msg}
+    <div class="screen"><img src="${run.origUrl}" alt="foto">${msg}${status}
     <p class="note">Waktu tunggu kurir: <b>${ms(run.waitMs)}</b> · mode ${esc(modeLabel)}</p></div></div>`;
 }
 
@@ -269,6 +280,7 @@ function render(run) {
     <h3>Detail untuk tim</h3>
     <div class="facts">
       <div class="fact"><div class="l">Verdict</div><div class="v">${esc(r.verdict)}</div></div>
+      <div class="fact"><div class="l">Boleh update status</div><div class="v">${run.timedOut || effectiveAction(r, run.viewMode) !== "reject" ? "Ya" : "Tidak"}</div></div>
       <div class="fact"><div class="l">Wajib foto ulang</div><div class="v">${r.retake_required ? "Ya" : "Tidak"}</div></div>
       <div class="fact"><div class="l">Aksi (config)</div><div class="v">${esc(r.action)}</div></div>
       <div class="fact"><div class="l">Waktu tunggu kurir</div><div class="v">${ms(run.waitMs)}</div></div>
@@ -276,7 +288,7 @@ function render(run) {
       <div class="fact"><div class="l">Ukuran</div><div class="v">${kb(img.bytes || run.file.size)} → ${kb(c.output_bytes)}</div></div>
       ${evid == null ? "" : `<div class="fact"><div class="l">Masuk evidence</div><div class="v">${evid ? "Ya" : "Tidak"}</div></div>`}
     </div>
-    ${r.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">Kualitas tidak bisa dimaksimalkan, perbaikan otomatis tidak membantu.</div></div>` : ""}
+    ${r.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">Kualitas tidak memenuhi syarat. Engine tidak memanipulasi gambar, jadi foto harus diambil ulang.</div></div>` : ""}
     ${en.applied ? `<div class="reason info"><b>Diperbaiki otomatis (tanpa AI)</b><div class="small">${esc((en.operations || []).join(", "))}. Sebelum: ${esc(en.before && en.before.verdict)} → sesudah: ${esc(r.verdict)}. Terverifikasi: hanya kurva pencahayaan global, tidak ada teks/angka yang berubah.</div></div>`
       : en.attempted ? `<div class="reason"><b>Perbaikan otomatis dicoba, tidak dipakai</b> <span class="small muted">(${esc(en.reason || "-")})</span></div>` : ""}
     <div class="compare">
@@ -294,7 +306,7 @@ function render(run) {
     <details style="margin-top:12px"><summary class="muted">JSON lengkap (respons API)</summary><pre class="json">${esc(JSON.stringify({ ...r, output_image: r.output_image ? "(data URL)" : r.output_image }, null, 2))}</pre></details>`;
   $("#result").querySelectorAll("[data-act]").forEach((b) => (b.onclick = () => {
     if (b.dataset.act === "retake") return $("#btn-native").click();
-    toast(b.dataset.act === "spv" ? "Di aplikasi asli: kirim laporan ke SPV, status pengiriman tetap bisa diupdate." : "Di aplikasi asli: foto terkirim, lanjut update status pengiriman.");
+    toast("Di aplikasi asli: foto diterima, aplikasi pengiriman mengupdate status pengiriman.");
   }));
   const pdf = $("#btn-pdf");
   if (pdf) pdf.onclick = async () => {

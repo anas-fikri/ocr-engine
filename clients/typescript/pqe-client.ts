@@ -6,10 +6,11 @@
  * jika engine lambat/mati, method mengembalikan { ok: false, unavailable: true } dan TIDAK melempar error.
  * Lanjutkan proses bisnis seperti biasa.
  *
- * Contoh:
+ * Cara tercepat (satu panggilan, satu keputusan):
  *   const pqe = new PhotoQualityClient({ baseUrl: "https://photo-quality.pcpexpress.com", apiKey: process.env.PQE_API_KEY! });
- *   const r = await pqe.analyzeObject("pod/2026/10/22/AWB123.jpg", { awb: "AWB123", photo_type: "pod_recipient" }, { sync: true });
- *   if (r.ok && r.photo.verdict === "REJECT") tampilkanPesan(r.photo.reasons);
+ *   const d = await pqe.checkObject("pod/2026/10/22/AWB123.jpg", { awb: "AWB123", photo_type: "pod_recipient" });
+ *   if (d.message) kirimKeKurir(d.message);
+ *   if (d.allowStatusUpdate) updateStatusPengiriman(); // false = foto ditolak: minta foto ulang, status JANGAN diupdate
  */
 
 export type Verdict = "PASS" | "WARN" | "REJECT";
@@ -46,8 +47,10 @@ export interface Photo {
   photo_type: string | null;
   scores: Record<string, number>;
   reasons: Reason[];
-  retake_required?: boolean; // true = kualitas tidak bisa dimaksimalkan: minta kurir foto ulang (gabungkan dengan action)
-  retake_message?: string | null; // pesan siap tampil (ID/EN), terisi jika retake_required
+  allow_status_update?: boolean; // false = foto ditolak: aplikasi pengiriman JANGAN update status, minta foto ulang
+  courier_message?: string | null; // pesan siap tampil untuk kurir (ID/EN), null = tidak perlu menampilkan apa pun
+  retake_required?: boolean; // true = kualitas tidak memenuhi syarat (verdict REJECT)
+  retake_message?: string | null; // pesan foto ulang (ID/EN), terisi jika retake_required
   evidence_eligible?: boolean;
   urls?: { original: string | null; processed: string | null; thumbnail: string | null; expires_in: number };
   poll_url?: string;
@@ -59,6 +62,32 @@ export type Result<T> =
   | { ok: false; status: number; unavailable: boolean; error: string };
 
 export type PhotoResult = Result<Photo> & { photo?: Photo };
+
+/** Keputusan siap pakai untuk aplikasi pengiriman (hasil checkObject / checkFile). */
+export interface Decision {
+  allowStatusUpdate: boolean; // false = foto ditolak: JANGAN update status pengiriman, minta foto ulang
+  message: string | null; // tampilkan ke kurir jika tidak null
+  retakeRequired: boolean;
+  decided: boolean; // false = belum ada keputusan (engine mati/lambat/error) -> fail-open, status boleh diupdate
+  photoId: string | null;
+  verdict: Verdict | null;
+  error?: string;
+}
+
+/** Ubah hasil API menjadi Decision. Tanpa hasil (engine mati, timeout, error) -> fail-open. */
+export function toDecision(r: PhotoResult): Decision {
+  if (!r.ok) return { allowStatusUpdate: true, message: null, retakeRequired: false, decided: false, photoId: null, verdict: null, error: r.error };
+  const p = r.data;
+  if (p.status === "pending") return { allowStatusUpdate: true, message: null, retakeRequired: false, decided: false, photoId: p.id, verdict: null };
+  return {
+    allowStatusUpdate: p.allow_status_update ?? p.action !== "reject",
+    message: p.courier_message ?? null,
+    retakeRequired: !!p.retake_required,
+    decided: true,
+    photoId: p.id,
+    verdict: p.verdict,
+  };
+}
 
 export interface ClientOptions {
   baseUrl: string;
@@ -75,6 +104,16 @@ export class PhotoQualityClient {
   constructor(opts: ClientOptions) {
     this.opts = opts;
     this.base = opts.baseUrl.replace(/\/+$/, "");
+  }
+
+  /** CARA TERCEPAT. Foto sudah di SILO: kirim key-nya, tunggu keputusan maks. timeoutMs (default 3000). Tidak pernah throw. */
+  async checkObject(objectKey: string, fields: PhotoFields = {}, o: { timeoutMs?: number; bucket?: string } = {}): Promise<Decision> {
+    return toDecision(await this.analyzeObject(objectKey, fields, { sync: true, timeoutMs: o.timeoutMs ?? 3000, bucket: o.bucket }));
+  }
+
+  /** Sama dengan checkObject, tetapi file dikirim langsung (engine yang menyimpan ke SILO). */
+  async checkFile(file: Blob, filename: string, fields: PhotoFields = {}, o: { timeoutMs?: number } = {}): Promise<Decision> {
+    return toDecision(await this.analyzeFile(file, filename, fields, { sync: true, timeoutMs: o.timeoutMs ?? 3000 }));
   }
 
   /** Foto sudah diupload ke SILO oleh aplikasi; engine cukup diberi key-nya. Paling hemat kuota kurir. */

@@ -49,6 +49,20 @@ def retake_text(lang: str) -> str:
     return _catalog(lang)["retake"]
 
 
+def courier_message(action: str | None, retake: bool, reasons: list[dict], lang: str) -> str | None:
+    """Satu kalimat siap tampil untuk kurir, atau None jika kurir tidak perlu melihat apa pun.
+
+    `reasons` sudah dilokalkan (punya message/suggestion). Pesan hanya ada jika `action` notify/reject.
+    """
+    if action not in ("notify", "reject"):
+        return None
+    first = next((r for r in reasons if r.get("severity") != "info"), None)
+    if first is None:
+        return retake_text(lang) if retake else None
+    text = f"{first['message']}. {first['suggestion']}"
+    return f"{_catalog(lang)['retake_short']} {text}" if retake else text
+
+
 def all_reason_codes() -> list[str]:
     return sorted(_catalog("id")["reasons"])
 

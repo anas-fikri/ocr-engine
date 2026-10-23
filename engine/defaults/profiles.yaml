@@ -39,7 +39,8 @@ default:
     long_side_px: 320
     quality: 70
   enhance:
-    enabled: true          # koreksi pencahayaan/kontras dengan kurva global (tanpa AI, tanpa penajaman)
+    enabled: false         # engine tidak memanipulasi gambar: hanya optimasi + kompresi dinamis.
+                           # true = izinkan koreksi pencahayaan dengan kurva global terverifikasi (opsional)
 
 pod_recipient:
   thresholds:

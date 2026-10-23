@@ -5,7 +5,7 @@
  */
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { PhotoQualityClient, verifyWebhook } from "./pqe-client.ts";
+import { PhotoQualityClient, toDecision, verifyWebhook } from "./pqe-client.ts";
 
 // Versi minimal yang memuat security release 21 Okt 2026 (CVE-2026-111497 dkk).
 const MIN_PATCHED: Record<number, [number, number]> = { 22: [23, 4], 24: [22, 1], 26: [12, 1] };
@@ -35,6 +35,16 @@ check("webhook kedaluwarsa ditolak", !(await verifyWebhook("rahasia", String(Num
 const down = new PhotoQualityClient({ baseUrl: "http://127.0.0.1:9", apiKey: "x", timeoutMs: 800 });
 const r = await down.analyzeObject("a.jpg", { awb: "X" }, { sync: true, timeoutMs: 500 });
 check("engine mati -> fail-open tanpa exception", !r.ok && r.unavailable === true);
+const dDown = await down.checkObject("a.jpg", { awb: "X" }, { timeoutMs: 500 });
+check("checkObject engine mati -> status boleh diupdate", dDown.allowStatusUpdate && !dDown.decided && dDown.message === null);
+
+const photo = (extra: Record<string, unknown>) => ({ ok: true as const, status: 200, data: { id: "p1", status: "done", verdict: "REJECT", action: "reject", reasons: [], scores: {}, awb: null, photo_type: null, verdict_text: null, ...extra } as any });
+const dReject = toDecision(photo({ allow_status_update: false, courier_message: "Wajib foto ulang. Foto buram.", retake_required: true }));
+check("REJECT enforce -> status ditahan + pesan", !dReject.allowStatusUpdate && dReject.decided && dReject.message === "Wajib foto ulang. Foto buram." && dReject.retakeRequired);
+const dPass = toDecision(photo({ verdict: "PASS", action: "log", allow_status_update: true, courier_message: null }));
+check("PASS -> status boleh, tanpa pesan", dPass.allowStatusUpdate && dPass.message === null);
+const dPending = toDecision({ ok: true, status: 202, data: { id: "p2", status: "pending" } as any });
+check("lewat 3 detik (pending) -> fail-open", dPending.allowStatusUpdate && !dPending.decided && dPending.photoId === "p2");
 
 const { PQE_URL, PQE_API_KEY, PQE_SAMPLE } = process.env;
 if (PQE_URL && PQE_API_KEY && PQE_SAMPLE) {
@@ -42,6 +52,8 @@ if (PQE_URL && PQE_API_KEY && PQE_SAMPLE) {
   const file = new Blob([readFileSync(PQE_SAMPLE)], { type: "image/jpeg" });
   const res = await pqe.analyzeFile(file, "sample.jpg", { awb: "TS-TEST", source: "camera" }, { sync: true });
   check("analyzeFile sync", res.ok && !!res.photo?.verdict, res.ok ? `${res.photo?.verdict} ${res.photo?.reasons[0]?.message ?? ""}` : res.error);
+  const d = await pqe.checkFile(file, "sample2.jpg", { awb: "TS-TEST-2", source: "camera" });
+  check("checkFile", d.decided && typeof d.allowStatusUpdate === "boolean", JSON.stringify(d));
   if (res.ok) {
     const got = await pqe.getPhoto(res.photo!.id);
     check("getPhoto", got.ok && got.photo?.id === res.photo!.id);

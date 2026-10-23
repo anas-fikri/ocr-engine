@@ -49,9 +49,9 @@ class Thumbnail(_Strict):
 
 
 class Enhance(_Strict):
-    """Perbaikan pencahayaan otomatis (tanpa AI). Lihat engine/imaging/enhance.py."""
+    """Koreksi pencahayaan opsional (tanpa AI), nonaktif secara bawaan. Lihat engine/imaging/enhance.py."""
 
-    enabled: bool = True
+    enabled: bool = False
 
 
 class Profile(_Strict):

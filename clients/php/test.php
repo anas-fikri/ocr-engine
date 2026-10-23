@@ -35,6 +35,18 @@ check('webhook kedaluwarsa ditolak', !PhotoQualityClient::verifyWebhook('rahasia
 $down = new PhotoQualityClient('http://127.0.0.1:9', 'x', 800);
 $r = $down->analyzeObject('a.jpg', ['awb' => 'X'], true, 500);
 check('engine mati -> fail-open tanpa exception', $r['ok'] === false && $r['unavailable'] === true);
+$dDown = $down->checkObject('a.jpg', ['awb' => 'X'], 500);
+check('checkObject engine mati -> status boleh diupdate', $dDown['allow_status_update'] === true && $dDown['decided'] === false && $dDown['message'] === null);
+
+$photo = function (array $extra): array {
+    return ['ok' => true, 'status' => 200, 'data' => array_merge(['id' => 'p1', 'status' => 'done', 'verdict' => 'REJECT', 'action' => 'reject'], $extra)];
+};
+$dReject = PhotoQualityClient::toDecision($photo(['allow_status_update' => false, 'courier_message' => 'Wajib foto ulang. Foto buram.', 'retake_required' => true]));
+check('REJECT enforce -> status ditahan + pesan', $dReject['allow_status_update'] === false && $dReject['decided'] && $dReject['message'] === 'Wajib foto ulang. Foto buram.' && $dReject['retake_required']);
+$dPass = PhotoQualityClient::toDecision($photo(['verdict' => 'PASS', 'action' => 'log', 'allow_status_update' => true, 'courier_message' => null]));
+check('PASS -> status boleh, tanpa pesan', $dPass['allow_status_update'] === true && $dPass['message'] === null);
+$dPending = PhotoQualityClient::toDecision(['ok' => true, 'status' => 202, 'data' => ['id' => 'p2', 'status' => 'pending']]);
+check('lewat 3 detik (pending) -> fail-open', $dPending['allow_status_update'] === true && $dPending['decided'] === false && $dPending['photo_id'] === 'p2');
 
 $url = getenv('PQE_URL');
 $key = getenv('PQE_API_KEY');
@@ -44,6 +56,8 @@ if ($url && $key && $sample) {
     $res = $pqe->analyzeFile($sample, ['awb' => 'PHP-TEST', 'source' => 'camera'], true);
     check('analyzeFile sync', $res['ok'] && !empty($res['data']['verdict']),
         $res['ok'] ? $res['data']['verdict'] . ' ' . ($res['data']['reasons'][0]['message'] ?? '') : $res['error']);
+    $d = $pqe->checkFile($sample, ['awb' => 'PHP-TEST-2', 'source' => 'camera']);
+    check('checkFile', $d['decided'] === true && is_bool($d['allow_status_update']), json_encode($d));
     if ($res['ok']) {
         $got = $pqe->getPhoto($res['data']['id']);
         check('getPhoto', $got['ok'] && $got['data']['id'] === $res['data']['id']);

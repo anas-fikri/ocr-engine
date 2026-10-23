@@ -154,15 +154,17 @@ def test_api_upload_sync_and_object_reference(client, admin_headers, samples):
     assert body["verdict"] == "REJECT" and body["awb"] == "AWB600" and body["reasons"][0]["code"] == "BLURRY"
     assert body["reasons"][0]["suggestion"]
     assert body["retake_required"] is True and "foto ulang" in body["retake_message"]
+    # mode warn: kurir diberi tahu, tapi status pengiriman tetap boleh diupdate aplikasi pengiriman
+    assert body["action"] == "notify" and body["allow_status_update"] is True
+    assert body["courier_message"].startswith("Wajib foto ulang. Foto buram.")
 
-    # foto gelap diperbaiki otomatis: tidak perlu foto ulang, versi kompres = hasil perbaikan
+    # bawaan: engine tidak memanipulasi gambar -> foto gelap tidak dikoreksi, langsung wajib foto ulang
     r = client.post("/v1/analyze", params={"sync": True}, headers=app_h,
                     files={"file": ("gelap.jpg", samples["reject_dark"], "image/jpeg")}, data={"awb": "AWB601"})
     dark = r.json()
-    assert dark["verdict"] in ("PASS", "WARN") and dark["retake_required"] is False and dark["retake_message"] is None
+    assert dark["verdict"] == "REJECT" and dark["retake_required"] is True
     detail = client.get(f"/v1/photos/{dark['id']}", headers=admin_headers).json()
-    assert detail["enhancement"]["applied"] is True and detail["enhancement"]["before"]["verdict"] == "REJECT"
-    assert detail["urls"]["processed"] != detail["urls"]["original"]
+    assert detail["enhancement"] == {"attempted": False, "applied": False}
 
     put_photo("pod/pod_document/AWB700_resi.jpg", samples["pass_sharp_large"])
     r = client.post("/v1/analyze?sync=true", headers=app_h,

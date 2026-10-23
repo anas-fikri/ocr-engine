@@ -20,7 +20,7 @@ from engine.api.auth import Principal, check_tenant, current_principal, require
 from engine.api.common import api_error, request_lang
 from engine.db import AuditLog, Photo, Review, session_scope, utcnow
 from engine.evidence import build_pdf, eligible_photos, evidence_item
-from engine.i18n import all_reason_codes, localize_reasons, reason_text, retake_text
+from engine.i18n import all_reason_codes, courier_message, localize_reasons, reason_text, retake_text
 from engine.imaging.loader import UnreadableImage
 from engine.ingestor import handle_s3_event
 from engine.jobs import claim_photo_job, enqueue_object, requeue_photo
@@ -225,6 +225,9 @@ async def analyze_preview(
     out["mode"] = profile.mode
     out["retake_message"] = retake_text(request_lang(request, lang)) if out["retake_required"] else None
     out["reasons"] = localize_reasons(out["reasons"], request_lang(request, lang))
+    out["allow_status_update"] = out["action"] != "reject"
+    out["courier_message"] = courier_message(out["action"], out["retake_required"], out["reasons"],
+                                             request_lang(request, lang))
     if include_output:
         c = result.compression
         out["output_image"] = (None if c is None or c.passthrough or c.data is None else

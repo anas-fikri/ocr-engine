@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from engine.db import Photo, as_aware
-from engine.i18n import localize_reasons, retake_text, verdict_text
+from engine.i18n import courier_message, localize_reasons, retake_text, verdict_text
 from engine.storage import Storage
 
 
@@ -50,6 +50,19 @@ def retake_required(p: Photo) -> bool:
     return p.verdict == "REJECT" and p.status in ("done", "error")
 
 
+def allow_status_update(p: Photo) -> bool:
+    """Boleh aplikasi pengiriman mengupdate status pengiriman? Status itu milik aplikasi pengiriman, bukan engine.
+
+    False hanya jika foto ditolak (aksi `reject`, yaitu verdict REJECT di mode enforce) atau ops meminta foto ulang /
+    menandai kecurangan. Belum ada hasil (pending) atau engine gagal memproses -> True (fail-open).
+    """
+    if p.review_status in ("retake_requested", "fraud"):
+        return False
+    if p.review_status == "approved":
+        return True
+    return p.action != "reject"
+
+
 def photo_to_dict(
     p: Photo,
     lang: str,
@@ -59,6 +72,9 @@ def photo_to_dict(
     detail: bool = True,
 ) -> dict[str, Any]:
     scores = dict(p.scores or {})
+    reasons = localize_reasons(p.reasons or [], lang)
+    retake = retake_required(p)
+    action = {"retake_requested": "reject", "approved": "log"}.get(p.review_status, p.action)  # untuk pesan kurir
     if "authenticity" in scores:
         scores["authenticity_risk"] = round(100 - scores["authenticity"], 1)
     out: dict[str, Any] = {
@@ -68,8 +84,10 @@ def photo_to_dict(
         "verdict": p.verdict,
         "verdict_text": verdict_text(p.verdict, lang) if p.verdict else None,
         "action": p.action,
-        "retake_required": retake_required(p),
-        "retake_message": retake_text(lang) if retake_required(p) else None,
+        "allow_status_update": allow_status_update(p),
+        "courier_message": courier_message(action, retake, reasons, lang),
+        "retake_required": retake,
+        "retake_message": retake_text(lang) if retake else None,
         "photo_type": p.photo_type,
         "profile": p.profile,
         "awb": p.awb,
@@ -81,7 +99,7 @@ def photo_to_dict(
         "received_at": _iso(p.received_at),
         "analyzed_at": _iso(p.analyzed_at),
         "scores": scores,
-        "reasons": localize_reasons(p.reasons or [], lang),
+        "reasons": reasons,
         "review": {
             "status": p.review_status,
             "by": p.reviewed_by,
