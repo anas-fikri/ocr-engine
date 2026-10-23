@@ -98,8 +98,8 @@ def queue_photo_event(s, photo: Photo, event: str) -> None:
 
 def process_photo(photo_id: str, storage: Storage | None = None) -> str:
     """Return status akhir foto: done | error. Raise untuk error sementara (akan di-retry)."""
-    st = get_settings()
     storage = storage or get_storage()
+    st = storage.s  # konfigurasi SILO efektif (env + halaman Pengaturan SILO)
     with session_scope() as s:
         p = s.get(Photo, photo_id)
         if p is None:

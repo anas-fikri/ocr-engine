@@ -150,7 +150,7 @@ async def analyze_upload(
             body = AnalyzeObjectRequest.model_validate(await request.json())
         except Exception as e:
             raise api_error(422, "INVALID_BODY", f"body JSON tidak valid: {e}") from e
-        bucket = body.bucket or st.aws_bucket
+        bucket = body.bucket or get_storage().s.aws_bucket
         fields = body.as_fields()
         fields.pop("object_key", None)
         fields.pop("bucket", None)
@@ -173,7 +173,7 @@ async def analyze_upload(
                              branch=branch, captured_at=captured_at, lat=lat, lng=lng,
                              source=source if source in ("camera", "gallery") else None,
                              external_id=external_id).as_fields()
-        bucket = cfg.upload_bucket or st.engine_bucket_upload
+        bucket = cfg.upload_bucket or get_storage().s.engine_bucket_upload
         key = f"{code}/{utcnow():%Y/%m/%d}/{uuid.uuid4().hex}{ext}"
         get_storage().put(bucket, key, data, file.content_type or "application/octet-stream",
                           {k.replace("_", "-"): v for k, v in fields.items()})

@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
-from functools import lru_cache
 from urllib.parse import quote, unquote, urlparse
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from engine.settings import Settings, get_settings
+from engine.settings import Settings, addressing_style, get_settings
 
 
 class ObjectNotFound(Exception):
@@ -41,8 +41,8 @@ def _client(s: Settings, endpoint: str):
         aws_access_key_id=s.aws_access_key_id or None,
         aws_secret_access_key=s.aws_secret_access_key or None,
         config=Config(
-            s3={"addressing_style": "path" if s.aws_use_path_style_endpoint else "auto"},
-            signature_version="s3v4",
+            s3={"addressing_style": addressing_style(s)},
+            signature_version=s.aws_signature_version or "s3v4",
             retries={"max_attempts": 3, "mode": "standard"},
             connect_timeout=5,
             read_timeout=30,
@@ -119,13 +119,29 @@ class Storage:
         return True
 
 
-@lru_cache
+_storage_lock = threading.Lock()
+_storage: dict = {"instance": None, "version": "unset"}
+
+
 def get_storage() -> Storage:
-    return Storage()
+    """Storage dengan konfigurasi efektif (env + halaman Pengaturan SILO). Dibuat ulang jika berubah."""
+    from engine.storage_config import effective_settings
+
+    settings, version = effective_settings()
+    with _storage_lock:
+        if _storage["instance"] is None or _storage["version"] != version:
+            _storage["instance"] = Storage(settings)
+            _storage["version"] = version
+        return _storage["instance"]
 
 
 def reset_storage_cache() -> None:
-    get_storage.cache_clear()
+    from engine.storage_config import invalidate
+
+    invalidate()
+    with _storage_lock:
+        _storage["instance"] = None
+        _storage["version"] = "unset"
 
 
 def split_url(url: str, settings: Settings | None = None) -> tuple[str, str] | None:
@@ -133,7 +149,7 @@ def split_url(url: str, settings: Settings | None = None) -> tuple[str, str] | N
 
     Mendukung path-style dan virtual-host style. Query string (presigned) diabaikan.
     """
-    s = settings or get_settings()
+    s = settings or get_storage().s
     u = urlparse(url)
     path = unquote(u.path.lstrip("/"))
     endpoint_hosts = {urlparse(x).netloc for x in (s.aws_endpoint, s.aws_public_endpoint or "") if x}

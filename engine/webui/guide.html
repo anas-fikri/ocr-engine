@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Panduan Integrasi - Photo Quality Engine</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%23c8102e%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .guide { display: grid; grid-template-columns: 230px 1fr; gap: 24px; max-width: 1200px; margin: 0 auto; padding: 20px; }
+    .toc { position: sticky; top: 72px; align-self: start; font-size: 13px; }
+    .toc a { display: block; padding: 4px 0; text-decoration: none; color: var(--text); }
+    .toc a:hover { color: var(--brand); }
+    section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 22px; margin-bottom: 18px; }
+    section h2 { margin-top: 0; }
+    pre { background: #1d2330; color: #e6e9ef; padding: 14px; border-radius: 8px; overflow: auto; font-size: 12.5px; line-height: 1.5; position: relative; }
+    .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: -1px; }
+    .tabs button { background: #eef0f3; color: var(--text); border-radius: 6px 6px 0 0; padding: 6px 12px; }
+    .tabs button.on { background: #1d2330; color: #fff; }
+    .tabpane { display: none; } .tabpane.on { display: block; }
+    .copy { position: absolute; top: 8px; right: 8px; background: #39414f; padding: 3px 8px; font-size: 11px; }
+    table td, table th { vertical-align: top; }
+    .rule { border-left: 4px solid var(--brand); background: #fff5f6; padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 8px 0; }
+    .ok { border-left-color: var(--pass); background: var(--pass-bg); }
+    @media (max-width: 860px) { .guide { grid-template-columns: 1fr; } .toc { position: static; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Photo Quality Engine</div>
+    <nav><a href="./" class="">Web UI</a><a href="../docs" target="_blank">Swagger API ↗</a></nav>
+    <div class="who small">Base URL: <code id="base-label"></code></div>
+  </header>
+
+  <div class="guide">
+    <aside class="toc card">
+      <b>Panduan Integrasi</b>
+      <a href="#aturan">1. Aturan emas</a>
+      <a href="#pilih">2. Pilih cara integrasi</a>
+      <a href="#akses">3. Minta akses</a>
+      <a href="#level1">4. Metadata saat upload</a>
+      <a href="#analyze">5. Panggil API analisis</a>
+      <a href="#hasil">6. Membaca hasil</a>
+      <a href="#kurir">7. Menampilkan ke kurir</a>
+      <a href="#webhook">8. Webhook</a>
+      <a href="#evidence">9. Evidence pelanggan</a>
+      <a href="#perbaikan">10. Perbaikan otomatis</a>
+      <a href="#error">11. Kode error</a>
+      <a href="#checklist">12. Checklist go-live</a>
+    </aside>
+
+    <main>
+      <section>
+        <h1>Panduan Integrasi untuk Developer</h1>
+        <p>Engine ini memeriksa kualitas foto POD/paket (buram, pecah, gelap, teks tidak terbaca), memperbaiki pencahayaan
+          secara aman bila memungkinkan, mengompres ke &lt; 1 MB, dan menyediakan bukti pengiriman untuk penagihan.
+          Halaman ini cukup untuk mulai integrasi. Detail lengkap ada di <code>docs/integration-guide.md</code> dan
+          <a href="../docs" target="_blank">Swagger</a> (bisa dicoba langsung).</p>
+        <p class="muted small">Semua contoh di halaman ini otomatis memakai base URL server ini: <code class="base"></code></p>
+      </section>
+
+      <section id="aturan">
+        <h2>1. Aturan emas</h2>
+        <div class="rule"><b>Jangan pernah membuat proses kurir menunggu atau gagal karena engine.</b> Update status pengiriman tidak boleh bergantung pada respons engine.</div>
+        <div class="rule"><b>Selalu pakai timeout dan fail-open.</b> Timeout ≤ 3 detik untuk mode sinkron. Jika engine lambat/mati, lanjutkan proses seperti biasa.</div>
+        <div class="rule"><b>API key hanya di server.</b> Jangan menaruh API key di aplikasi Android/iOS/Flutter atau JavaScript browser. Aplikasi mobile memanggil backend Anda, backend memanggil engine.</div>
+        <div class="rule"><b>Kirim foto asli dari kamera.</b> Jangan kompres/resize di aplikasi (contoh <code>imageQuality</code>/<code>maxWidth</code> kecil di Flutter). Engine yang mengompres dengan aman.</div>
+        <div class="rule"><b>Runtime wajib versi yang sudah di-patch</b> (security release 21 Okt 2026): Node.js ≥ 22.23.4 / 24.22.1 / 26.12.1, PHP ≥ 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12.</div>
+      </section>
+
+      <section id="pilih">
+        <h2>2. Pilih cara integrasi</h2>
+        <table>
+          <tr><th>Level</th><th>Yang dikerjakan aplikasi</th><th>Hasil</th></tr>
+          <tr><td><b>0</b></td><td>Tidak ada. Upload ke SILO seperti biasa; admin mendaftarkan bucket/folder Anda.</td><td>Analisis, kompresi, evidence pelanggan, laporan</td></tr>
+          <tr><td><b>1</b> (disarankan minimal)</td><td>Tambah metadata (<code>awb</code>, <code>photo-type</code>, <code>courier-id</code>, <code>customer-id</code>) saat upload ke SILO.</td><td>Sama dengan level 0, data resi/kurir akurat</td></tr>
+          <tr><td><b>2</b></td><td>Setelah upload, panggil <code>POST /v1/analyze</code> (atau kirim file langsung).</td><td>Hasil per foto langsung: bisa minta kurir foto ulang</td></tr>
+        </table>
+      </section>
+
+      <section id="akses">
+        <h2>3. Minta akses</h2>
+        <p>Minta ke admin engine: <b>kode tenant</b> (satu per aplikasi) dan <b>API key role <code>app</code></b>. Simpan key di env server (<code>PQE_API_KEY</code>). Cek key:</p>
+        <pre data-code>curl -s -H "X-API-Key: $PQE_API_KEY" {{BASE}}/v1/me</pre>
+        <p>Berikan ke admin: nama bucket + folder foto Anda, 3-5 contoh object key, dan jenis foto yang dihasilkan aplikasi
+          (<code>pod_recipient</code>, <code>pod_document</code>, <code>package</code>, <code>goods</code>, <code>location</code>).</p>
+      </section>
+
+      <section id="level1">
+        <h2>4. Level 1: metadata saat upload ke SILO</h2>
+        <p>Tambahkan metadata objek (<code>x-amz-meta-*</code>). Tidak menambah request dan tidak memperlambat upload.</p>
+        <table>
+          <tr><th>Metadata</th><th>Contoh</th><th>Keterangan</th></tr>
+          <tr><td><code>awb</code></td><td>AWB123</td><td>Nomor resi</td></tr>
+          <tr><td><code>photo-type</code></td><td>pod_recipient</td><td>Menentukan aturan pemeriksaan</td></tr>
+          <tr><td><code>courier-id</code></td><td>K045</td><td>Laporan per kurir</td></tr>
+          <tr><td><code>customer-id</code></td><td>CUST-001</td><td>Evidence per pelanggan</td></tr>
+          <tr><td><code>branch</code>, <code>captured-at</code>, <code>lat</code>, <code>lng</code>, <code>source</code>, <code>external-id</code></td><td></td><td>Opsional</td></tr>
+        </table>
+        <div class="tabs" data-tabs="meta"><button data-t="laravel">Laravel</button><button data-t="node">Node.js</button><button data-t="flutter">Flutter</button></div>
+        <div class="tabpane" data-pane="meta:laravel"><pre data-code>use Illuminate\Support\Facades\Storage;
+
+Storage::disk('s3')->put($path, file_get_contents($request->file('photo')->getRealPath()), [
+    'visibility'  => 'private',
+    'ContentType' => 'image/jpeg',
+    'Metadata'    => [
+        'awb'         => $awb,
+        'photo-type'  => 'pod_recipient',
+        'courier-id'  => $courierId,
+        'customer-id' => $customerId,
+    ],
+]);</pre></div>
+        <div class="tabpane" data-pane="meta:node"><pre data-code>import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+
+const s3 = new S3Client({ endpoint: process.env.AWS_ENDPOINT, region: "us-east-1", forcePathStyle: true });
+await s3.send(new PutObjectCommand({
+  Bucket: process.env.AWS_BUCKET, Key: key, Body: photoBuffer, ContentType: "image/jpeg",
+  Metadata: { awb, "photo-type": "pod_recipient", "courier-id": courierId, "customer-id": customerId },
+}));</pre></div>
+        <div class="tabpane" data-pane="meta:flutter"><pre data-code>// Upload ke presigned URL dari backend Anda; header (termasuk x-amz-meta-*) wajib dikirim persis.
+// Ambil foto ASLI: jangan isi imageQuality / maxWidth kecil di image_picker.
+final headers = Map&lt;String, String&gt;.from(upload['headers'])..remove('Host');
+final res = await http.put(Uri.parse(upload['url']), headers: headers, body: await photo.readAsBytes())
+    .timeout(const Duration(seconds: 60));</pre></div>
+      </section>
+
+      <section id="analyze">
+        <h2>5. Level 2: panggil API analisis</h2>
+        <p><code>POST /v1/analyze</code> menerima <b>referensi objek SILO</b> (JSON, paling hemat kuota kurir) atau <b>upload file</b> (multipart).
+          Tambahkan <code>?sync=true&amp;timeout_ms=3000</code> untuk menunggu hasil; lewat batas waktu tetap <code>202</code> (fail-open).</p>
+        <div class="tabs" data-tabs="an"><button data-t="curl">curl</button><button data-t="php">PHP / Laravel</button><button data-t="ts">TypeScript</button><button data-t="py">Python</button><button data-t="kt">Kotlin (backend)</button></div>
+        <div class="tabpane" data-pane="an:curl"><pre data-code># foto sudah ada di SILO
+curl -s -X POST "{{BASE}}/v1/analyze?sync=true&amp;timeout_ms=3000" \
+  -H "X-API-Key: $PQE_API_KEY" -H "Content-Type: application/json" -H "Accept-Language: id" \
+  -d '{"object_key":"pod/2026/10/22/AWB123.jpg","awb":"AWB123","photo_type":"pod_recipient","courier_id":"K045"}'
+
+# kirim file langsung
+curl -s -X POST "{{BASE}}/v1/analyze?sync=true" -H "X-API-Key: $PQE_API_KEY" \
+  -F "file=@foto.jpg" -F "awb=AWB123" -F "photo_type=pod_recipient"</pre></div>
+        <div class="tabpane" data-pane="an:php"><pre data-code>// Salin clients/php/PhotoQualityClient.php dari repository (tanpa dependency, fail-open)
+$pqe = new PhotoQualityClient('{{BASE}}', env('PQE_API_KEY'), 5000, 'id');
+$r = $pqe->analyzeObject($path, ['awb' => $awb, 'photo_type' => 'pod_recipient', 'courier_id' => $courierId], true, 3000);
+
+if ($r['ok'] && $r['data']['status'] === 'done' && $r['data']['retake_required']) {
+    // kirim $r['data']['retake_message'] + alasan ke aplikasi kurir: minta foto ulang
+}
+// $r['ok'] === false -> engine tidak tersedia: lanjutkan proses seperti biasa</pre></div>
+        <div class="tabpane" data-pane="an:ts"><pre data-code>// Salin clients/typescript/pqe-client.ts dari repository (tanpa dependency, fail-open)
+import { PhotoQualityClient } from "./pqe-client.ts";
+
+const pqe = new PhotoQualityClient({ baseUrl: "{{BASE}}", apiKey: process.env.PQE_API_KEY!, lang: "id" });
+const r = await pqe.analyzeObject(objectKey, { awb, photo_type: "pod_recipient" }, { sync: true, timeoutMs: 3000 });
+if (r.ok && r.photo.retake_required) {
+  // minta kurir foto ulang: r.photo.retake_message, r.photo.reasons
+}</pre></div>
+        <div class="tabpane" data-pane="an:py"><pre data-code>import requests
+
+def analyze(object_key, awb):
+    try:
+        r = requests.post("{{BASE}}/v1/analyze", params={"sync": "true", "timeout_ms": 3000},
+                          headers={"X-API-Key": PQE_API_KEY, "Accept-Language": "id"},
+                          json={"object_key": object_key, "awb": awb, "photo_type": "pod_recipient"},
+                          timeout=(2, 5))
+        return r.json() if r.ok else None
+    except requests.RequestException:
+        return None  # fail-open</pre></div>
+        <div class="tabpane" data-pane="an:kt"><pre data-code>// Kotlin di SERVER (Ktor/Spring). Aplikasi Android memanggil backend Anda, bukan engine langsung.
+val body = """{"object_key":"$objectKey","awb":"$awb","photo_type":"pod_recipient"}"""
+val req = Request.Builder()
+    .url("{{BASE}}/v1/analyze?sync=true&amp;timeout_ms=3000")
+    .header("X-API-Key", System.getenv("PQE_API_KEY"))
+    .post(body.toRequestBody("application/json".toMediaType()))
+    .build()
+val result = runCatching { client.newCall(req).execute().use { it.body?.string() } }.getOrNull() // null = fail-open</pre></div>
+      </section>
+
+      <section id="hasil">
+        <h2>6. Membaca hasil</h2>
+        <pre data-code>{
+  "id": "e350b8bd...", "status": "done",
+  "verdict": "REJECT",            // PASS | WARN | REJECT
+  "retake_required": true,        // true = kualitas parah, tidak bisa diperbaiki: WAJIB foto ulang
+  "retake_message": "Kualitas foto tidak memenuhi syarat dan tidak bisa diperbaiki otomatis. Silakan ambil foto ulang.",
+  "action": "notify",             // log | notify | reject (sesuai mode yang diatur admin)
+  "reasons": [{ "code": "BLURRY", "severity": "reject", "message": "Foto buram",
+                "suggestion": "Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang." }],
+  "evidence_eligible": false,     // apakah foto masuk bukti penagihan pelanggan
+  "urls": { "processed": "https://...", "thumbnail": "https://...", "expires_in": 900 }
+}</pre>
+        <table>
+          <tr><th>Field</th><th>Arti</th></tr>
+          <tr><td><code>retake_required</code></td><td><b>Paling penting untuk aplikasi.</b> <code>true</code> = foto parah (buram berat, pecah, terlalu kecil, putih total) dan sudah dicoba diperbaiki tapi tidak bisa: minta kurir foto ulang.</td></tr>
+          <tr><td><code>verdict</code></td><td><code>PASS</code> layak, <code>WARN</code> kurang ideal tapi masih terbaca (tetap disimpan &amp; masuk evidence), <code>REJECT</code> tidak layak.</td></tr>
+          <tr><td><code>reasons[].code</code></td><td>Kode stabil untuk logika aplikasi. <code>message</code>/<code>suggestion</code> sudah diterjemahkan (header <code>Accept-Language: id|en</code>).</td></tr>
+          <tr><td><code>reasons[].severity</code></td><td><code>info</code> hanya informasi (contoh <code>EXIF_MISSING</code>), jangan ditampilkan sebagai kesalahan.</td></tr>
+        </table>
+      </section>
+
+      <section id="kurir">
+        <h2>7. Menampilkan ke kurir</h2>
+        <table>
+          <tr><th>Kondisi</th><th>Yang ditampilkan aplikasi</th></tr>
+          <tr><td><code>retake_required: true</code></td><td>Tampilkan <code>retake_message</code> + <code>suggestion</code> dari alasan pertama, tombol <b>Foto ulang</b>.</td></tr>
+          <tr><td><code>verdict: WARN</code></td><td>Opsional: tampilkan saran ringan. Foto tetap diterima.</td></tr>
+          <tr><td><code>verdict: PASS</code></td><td>Tidak menampilkan apa-apa.</td></tr>
+          <tr><td>Engine tidak tersedia / timeout</td><td>Tidak menampilkan apa-apa. Lanjutkan proses.</td></tr>
+        </table>
+        <pre data-code>⚠ Foto buram
+Kualitas foto tidak memenuhi syarat dan tidak bisa diperbaiki otomatis. Silakan ambil foto ulang.
+Saran: Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.
+[ Foto ulang ]</pre>
+      </section>
+
+      <section id="webhook">
+        <h2>8. Webhook (tanpa polling)</h2>
+        <p>Admin menambahkan URL backend Anda di config tenant. Engine mengirim <code>POST</code> JSON saat foto selesai dianalisis
+          (<code>analysis.completed</code>) atau keputusan ops berubah (<code>review.updated</code>), ditandatangani HMAC-SHA256.
+          Balas 2xx secepatnya; webhook bisa terkirim lebih dari sekali (dedup pakai <code>X-PQE-Delivery</code>).</p>
+        <div class="tabs" data-tabs="wh"><button data-t="php">Laravel</button><button data-t="node">Node.js</button><button data-t="py">Python</button></div>
+        <div class="tabpane" data-pane="wh:php"><pre data-code>Route::post('/hooks/photo-quality', function (Illuminate\Http\Request $request) {
+    abort_unless(PhotoQualityClient::verifyWebhook(env('PQE_WEBHOOK_SECRET'),
+        $request->header('X-PQE-Timestamp'), $request->getContent(), $request->header('X-PQE-Signature')), 401);
+    dispatch(new HandlePhotoQuality($request->json()->all()));
+    return response()->noContent();
+});</pre></div>
+        <div class="tabpane" data-pane="wh:node"><pre data-code>app.post("/hooks/photo-quality", express.raw({ type: "application/json" }), async (req, res) => {
+  const ok = await verifyWebhook(process.env.PQE_WEBHOOK_SECRET, req.get("X-PQE-Timestamp"), req.body, req.get("X-PQE-Signature"));
+  if (!ok) return res.sendStatus(401);
+  res.sendStatus(204);
+  const event = JSON.parse(req.body.toString("utf8"));
+});</pre></div>
+        <div class="tabpane" data-pane="wh:py"><pre data-code>import hashlib, hmac, time
+
+def verify(secret: str, ts: str, raw_body: bytes, signature: str) -> bool:
+    if not ts or abs(time.time() - int(ts)) > 300:
+        return False
+    mac = hmac.new(secret.encode(), ts.encode() + b"." + raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(f"sha256={mac}", signature or "")</pre></div>
+      </section>
+
+      <section id="evidence">
+        <h2>9. Evidence pelanggan (penagihan)</h2>
+        <p>Evidence berisi foto <code>PASS</code> dan <code>WARN</code> (masih terbaca). Foto <code>REJECT</code> tidak masuk.
+          Skor internal tidak ditampilkan ke pelanggan.</p>
+        <pre data-code>curl -s -H "X-API-Key: $PQE_API_KEY" "{{BASE}}/v1/evidence/AWB123"                 # JSON
+curl -s -H "X-API-Key: $PQE_API_KEY" -o pod-AWB123.pdf "{{BASE}}/v1/evidence/AWB123/pdf"   # PDF per resi
+curl -s -X POST -H "X-API-Key: $PQE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"awbs":["AWB123","AWB124"]}' -o invoice.pdf "{{BASE}}/v1/evidence/batch"            # PDF per invoice
+curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                                  # cek keaslian (publik)</pre>
+      </section>
+
+      <section id="perbaikan">
+        <h2>10. Perbaikan otomatis (tanpa AI)</h2>
+        <div class="rule ok">Foto yang <b>gelap, terlalu terang, atau pudar</b> diperbaiki otomatis dengan satu kurva pencahayaan global
+          (seperti fitur Levels/Curves). Setiap hasil <b>diverifikasi eksak</b>: tidak ada piksel yang dikarang, tidak ada teks/angka yang
+          ditambah atau diubah. Jika verifikasi gagal, hasil perbaikan dibuang.</div>
+        <ul>
+          <li>Tidak memakai AI, tidak ada penajaman, tidak ada crop/resize pada hasil perbaikan.</li>
+          <li>Foto original tetap disimpan utuh; kode verifikasi (SHA-256) merujuk ke original.</li>
+          <li>Foto <b>buram parah, pecah, atau terlalu kecil</b> tidak bisa diperbaiki secara jujur, jadi engine langsung mengembalikan <code>retake_required: true</code>.</li>
+          <li>Aplikasi tidak perlu melakukan apa-apa: versi yang sudah diperbaiki otomatis ada di <code>urls.processed</code>.</li>
+        </ul>
+      </section>
+
+      <section id="error">
+        <h2>11. Kode error</h2>
+        <p>Format: <code>{"error": {"code": "KODE", "message": "..."}}</code></p>
+        <table>
+          <tr><th>HTTP</th><th>code</th><th>Solusi</th></tr>
+          <tr><td>401</td><td>UNAUTHORIZED</td><td>Cek header <code>X-API-Key</code></td></tr>
+          <tr><td>403</td><td>FORBIDDEN</td><td>Key tidak punya akses ke tenant/endpoint ini</td></tr>
+          <tr><td>404</td><td>OBJECT_NOT_FOUND</td><td>Pastikan upload ke SILO selesai dan <code>object_key</code> benar</td></tr>
+          <tr><td>409</td><td>TENANT_DISABLED</td><td>Hubungi admin engine</td></tr>
+          <tr><td>413</td><td>FILE_TOO_LARGE</td><td>Kirim foto asli kamera (maks. 25 MB)</td></tr>
+          <tr><td>422</td><td>VALIDATION_ERROR / NO_INPUT</td><td>Lihat <code>message</code></td></tr>
+          <tr><td>5xx / timeout</td><td>-</td><td><b>Fail-open</b>: lanjutkan proses, laporkan ke tim engine</td></tr>
+        </table>
+      </section>
+
+      <section id="checklist">
+        <h2>12. Checklist sebelum go-live</h2>
+        <ul>
+          <li>☐ Update status kurir tetap jalan saat engine dimatikan (uji!)</li>
+          <li>☐ Semua panggilan punya timeout (≤ 3 dtk sync) dan fail-open</li>
+          <li>☐ API key hanya di env server, tidak di aplikasi mobile/browser/git</li>
+          <li>☐ Foto dikirim asli dari kamera (tanpa kompres di aplikasi)</li>
+          <li>☐ Metadata <code>awb</code>, <code>photo-type</code>, <code>courier-id</code>, <code>customer-id</code> terkirim</li>
+          <li>☐ <code>retake_required</code> ditangani di aplikasi kurir (tampilkan pesan + tombol foto ulang)</li>
+          <li>☐ Webhook: tanda tangan diverifikasi, balas 2xx cepat, idempotent</li>
+          <li>☐ Runtime Node.js/PHP versi patch 21 Okt 2026</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    "use strict";
+    const BASE = location.origin;
+    document.getElementById("base-label").textContent = BASE;
+    document.querySelectorAll(".base").forEach((el) => (el.textContent = BASE));
+    document.querySelectorAll("[data-code]").forEach((pre) => {
+      pre.innerHTML = pre.innerHTML.split("{{BASE}}").join(BASE);
+      const btn = document.createElement("button");
+      btn.className = "copy"; btn.textContent = "Salin";
+      btn.onclick = () => {
+        const text = pre.innerText.replace(/Salin$|Tersalin$/, "").trim();
+        (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(
+          () => { btn.textContent = "Tersalin"; setTimeout(() => (btn.textContent = "Salin"), 1500); },
+          () => { btn.textContent = "Gagal"; });
+      };
+      pre.appendChild(btn);
+    });
+    document.querySelectorAll("[data-tabs]").forEach((tabs) => {
+      const group = tabs.dataset.tabs;
+      const show = (t) => {
+        tabs.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.t === t));
+        document.querySelectorAll(`[data-pane^="${group}:"]`).forEach((p) => p.classList.toggle("on", p.dataset.pane === `${group}:${t}`));
+      };
+      tabs.querySelectorAll("button").forEach((b) => (b.onclick = () => show(b.dataset.t)));
+      show(tabs.querySelector("button").dataset.t);
+    });
+  </script>
+</body>
+</html>

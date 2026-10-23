@@ -52,7 +52,7 @@ $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") closeDrawer(); });
 window.addEventListener("hashchange", route);
 
-const pages = { dashboard, review, photos, test: testPhoto, tenants, keys, system };
+const pages = { dashboard, review, photos, test: testPhoto, tenants, keys, silo, system };
 function route() {
   const page = (location.hash.replace(/^#\//, "").split("?")[0]) || "dashboard";
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === page));
@@ -115,7 +115,7 @@ function photoTable(items) {
         <td><b>${esc(p.awb || "-")}</b><div class="muted small">${esc(p.external_id || "")}</div></td>
         <td>${esc(p.tenant)}<div class="muted small">${esc(p.photo_type || "-")}</div></td>
         <td>${esc(p.courier_id || "-")}<div class="muted small">${esc(p.branch || "")}</div></td>
-        <td>${p.status === "error" ? badge("REJECT", "ERROR") : badge(p.verdict)}</td>
+        <td>${p.status === "error" ? badge("REJECT", "ERROR") : badge(p.verdict)}${p.retake_required ? `<div class="small" style="color:var(--reject)">foto ulang</div>` : ""}</td>
         <td>${main ? `${esc(main.message)}<div class="muted small">${esc(main.code)}</div>` : `<span class="muted">-</span>`}</td>
         <td>${badge(p.review.status, REVIEW_LABEL[p.review.status])}</td>
         <td class="small">${fmtDate(p.received_at)}</td></tr>`;
@@ -196,6 +196,9 @@ async function openPhoto(id, onChange) {
         <div class="small"><a href="${esc(p.urls.original)}" target="_blank">Buka original</a>${p.urls.processed ? ` · <a href="${esc(p.urls.processed)}" target="_blank">Buka versi kompres</a>` : ""}</div>
       </div>
       <div>
+        ${p.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">${esc(p.retake_message || "")}</div></div>` : ""}
+        ${p.enhancement && p.enhancement.applied ? `<div class="reason info"><b>Diperbaiki otomatis</b> <span class="small">(kurva pencahayaan global, terverifikasi tanpa perubahan isi: ${esc((p.enhancement.operations || []).join(", "))})</span>
+          <div class="small">Sebelum perbaikan: ${badge(p.enhancement.before.verdict)} ${esc((p.enhancement.before.codes || []).join(", "))}. Foto original tetap disimpan utuh.</div></div>` : ""}
         <h3>Skor</h3>${scoreBars(p.scores)}
         <h3>Catatan</h3>${reasonsHtml(p.reasons)}
         ${p.error ? `<div class="reason reject"><b>${esc(p.error.code)}</b><div class="small">${esc(p.error.message)}</div></div>` : ""}
@@ -263,6 +266,8 @@ async function testPhoto() {
       const c = r.compression || {};
       $("#t-out").innerHTML = `<div class="grid cols-2"><div><img src="${URL.createObjectURL(file)}" style="max-width:100%;border-radius:6px"></div><div>
         <h2>${badge(r.verdict)} <span class="muted small">profile ${esc(r.profile)} · mode ${esc(r.mode)} · aksi ${esc(r.action)}</span></h2>
+        ${r.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">${esc(r.retake_message || "")}</div></div>` : ""}
+        ${r.enhancement && r.enhancement.applied ? `<div class="reason info"><b>Diperbaiki otomatis</b> <span class="small">(${esc(r.enhancement.operations.join(", "))}; sebelum: ${esc(r.enhancement.before.verdict)})</span></div>` : ""}
         <h3>Skor</h3>${scoreBars(r.scores)}<h3>Catatan</h3>${reasonsHtml(r.reasons)}
         <h3>Kompresi</h3><p>${kb(c.original_bytes)} → ${kb(c.output_bytes)} ${c.passthrough ? "(tidak perlu dikompres)" : `(${c.width}×${c.height}, quality ${c.quality}, SSIM ${c.ssim}${c.target_met ? "" : ", target belum tercapai"})`}</p>
         <p class="muted small">Waktu proses ${r.timings_ms.total} ms</p>
@@ -357,6 +362,86 @@ async function keys() {
   document.querySelectorAll("[data-revoke]").forEach((b) => (b.onclick = async () => {
     if (!confirm("Cabut API key ini? Aplikasi yang memakainya akan langsung ditolak.")) return;
     await api(`/v1/admin/api-keys/${b.dataset.revoke}`, { method: "DELETE" }); toast("Key dicabut"); keys();
+  }));
+}
+
+/* ---------------- Pengaturan SILO (admin) ---------------- */
+const SILO_FIELDS = [
+  ["endpoint", "Endpoint (URL SILO)", "https://s3.pcpexpress.com", "Alamat yang diakses SERVER engine. Di Docker, 127.0.0.1 berarti container engine itu sendiri: pakai nama service (contoh http://silo:9000) atau IP/host server SILO."],
+  ["public_endpoint", "Endpoint publik (opsional)", "https://s3.pcpexpress.com", "Alamat yang dipakai browser/pelanggan untuk membuka foto. Kosong = sama dengan Endpoint."],
+  ["region", "Region", "us-east-1", "Wajib diisi untuk library S3; nilainya tidak berpengaruh di SILO."],
+  ["access_key", "Access key", "", "Service account KHUSUS engine (jangan akun admin/root)."],
+  ["secret_key", "Secret key", "", "Disimpan terenkripsi dan tidak pernah ditampilkan lagi. Kosongkan jika tidak ingin mengubah."],
+  ["addressing_style", "Gaya alamat (path)", "", "auto | path | virtual. SILO/MinIO umumnya path (format mc: path \"on\")."],
+  ["signature_version", "Signature (api)", "s3v4", "s3v4 (disarankan) atau s3 (v2, lama)."],
+  ["app_bucket", "Bucket foto aplikasi", "ekas-pcptransport", "Engine hanya MEMBACA bucket ini."],
+  ["processed_bucket", "Bucket hasil kompres", "photos-processed", "Engine membaca & menulis."],
+  ["thumb_bucket", "Bucket thumbnail", "photos-thumb", "Engine membaca & menulis."],
+  ["upload_bucket", "Bucket upload API", "photos-upload", "Untuk foto yang dikirim langsung ke API engine."],
+];
+const SOURCE_LABEL = { database: "dari halaman ini", env: "dari env server", default: "bawaan" };
+
+async function silo() {
+  const cfg = await api("/v1/admin/settings/storage");
+  const f = cfg.fields;
+  const val = (k) => (k === "secret_key" ? "" : f[k].value ?? "");
+  $("#main").innerHTML = `<h1>Pengaturan SILO</h1>
+    <p class="muted">Koneksi engine ke SILO (S3). Nilai di halaman ini menimpa env server dan berlaku tanpa restart (maks. 10 detik).
+      Rahasia disimpan terenkripsi. Engine hanya membaca bucket aplikasi.</p>
+    ${cfg.secret_key_configured ? "" : `<div class="reason warn"><b>PQE_SECRET_KEY belum diisi di server.</b> Secret key tidak bisa disimpan lewat halaman ini sampai PQE_SECRET_KEY diisi (lihat docs/configuration.md). Field lain tetap bisa disimpan.</div>`}
+    <div class="grid cols-2">
+      <div class="card"><h2>Koneksi</h2>
+        ${SILO_FIELDS.map(([k, label, ph, help]) => `<label style="margin-bottom:10px">${esc(label)}
+          ${k === "addressing_style" ? `<select id="s-${k}">${["", "auto", "path", "virtual"].map((o) => `<option value="${o}" ${val(k) === o ? "selected" : ""}>${o || "(ikut env)"}</option>`).join("")}</select>`
+            : k === "signature_version" ? `<select id="s-${k}">${["s3v4", "s3"].map((o) => `<option ${val(k) === o ? "selected" : ""}>${o}</option>`).join("")}</select>`
+            : `<input id="s-${k}" type="${k === "secret_key" ? "password" : "text"}" autocomplete="off" value="${esc(val(k))}" placeholder="${esc(k === "secret_key" ? (f.secret_key.value.set ? "•••••• (tersimpan)" : "belum diisi") : ph)}">`}
+          <span class="small">${esc(help)} <i>Saat ini: ${esc(SOURCE_LABEL[f[k].source])}</i>${f[k].source === "database" ? ` · <a href="#" data-clear="${k}">kembalikan ke env</a>` : ""}</span></label>`).join("")}
+        <div class="actions"><button class="secondary" id="s-test">Test koneksi</button><button id="s-save">Simpan</button></div>
+        <div id="s-out"></div>
+      </div>
+      <div class="card"><h2>Impor dari konfigurasi mc / MinIO</h2>
+        <p class="muted small">Tempel JSON dari <code>mc alias</code> / <code>~/.mc/config.json</code>. Form di samping akan terisi otomatis (belum disimpan).</p>
+        <textarea id="s-mc" class="code" style="min-height:160px" placeholder='{"url":"http://127.0.0.1:9000","accessKey":"...","secretKey":"...","api":"s3v4","path":"auto"}'></textarea>
+        <div class="actions"><button class="secondary" id="s-import">Isi form dari JSON</button></div>
+        <h3>Permission minimal service account</h3>
+        <pre class="json">${esc(JSON.stringify({ Version: "2012-10-17", Statement: [
+          { Effect: "Allow", Action: ["s3:GetObject", "s3:ListBucket"], Resource: [`arn:aws:s3:::${val("app_bucket") || "ekas-pcptransport"}`, `arn:aws:s3:::${val("app_bucket") || "ekas-pcptransport"}/*`] },
+          { Effect: "Allow", Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"], Resource: ["processed_bucket", "thumb_bucket", "upload_bucket"].flatMap((k) => [`arn:aws:s3:::${val(k)}`, `arn:aws:s3:::${val(k)}/*`]) },
+        ] }, null, 2))}</pre>
+        <p class="muted small">Detail pembuatan service account: docs/operations.md bagian setup SILO produksi.</p>
+      </div>
+    </div>`;
+  const form = () => {
+    const out = {};
+    for (const [k] of SILO_FIELDS) { const v = $(`#s-${k}`).value.trim(); if (v && v !== String(val(k))) out[k] = v; }
+    return out;
+  };
+  const showChecks = (r) => {
+    $("#s-out").innerHTML = `<h3>${r.ok ? "Koneksi berhasil" : "Koneksi bermasalah"} <span class="muted small">${esc(r.endpoint)}</span></h3>` +
+      r.checks.map((c) => `<div class="reason ${c.ok ? "info" : "reject"}">${c.ok ? "✅" : "❌"} <b>${esc(c.check)}</b><div class="small">${esc(c.detail)}</div></div>`).join("");
+  };
+  $("#s-import").onclick = () => {
+    let j;
+    try { j = JSON.parse($("#s-mc").value); } catch (e) { return toast("JSON tidak valid: " + e.message, true); }
+    const map = { url: "endpoint", accessKey: "access_key", secretKey: "secret_key" };
+    for (const [from, to] of Object.entries(map)) if (j[from]) $(`#s-${to}`).value = String(j[from]).replace(/\/+$/, "");
+    if (j.api) $("#s-signature_version").value = /v2|^s3$/i.test(j.api) ? "s3" : "s3v4";
+    if (j.path) $("#s-addressing_style").value = { on: "path", off: "virtual", dns: "virtual" }[String(j.path).toLowerCase()] || "auto";
+    if (/\/\/(127\.0\.0\.1|localhost)[:/]/.test(j.url || "")) toast("Perhatian: 127.0.0.1/localhost di dalam Docker merujuk ke container engine, bukan SILO. Ganti dengan host/IP SILO jika perlu.", true);
+    else toast("Form terisi. Klik Test koneksi lalu Simpan.");
+  };
+  $("#s-test").onclick = async () => {
+    $("#s-out").innerHTML = `<p class="muted">Menguji...</p>`;
+    try { showChecks(await api("/v1/admin/settings/storage/test", { method: "POST", body: form() })); } catch (e) { $("#s-out").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  };
+  $("#s-save").onclick = async () => {
+    const body = form();
+    if (!Object.keys(body).length) return toast("Tidak ada perubahan");
+    try { await api("/v1/admin/settings/storage", { method: "PUT", body }); toast("Tersimpan, berlaku dalam 10 detik"); silo(); } catch (e) { toast(e.message, true); }
+  };
+  document.querySelectorAll("[data-clear]").forEach((a) => (a.onclick = async (e) => {
+    e.preventDefault();
+    try { await api("/v1/admin/settings/storage", { method: "PUT", body: { clear: [a.dataset.clear] } }); toast("Dikembalikan ke nilai env"); silo(); } catch (err) { toast(err.message, true); }
   }));
 }
 

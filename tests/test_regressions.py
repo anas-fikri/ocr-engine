@@ -137,3 +137,45 @@ def test_review_optional_by_default_warn_goes_to_evidence(client, admin_headers,
     items = {p["verdict"]: p for p in listing}
     assert items["WARN"]["evidence_eligible"] is True and items["WARN"]["retake_required"] is False
     assert items["REJECT"]["evidence_eligible"] is False and items["REJECT"]["retake_required"] is True
+
+
+def test_storage_settings_page_api(client, admin_headers, env, monkeypatch):
+    """Konfigurasi SILO lewat API/Web UI: format mc, enkripsi secret, test koneksi, berlaku tanpa restart."""
+    from engine.db import Setting, session_scope
+    from engine.settings import reset_settings_cache
+    from engine.storage import get_storage
+
+    # tanpa PQE_SECRET_KEY secret tidak boleh disimpan
+    mc = {"url": env["AWS_ENDPOINT"], "accessKey": "test", "secretKey": "rahasia-baru", "api": "s3v4", "path": "on"}
+    r = client.put("/v1/admin/settings/storage", json={"mc_config": mc}, headers=admin_headers)
+    assert r.status_code == 409 and r.json()["error"]["code"] == "SECRET_KEY_MISSING"
+
+    monkeypatch.setenv("PQE_SECRET_KEY", "kunci-enkripsi-test")
+    reset_settings_cache()
+    r = client.put("/v1/admin/settings/storage", json={"mc_config": mc, "app_bucket": "app-photos"},
+                   headers=admin_headers)
+    assert r.status_code == 200, r.text
+    f = r.json()["fields"]
+    assert f["endpoint"]["source"] == "database" and f["addressing_style"]["value"] == "path"
+    assert f["secret_key"]["value"] == {"set": True}
+    assert "rahasia-baru" not in r.text
+    with session_scope() as s:  # tersimpan terenkripsi, bukan teks asli
+        stored = s.get(Setting, "storage").value
+    assert "rahasia-baru" not in str(stored) and stored["secret_key_enc"]
+    assert get_storage().s.aws_secret_access_key == "rahasia-baru"  # berlaku tanpa restart
+
+    t = client.post("/v1/admin/settings/storage/test", json={}, headers=admin_headers).json()
+    assert t["ok"] is True and len(t["checks"]) == 4
+    bad = client.post("/v1/admin/settings/storage/test", json={"endpoint": "http://127.0.0.1:9"},
+                      headers=admin_headers).json()
+    assert bad["ok"] is False
+    assert client.put("/v1/admin/settings/storage", json={"addressing_style": "aneh"},
+                      headers=admin_headers).status_code == 422
+
+    r = client.put("/v1/admin/settings/storage", json={"clear": ["addressing_style", "secret_key"]},
+                   headers=admin_headers)
+    assert r.json()["fields"]["addressing_style"]["source"] != "database"
+    assert get_storage().s.aws_secret_access_key == "test"  # kembali ke env
+    app_key = client.post("/v1/admin/api-keys", json={"name": "aplikasi", "role": "app", "tenant": "test-app"},
+                          headers=admin_headers).json()["api_key"]
+    assert client.get("/v1/admin/settings/storage", headers={"X-API-Key": app_key}).status_code == 403

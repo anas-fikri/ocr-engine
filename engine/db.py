@@ -187,6 +187,17 @@ class SourceState(Base):
     last_error: Mapped[str | None] = mapped_column(Text)
 
 
+class Setting(Base):
+    """Pengaturan yang bisa diubah lewat Web UI (contoh koneksi SILO). Menimpa nilai env."""
+
+    __tablename__ = "settings"
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSONType, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_by: Mapped[str | None] = mapped_column(String(200))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

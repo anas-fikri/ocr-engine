@@ -196,7 +196,7 @@ def cmd_demo_upload(a) -> None:
     from engine.synth import variants
 
     st = get_storage()
-    bucket = a.bucket or get_settings().aws_bucket
+    bucket = a.bucket or st.s.aws_bucket
     samples = variants()
     rnd = random.Random(42)
     for i, (name, data) in enumerate(samples.items()):

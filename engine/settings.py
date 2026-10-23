@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     aws_access_key_id: str = Field("", alias="AWS_ACCESS_KEY_ID")
     aws_secret_access_key: str = Field("", alias="AWS_SECRET_ACCESS_KEY")
     aws_bucket: str = Field("ekas-pcptransport", alias="AWS_BUCKET")
+    # auto | path | virtual. Kosong = ikut AWS_USE_PATH_STYLE_ENDPOINT (true -> path, false -> auto)
+    aws_addressing_style: str | None = Field(None, alias="AWS_ADDRESSING_STYLE")
+    aws_signature_version: str = Field("s3v4", alias="AWS_SIGNATURE_VERSION")
 
     engine_bucket_processed: str = Field("photos-processed", alias="ENGINE_BUCKET_PROCESSED")
     engine_bucket_thumb: str = Field("photos-thumb", alias="ENGINE_BUCKET_THUMB")
@@ -33,6 +36,8 @@ class Settings(BaseSettings):
 
     # --- API & keamanan ---
     public_base_url: str = Field("http://localhost:8000", alias="PUBLIC_BASE_URL")
+    # kunci enkripsi untuk rahasia yang disimpan lewat Web UI (contoh secret key SILO). String acak panjang.
+    secret_key: str | None = Field(None, alias="PQE_SECRET_KEY")
     bootstrap_admin_key: str | None = Field(None, alias="PQE_BOOTSTRAP_ADMIN_KEY")
     s3_event_token: str | None = Field(None, alias="PQE_S3_EVENT_TOKEN")
     default_lang: str = Field("id", alias="PQE_DEFAULT_LANG")
@@ -53,6 +58,12 @@ class Settings(BaseSettings):
     # port metrik Prometheus untuk proses `pqe worker` / `pqe ingestor` (API memakai /metrics di port API)
     metrics_port: int = Field(9100, alias="PQE_METRICS_PORT")
     log_level: str = Field("INFO", alias="PQE_LOG_LEVEL")
+
+
+def addressing_style(s: Settings) -> str:
+    if s.aws_addressing_style in ("auto", "path", "virtual"):
+        return s.aws_addressing_style
+    return "path" if s.aws_use_path_style_endpoint else "auto"
 
 
 @lru_cache

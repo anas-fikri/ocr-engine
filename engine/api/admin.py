@@ -237,3 +237,101 @@ def audit(_: Admin, limit: Annotated[int, Query(ge=1, le=500)] = 100):
         rows = s.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)).all()
         return [{"actor": r.actor, "action": r.action, "target": r.target, "detail": r.detail,
                  "at": r.created_at.isoformat()} for r in rows]
+
+
+# ---------------- Pengaturan SILO ----------------
+
+class StorageSettingsIn(BaseModel):
+    """Semua field opsional. Field kosong = tidak diubah. `mc_config` = JSON format mc/MinIO client."""
+
+    endpoint: str | None = Field(None, examples=["https://s3.pcpexpress.com"])
+    public_endpoint: str | None = Field(None, description="Host untuk link foto di browser/pelanggan")
+    region: str | None = None
+    access_key: str | None = None
+    secret_key: str | None = Field(None, description="Disimpan terenkripsi, tidak pernah ditampilkan lagi")
+    addressing_style: str | None = Field(None, description="auto | path | virtual")
+    signature_version: str | None = Field(None, description="s3v4 | s3")
+    app_bucket: str | None = Field(None, description="Bucket foto aplikasi (engine hanya membaca)")
+    processed_bucket: str | None = None
+    thumb_bucket: str | None = None
+    upload_bucket: str | None = None
+    mc_config: dict | None = Field(None, examples=[{"url": "http://127.0.0.1:9000", "accessKey": "...",
+                                                   "secretKey": "...", "api": "s3v4", "path": "auto"}])
+    clear: list[str] = Field(default_factory=list, description="Field yang dikembalikan ke nilai env")
+
+    def values(self) -> dict:
+        from engine.storage_config import from_mc_config
+
+        data = self.model_dump(exclude={"mc_config", "clear"})
+        if self.mc_config:
+            data.update({k: v for k, v in from_mc_config(self.mc_config).items() if not data.get(k)})
+        return {k: v.strip() if isinstance(v, str) else v for k, v in data.items() if v not in (None, "")}
+
+
+@router.get("/settings/storage", summary="Konfigurasi SILO efektif (rahasia disamarkan)")
+def get_storage_settings(_: Admin):
+    from engine.storage_config import describe
+
+    return describe()
+
+
+@router.put("/settings/storage", summary="Simpan konfigurasi SILO (berlaku tanpa restart, maks. 10 detik)")
+def put_storage_settings(body: StorageSettingsIn, principal: Admin):
+    from engine.secretbox import SecretKeyMissing
+    from engine.storage import reset_storage_cache
+    from engine.storage_config import describe, save
+
+    try:
+        version = save(body.values(), principal.actor, body.clear)
+    except SecretKeyMissing as e:
+        raise api_error(409, "SECRET_KEY_MISSING",
+                        "PQE_SECRET_KEY belum diisi di server, secret key SILO tidak bisa disimpan terenkripsi. "
+                        "Isi PQE_SECRET_KEY lalu restart, atau isi AWS_SECRET_ACCESS_KEY lewat env.") from e
+    except ValueError as e:
+        raise api_error(422, "INVALID_SETTINGS", str(e)) from e
+    reset_storage_cache()
+    return {"version": version, **describe()}
+
+
+@router.post("/settings/storage/test", summary="Uji koneksi SILO (dengan nilai form, sebelum disimpan)")
+def test_storage_settings(body: StorageSettingsIn, _: Admin):
+    import uuid as _uuid
+
+    from botocore.exceptions import ClientError
+
+    from engine.storage import Storage
+    from engine.storage_config import effective_settings, validate
+
+    values = body.values()
+    try:
+        validate(values)
+    except ValueError as e:
+        raise api_error(422, "INVALID_SETTINGS", str(e)) from e
+    settings, _version = effective_settings(values)
+    checks = []
+
+    def run(name: str, fn):
+        try:
+            detail = fn()
+            checks.append({"check": name, "ok": True, "detail": detail})
+        except Exception as e:  # semua error koneksi ditampilkan ke admin apa adanya
+            code = getattr(e, "response", {}).get("Error", {}).get("Code") if isinstance(e, ClientError) else None
+            checks.append({"check": name, "ok": False, "detail": f"{code or type(e).__name__}: {e}"[:300]})
+
+    st = Storage(settings)
+    def read_check():
+        sample = [o for _, o in zip(range(5), st.list(settings.aws_bucket), strict=False)]
+        return f"bisa di-list ({len(sample)} objek contoh)"
+
+    run(f"Baca bucket aplikasi '{settings.aws_bucket}'", read_check)
+    probe = f"_pqe_connection_test/{_uuid.uuid4().hex}.txt"
+
+    def write_check():
+        st.put(settings.engine_bucket_processed, probe, b"ok", "text/plain")
+        st.delete(settings.engine_bucket_processed, probe)
+        return "tulis & hapus berhasil"
+
+    run(f"Tulis bucket hasil kompres '{settings.engine_bucket_processed}'", write_check)
+    for label, b in (("thumbnail", settings.engine_bucket_thumb), ("upload", settings.engine_bucket_upload)):
+        run(f"Akses bucket {label} '{b}'", lambda b=b: st.ping(b) and "ada & bisa diakses")
+    return {"ok": all(c["ok"] for c in checks), "endpoint": settings.aws_endpoint, "checks": checks}

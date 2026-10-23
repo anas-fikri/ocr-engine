@@ -94,7 +94,8 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
         except Exception as e:
             checks["database"] = f"error: {type(e).__name__}"
         try:
-            get_storage().ping(get_settings().engine_bucket_processed)
+            st = get_storage()
+            st.ping(st.s.engine_bucket_processed)
             checks["storage"] = "ok"
         except Exception as e:
             checks["storage"] = f"error: {type(e).__name__}"

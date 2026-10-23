@@ -27,7 +27,8 @@ def bootstrap() -> None:
         log.info("tenant di-import dari %s: %s", s.tenants_dir, ", ".join(imported))
     if s.engine_create_buckets:
         st = get_storage()
-        for b in {s.engine_bucket_processed, s.engine_bucket_thumb, s.engine_bucket_upload, s.aws_bucket}:
+        es = st.s
+        for b in {es.engine_bucket_processed, es.engine_bucket_thumb, es.engine_bucket_upload, es.aws_bucket}:
             try:
                 st.ensure_bucket(b)
             except Exception as e:  # SILO belum siap tidak boleh menggagalkan start

@@ -56,7 +56,7 @@ def _wanted(key: str, src: Source) -> bool:
 def poll_s3(t: LoadedTenant, idx: int, src: Source, storage: Storage, *, reconcile: bool = False) -> int:
     """List bucket/prefix, catat objek yang belum dikenal. Return jumlah foto baru."""
     cfg = t.config
-    bucket = src.bucket or get_settings().aws_bucket
+    bucket = src.bucket or storage.s.aws_bucket
     days = max(src.lookback_days, 7) if reconcile else src.lookback_days
     found = 0
     for prefix in _prefixes(src, cfg.timezone, days):
@@ -150,7 +150,7 @@ def poll_db(t: LoadedTenant, idx: int, src: Source) -> int:
         url = row.get(src.url_column)
         if not url:
             continue
-        loc = split_url(str(url)) if "://" in str(url) else ((src.bucket or get_settings().aws_bucket), str(url))
+        loc = split_url(str(url)) if "://" in str(url) else ((src.bucket or get_storage().s.aws_bucket), str(url))
         if loc is None:
             log.warning("db_poll %s: link tidak dikenali %s", cfg.code, url)
             continue

@@ -79,9 +79,9 @@ class TenantRegistry:
 
     def match_object(self, bucket: str, key: str) -> tuple[LoadedTenant, int, Source] | None:
         """Cari tenant + source yang memantau bucket/prefix ini (prefix terpanjang menang)."""
-        from engine.settings import get_settings
+        from engine.storage import get_storage
 
-        default_bucket = get_settings().aws_bucket
+        default_bucket = get_storage().s.aws_bucket
         best = None
         for t in self.all():
             for i, src in enumerate(t.config.sources):
