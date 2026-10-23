@@ -70,3 +70,14 @@ textarea.code { width: 100%; min-height: 460px; white-space: pre; tab-size: 2; }
 .empty { padding: 30px; text-align: center; color: var(--muted); }
 .keybox { background: var(--warn-bg); padding: 12px; border-radius: 8px; word-break: break-all; }
 pre.json { background: #fafbfc; border: 1px solid var(--line); padding: 10px; border-radius: 6px; overflow: auto; max-height: 300px; }
+@media (max-width: 760px) {
+  .topbar { flex-wrap: wrap; height: auto; gap: 6px 12px; padding: 8px 12px; }
+  .topbar nav { order: 3; flex-basis: 100%; }
+  .who { font-size: 12px; }
+  main { padding: 12px; }
+  .cols-2 { grid-template-columns: 1fr; }
+  .grid > * { min-width: 0; }
+  .kv { grid-template-columns: 110px 1fr; }
+  .card { overflow-x: auto; }  /* tabel lebar ter-scroll di dalam kartunya */
+  .filters > * { min-width: 0; max-width: 100%; }
+}

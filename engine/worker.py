@@ -90,11 +90,16 @@ class Worker:
                 self.stop_event.wait(idle)
 
     def _maintenance_loop(self) -> None:
-        last_slow = 0.0
+        from engine import backup
+
+        last_slow = last_backup = 0.0
         while not self.stop_event.is_set():
             try:
                 deliver_pending()
                 now = time.monotonic()
+                if now - last_backup >= 10:  # cek jadwal / permintaan backup NAS
+                    last_backup = now
+                    backup.maybe_run(self.storage or get_storage())
                 if now - last_slow >= 30:
                     with session_scope() as s:
                         n = requeue_stale(s)

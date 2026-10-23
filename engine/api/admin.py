@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 import yaml
 from fastapi import APIRouter, Body, Depends, Query
@@ -266,6 +266,74 @@ class StorageSettingsIn(BaseModel):
         if self.mc_config:
             data.update({k: v for k, v in from_mc_config(self.mc_config).items() if not data.get(k)})
         return {k: v.strip() if isinstance(v, str) else v for k, v in data.items() if v not in (None, "")}
+
+
+class BackupSettingsIn(BaseModel):
+    enabled: bool | None = None
+    target: Literal["folder", "s3"] | None = None
+    folder_path: str | None = None
+    s3_endpoint: str | None = None
+    s3_region: str | None = None
+    s3_bucket: str | None = None
+    s3_prefix: str | None = None
+    s3_access_key: str | None = None
+    s3_secret_key: str | None = None
+    s3_addressing_style: Literal["auto", "path", "virtual"] | None = None
+    include_upload_originals: bool | None = None
+    include_app_originals: bool | None = None
+    include_processed: bool | None = None
+    include_thumbs: bool | None = None
+    include_database: bool | None = None
+    photo_interval_minutes: int | None = None
+    db_interval_hours: int | None = None
+    db_keep: int | None = None
+
+    def values(self) -> dict:
+        return {k: v for k, v in self.model_dump().items() if v is not None}
+
+
+@router.get("/settings/backup", summary="Konfigurasi & status backup NAS (rahasia disamarkan)")
+def get_backup_settings(_: Admin):
+    from engine import backup
+
+    return backup.describe()
+
+
+@router.put("/settings/backup", summary="Simpan konfigurasi backup NAS (berlaku di putaran worker berikutnya)")
+def put_backup_settings(body: BackupSettingsIn, principal: Admin):
+    from engine import backup
+    from engine.secretbox import SecretKeyMissing
+
+    try:
+        backup.save(body.values(), principal.actor)
+    except SecretKeyMissing as e:
+        raise api_error(409, "SECRET_KEY_MISSING",
+                        "PQE_SECRET_KEY belum diisi di server, secret key NAS tidak bisa disimpan terenkripsi.") from e
+    except ValueError as e:
+        raise api_error(422, "INVALID_SETTINGS", str(e)) from e
+    return backup.describe()
+
+
+@router.post("/settings/backup/test", summary="Uji tujuan backup NAS (dengan nilai form, sebelum disimpan)")
+def test_backup_settings(body: BackupSettingsIn, _: Admin):
+    from engine import backup
+
+    try:
+        return backup.test(body.values())
+    except ValueError as e:
+        raise api_error(422, "INVALID_SETTINGS", str(e)) from e
+
+
+class BackupRunIn(BaseModel):
+    kind: Literal["photos", "database", "all"] = "all"
+
+
+@router.post("/backup/run", summary="Jalankan backup NAS sekarang (dikerjakan worker dalam ±10 detik)")
+def run_backup(body: BackupRunIn, principal: Admin):
+    from engine import backup
+
+    backup.request_run(body.kind, principal.actor)
+    return backup.describe()
 
 
 @router.get("/settings/storage", summary="Konfigurasi SILO efektif (rahasia disamarkan)")

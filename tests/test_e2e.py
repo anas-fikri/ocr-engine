@@ -14,7 +14,8 @@ from engine.storage import get_storage
 
 
 def put_photo(key: str, data: bytes, **meta) -> None:
-    get_storage().put("app-photos", key, data, "image/jpeg", {k.replace("_", "-"): v for k, v in meta.items()})
+    get_storage().put("app-photos", key, data, "image/jpeg", {k.replace("_", "-"): v for k, v in meta.items()},
+                      allow_foreign=True)  # berperan sebagai aplikasi yang upload ke bucket-nya sendiri
 
 
 def ingest_and_process() -> int:

@@ -62,7 +62,7 @@ $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") closeDrawer(); });
 window.addEventListener("hashchange", route);
 
-const pages = { dashboard, review, photos, test: testPhoto, tenants, keys, silo, system };
+const pages = { dashboard, review, photos, test: testPhoto, tenants, keys, silo, nas, system };
 function route() {
   const [path, query] = location.hash.replace(/^#\//, "").split("?");
   const page = path || "dashboard";
@@ -390,7 +390,7 @@ const SILO_FIELDS = [
   ["secret_key", "Secret key", "", "Disimpan terenkripsi dan tidak pernah ditampilkan lagi. Kosongkan jika tidak ingin mengubah."],
   ["addressing_style", "Gaya alamat (path)", "", "auto | path | virtual. SILO/MinIO umumnya path (format mc: path \"on\")."],
   ["signature_version", "Signature (api)", "s3v4", "s3v4 (disarankan) atau s3 (v2, lama)."],
-  ["app_bucket", "Bucket foto aplikasi", "ekas-pcptransport", "Engine hanya MEMBACA bucket ini."],
+  ["app_bucket", "Bucket foto aplikasi", "ekas-pcptransport", "Engine hanya MEMBACA bucket ini. Dijaga di kode: walau key punya akses penuh, engine tidak bisa menulis/menghapus di sini."],
   ["processed_bucket", "Bucket hasil kompres", "photos-processed", "Engine membaca & menulis."],
   ["thumb_bucket", "Bucket thumbnail", "photos-thumb", "Engine membaca & menulis."],
   ["upload_bucket", "Bucket upload API", "photos-upload", "Untuk foto yang dikirim langsung ke API engine."],
@@ -458,6 +458,105 @@ async function silo() {
   document.querySelectorAll("[data-clear]").forEach((a) => (a.onclick = async (e) => {
     e.preventDefault();
     try { await api("/v1/admin/settings/storage", { method: "PUT", body: { clear: [a.dataset.clear] } }); toast("Dikembalikan ke nilai env"); silo(); } catch (err) { toast(err.message, true); }
+  }));
+}
+
+/* ---------------- Backup NAS (admin) ---------------- */
+const ago = (iso) => {
+  if (!iso) return "belum pernah";
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  return m < 1 ? "baru saja" : m < 60 ? `${m} menit lalu` : m < 1440 ? `${Math.round(m / 60)} jam lalu` : `${Math.round(m / 1440)} hari lalu`;
+};
+const gb = (n) => (n == null ? "-" : (n / 1024 ** 3).toFixed(1) + " GB");
+
+async function nas() {
+  const d = await api("/v1/admin/settings/backup");
+  const c = d.config, s = d.state || {};
+  const chk = (k, label, help) => `<label class="check" style="flex-direction:row;align-items:flex-start;gap:8px;color:var(--text);margin-bottom:8px">
+    <input type="checkbox" id="b-${k}" ${c[k] ? "checked" : ""} style="margin-top:3px"><span><b>${esc(label)}</b><br><span class="small muted">${esc(help)}</span></span></label>`;
+  const inp = (k, label, ph, help, type = "text") => `<label style="margin-bottom:10px">${esc(label)}
+    <input id="b-${k}" type="${type}" autocomplete="off" value="${esc(type === "password" ? "" : c[k] ?? "")}" placeholder="${esc(ph)}">${help ? `<span class="small">${esc(help)}</span>` : ""}</label>`;
+  $("#main").innerHTML = `<h1>Backup NAS</h1>
+    <p class="muted">Engine menyalin foto dan database ke NAS secara terjadwal. Backup hanya <b>menyalin</b>: file di NAS tidak pernah dihapus engine
+      (kecuali dump database lama sesuai jumlah simpan). Foto asli kurir dan foto pengiriman hanya ada di SILO, jadi backup ini <b>wajib</b> di production.</p>
+    ${d.secret_key_configured ? "" : `<div class="reason warn"><b>PQE_SECRET_KEY belum diisi di server.</b> Secret key NAS S3 tidak bisa disimpan sampai PQE_SECRET_KEY diisi. Tujuan folder tetap bisa dipakai.</div>`}
+    <div class="grid cols-4" style="margin-bottom:16px">
+      <div class="card kpi"><div class="v">${c.enabled ? "Aktif" : "Mati"}</div><div class="l">Status jadwal</div></div>
+      <div class="card kpi"><div class="v">${d.pending}</div><div class="l">Foto belum tersalin</div></div>
+      <div class="card kpi"><div class="v">${d.backed_up}</div><div class="l">Foto sudah tersalin</div></div>
+      <div class="card kpi"><div class="v">${d.free_space ? gb(d.free_space.free) : "-"}</div><div class="l">Ruang kosong NAS</div></div>
+    </div>
+    ${s.last_error ? `<div class="reason reject"><b>Backup terakhir gagal</b> (${esc(ago(s.last_error_at))})<div class="small">${esc(s.last_error)}</div></div>` : ""}
+    <div class="grid cols-2">
+      <div class="card"><h2>Tujuan</h2>
+        ${chk("enabled", "Aktifkan backup terjadwal", "Jika mati, backup tetap bisa dijalankan manual dengan tombol di bawah.")}
+        <label style="margin-bottom:10px">Jenis NAS
+          <select id="b-target"><option value="folder" ${c.target === "folder" ? "selected" : ""}>Folder (NAS di-mount lewat SMB/NFS)</option>
+          <option value="s3" ${c.target === "s3" ? "selected" : ""}>NAS S3-compatible (Synology/QNAP/MinIO)</option></select></label>
+        <div id="b-folder">${inp("folder_path", "Folder di dalam container", "/backup", "Bawaan /backup = folder NAS_MOUNT di server (docker-compose). Mount share NAS ke folder itu di server.")}</div>
+        <div id="b-s3">
+          ${inp("s3_endpoint", "Endpoint NAS", "http://192.168.1.20:9000", "URL layanan S3 di NAS, bisa dijangkau dari server engine.")}
+          ${inp("s3_bucket", "Bucket", "pqe-backup", "")}
+          ${inp("s3_prefix", "Prefix (opsional)", "photo-quality", "")}
+          ${inp("s3_region", "Region", "us-east-1", "")}
+          ${inp("s3_access_key", "Access key", "", "Akun khusus backup di NAS.")}
+          ${inp("s3_secret_key", "Secret key", c.s3_secret_key.set ? "•••••• (tersimpan)" : "belum diisi", "Disimpan terenkripsi. Kosongkan jika tidak ingin mengubah.", "password")}
+          <label style="margin-bottom:10px">Gaya alamat<select id="b-s3_addressing_style">${["path", "auto", "virtual"].map((o) => `<option ${c.s3_addressing_style === o ? "selected" : ""}>${o}</option>`).join("")}</select></label>
+        </div>
+        <div class="actions"><button class="secondary" id="b-test">Test NAS</button><button id="b-save">Simpan</button></div>
+        <div id="b-out"></div>
+      </div>
+      <div class="card"><h2>Yang dibackup</h2>
+        ${chk("include_upload_originals", "Foto asli dari kurir", "Bucket upload engine (alur scan dulu). Bukti keaslian: wajib.")}
+        ${chk("include_processed", "Foto pengiriman yang diterima", "Versi yang link-nya disimpan aplikasi (stored.url). Wajib.")}
+        ${chk("include_database", "Database engine", "Hasil analisis, review, config. Wajib.")}
+        ${chk("include_app_originals", "Foto asli di bucket aplikasi", "Biasanya sudah dibackup tim infra. Aktifkan jika belum.")}
+        ${chk("include_thumbs", "Thumbnail", "Bisa dibuat ulang, biasanya tidak perlu.")}
+        <h3>Jadwal</h3>
+        <div class="filters">
+          <label>Foto setiap (menit)<input id="b-photo_interval_minutes" type="number" min="1" max="1440" value="${c.photo_interval_minutes}"></label>
+          <label>Database setiap (jam)<input id="b-db_interval_hours" type="number" min="1" max="720" value="${c.db_interval_hours}"></label>
+          <label>Simpan dump terakhir<input id="b-db_keep" type="number" min="1" max="365" value="${c.db_keep}"></label>
+        </div>
+        <h3>Status</h3>
+        <div class="kv">
+          <div>Foto terakhir</div><div>${esc(ago(s.last_photo_run))}${s.last_photo_result ? ` · ${s.last_photo_result.photos} foto, ${s.last_photo_result.files} file` : ""}</div>
+          <div>Database terakhir</div><div>${esc(ago(s.last_db_run))}${s.last_db_result ? ` · ${esc(s.last_db_result.file)} (${kb(s.last_db_result.bytes)})` : ""}</div>
+          <div>Total file disalin</div><div>${s.files_total || 0}</div>
+          <div>Permintaan</div><div>${s.requested ? `menunggu worker (${esc(s.requested)})` : s.lease_until ? "sedang berjalan" : "-"}</div>
+        </div>
+        <div class="actions">
+          <button class="secondary" data-run="photos">Backup foto sekarang</button>
+          <button class="secondary" data-run="database">Backup database sekarang</button>
+        </div>
+        <p class="muted small">Tata letak di NAS: <code>photos/&lt;bucket&gt;/&lt;key&gt;</code> dan <code>database/pqe-&lt;waktu&gt;.dump</code>.
+          Cara mount NAS & restore: docs/operations.md bagian backup.</p>
+      </div>
+    </div>`;
+  const toggle = () => { const s3 = $("#b-target").value === "s3"; $("#b-s3").classList.toggle("hidden", !s3); $("#b-folder").classList.toggle("hidden", s3); };
+  $("#b-target").onchange = toggle; toggle();
+  const form = () => {
+    const out = { target: $("#b-target").value };
+    for (const k of ["enabled", "include_upload_originals", "include_processed", "include_database", "include_app_originals", "include_thumbs"]) out[k] = $(`#b-${k}`).checked;
+    for (const k of ["photo_interval_minutes", "db_interval_hours", "db_keep"]) out[k] = Number($(`#b-${k}`).value);
+    for (const k of ["folder_path", "s3_endpoint", "s3_bucket", "s3_prefix", "s3_region", "s3_access_key", "s3_secret_key", "s3_addressing_style"]) {
+      const v = $(`#b-${k}`).value.trim(); if (v || k !== "s3_secret_key") out[k] = v;
+    }
+    return out;
+  };
+  $("#b-test").onclick = async () => {
+    $("#b-out").innerHTML = `<p class="muted">Menguji...</p>`;
+    try {
+      const r = await api("/v1/admin/settings/backup/test", { method: "POST", body: form() });
+      $("#b-out").innerHTML = `<h3>${r.ok ? "NAS siap" : "NAS bermasalah"} <span class="muted small">${esc(r.target || "")}</span></h3>` +
+        r.checks.map((x) => `<div class="reason ${x.ok ? "info" : "reject"}">${x.ok ? "✅" : "❌"} <b>${esc(x.check)}</b><div class="small">${esc(x.detail)}</div></div>`).join("");
+    } catch (e) { $("#b-out").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+  };
+  $("#b-save").onclick = async () => {
+    try { await api("/v1/admin/settings/backup", { method: "PUT", body: form() }); toast("Tersimpan, berlaku di putaran worker berikutnya"); nas(); } catch (e) { toast(e.message, true); }
+  };
+  document.querySelectorAll("[data-run]").forEach((b) => (b.onclick = async () => {
+    try { await api("/v1/admin/backup/run", { method: "POST", body: { kind: b.dataset.run } }); toast("Diminta, worker menjalankan dalam ±10 detik"); setTimeout(() => location.hash === "#/nas" && nas(), 12000); } catch (e) { toast(e.message, true); }
   }));
 }
 

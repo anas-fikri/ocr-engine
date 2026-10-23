@@ -36,6 +36,8 @@ services:
       DATABASE_URL: postgresql+psycopg://pqe:${POSTGRES_PASSWORD:-pqe-local-only}@postgres:5432/pqe
     volumes:
       - ./config/tenants:/app/config/tenants:ro
+      # Backup NAS: share NAS di-mount di server (SMB/NFS) ke NAS_MOUNT, lalu atur di Web UI -> Backup NAS
+      - ${NAS_MOUNT:-./backup}:/backup
     ports:
       - "8000:8000"
     restart: unless-stopped

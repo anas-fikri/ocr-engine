@@ -197,12 +197,16 @@ def cmd_demo_upload(a) -> None:
 
     st = get_storage()
     bucket = a.bucket or st.s.aws_bucket
+    if st.s.pqe_env == "production" and not a.force:
+        raise SystemExit(f"Ditolak: PQE_ENV=production. demo-upload menulis {len(variants())} foto sintetis ke bucket "
+                         f"'{bucket}'. Jangan jalankan di SILO produksi. Untuk uji coba lokal set PQE_ENV=development "
+                         "(sudah diatur di docker-compose.yml), atau tambahkan --force jika Anda yakin.")
     samples = variants()
     rnd = random.Random(42)
     for i, (name, data) in enumerate(samples.items()):
         awb = f"DEMO{int(time.time()) % 100000:05d}{i:02d}"
         key = f"{a.prefix}{time.strftime('%Y/%m/%d')}/{awb}_{name}.jpg"
-        st.put(bucket, key, data, "image/jpeg", {
+        st.put(bucket, key, data, "image/jpeg", allow_foreign=True, metadata={
             "awb": awb, "photo-type": "pod_document" if "huge" in name else "pod_recipient",
             "courier-id": rnd.choice(["K001", "K002", "K003"]), "branch": rnd.choice(["JKT01", "BDG02"]),
             "customer-id": "DEMO-CUST",
@@ -261,7 +265,7 @@ def cmd_migrate_legacy(a) -> None:
                 ok += 1
                 continue
             st.put(a.bucket, key, data, mimetypes.guess_type(p.name)[0] or "application/octet-stream",
-                   {"migrated-from": str(p)})
+                   {"migrated-from": str(p)}, allow_foreign=True)  # tujuan dipilih eksplisit lewat --bucket
             if st.head(a.bucket, key)["etag"] != md5:
                 raise RuntimeError("checksum tidak cocok setelah upload")
             ok += 1
@@ -327,6 +331,7 @@ def main(argv: list[str] | None = None) -> None:
     p = add("demo-upload", cmd_demo_upload, "Upload foto contoh ke bucket untuk mencoba alur end-to-end")
     p.add_argument("--bucket", help="Default: AWS_BUCKET")
     p.add_argument("--prefix", default="demo/")
+    p.add_argument("--force", action="store_true", help="Izinkan walaupun PQE_ENV=production")
 
     p = add("reconcile", cmd_reconcile, "Jalankan semua source sekali dengan lookback panjang")
     p.add_argument("--tenant")

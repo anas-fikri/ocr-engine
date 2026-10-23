@@ -86,7 +86,7 @@ def env(tmp_path, s3_endpoint, monkeypatch):
     st = storage.get_storage()  # bucket moto dipakai bersama antar test: kosongkan
     for b in ("app-photos", "photos-processed", "photos-thumb", "photos-upload"):
         for o in list(st.list(b)):
-            st.delete(b, o.key)
+            st.delete(b, o.key, allow_foreign=True)
     yield values
     db.reset_engine()
     settings.reset_settings_cache()

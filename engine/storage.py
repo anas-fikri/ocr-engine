@@ -18,6 +18,10 @@ class ObjectNotFound(Exception):
     """Objek tidak ada di bucket. Error permanen: tidak di-retry."""
 
 
+class ForeignBucketWrite(PermissionError):
+    """Engine mencoba menulis/menghapus di bucket yang bukan miliknya (contoh bucket aplikasi)."""
+
+
 @dataclass
 class StoredObject:
     data: bytes
@@ -85,11 +89,33 @@ class Storage:
             "size": r.get("ContentLength"),
         }
 
-    def put(self, bucket: str, key: str, data: bytes, content_type: str, metadata: dict | None = None) -> None:
+    def owned_buckets(self) -> set[str]:
+        """Bucket yang boleh ditulis/dihapus engine: bucket engine + bucket upload yang diatur di config tenant.
+
+        Pagar pengaman: walaupun kredensial SILO yang dipakai punya akses penuh, engine tidak akan pernah
+        menulis atau menghapus foto di bucket aplikasi (contoh AWS_BUCKET).
+        """
+        owned = {self.s.engine_bucket_processed, self.s.engine_bucket_thumb, self.s.engine_bucket_upload}
+        try:
+            from engine.tenants import registry
+
+            owned |= {t.config.upload_bucket for t in registry.all(enabled_only=False) if t.config.upload_bucket}
+        except Exception:  # registry belum siap (misal CLI tanpa DB): pakai bucket engine saja
+            pass
+        return owned
+
+    def _guard(self, bucket: str, allow_foreign: bool) -> None:
+        if not allow_foreign and bucket not in self.owned_buckets():
+            raise ForeignBucketWrite(f"engine tidak boleh menulis/menghapus di bucket '{bucket}' (bukan bucket engine)")
+
+    def put(self, bucket: str, key: str, data: bytes, content_type: str, metadata: dict | None = None,
+            *, allow_foreign: bool = False) -> None:
+        self._guard(bucket, allow_foreign)
         meta = {k: quote(str(v), safe="") for k, v in (metadata or {}).items() if v is not None}
         self.client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type, Metadata=meta)
 
-    def delete(self, bucket: str, key: str) -> None:
+    def delete(self, bucket: str, key: str, *, allow_foreign: bool = False) -> None:
+        self._guard(bucket, allow_foreign)
         self.client.delete_object(Bucket=bucket, Key=key)
 
     def list(self, bucket: str, prefix: str = "", start_after: str | None = None) -> Iterator[ListedObject]:

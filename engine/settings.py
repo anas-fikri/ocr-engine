@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     engine_presign_ttl_customer: int = Field(604800, alias="ENGINE_PRESIGN_TTL_CUSTOMER")
     engine_create_buckets: bool = Field(False, alias="ENGINE_CREATE_BUCKETS")
 
+    # production = pagar pengaman aktif (perintah demo ditolak). Lokal/compose: development.
+    pqe_env: str = Field("production", alias="PQE_ENV")
+
     # --- Database ---
     database_url: str = Field("sqlite:///./pqe.db", alias="DATABASE_URL")
 

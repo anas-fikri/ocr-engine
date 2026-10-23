@@ -11,7 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PQE_TENANTS_DIR=/app/config/tenants
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl libglib2.0-0 libgomp1 \
+ && apt-get install -y --no-install-recommends curl libglib2.0-0 libgomp1 postgresql-client \
  && if [ "$WITH_OCR" = "true" ]; then \
       apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-ind; \
     fi \

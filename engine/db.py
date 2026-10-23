@@ -198,6 +198,15 @@ class Setting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class BackupItem(Base):
+    """Foto yang file-nya sudah tersalin ke NAS (lihat engine/backup.py)."""
+
+    __tablename__ = "backup_items"
+    photo_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    files: Mapped[int] = mapped_column(Integer, default=0)
+    backed_up_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
