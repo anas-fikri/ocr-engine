@@ -52,7 +52,9 @@ ocr-engine/
 │   ├── serializers.py          # bentuk JSON foto untuk API/webhook/UI
 │   ├── evidence.py             # data & PDF bukti pengiriman
 │   ├── webhooks.py             # outbox webhook + HMAC + retry
-│   ├── storage.py              # adapter S3 (SILO); get_storage() memakai konfigurasi efektif
+│   ├── storage.py              # adapter S3 (SILO); get_storage() memakai konfigurasi efektif;
+│   │                           # pagar pengaman: put/delete hanya ke bucket engine (owned_buckets, ForeignBucketWrite)
+│   ├── backup.py               # Backup NAS: tujuan folder/S3, salin foto + dump DB, jadwal & lease (dipanggil worker)
 │   ├── storage_config.py       # Pengaturan SILO dari Web UI (DB > env > bawaan), impor JSON mc
 │   ├── secretbox.py            # enkripsi rahasia di DB (Fernet, kunci dari PQE_SECRET_KEY)
 │   ├── db.py                   # model SQLAlchemy
@@ -181,6 +183,8 @@ Isi test:
 
 - `tests/test_analysis.py`: analyzer, verdict, kompresi, EXIF, duplikat, mode. Murni, tanpa DB/S3.
 - `tests/test_e2e.py`: alur lengkap S3 → ingestor → antrean → worker → API → webhook (HMAC) → review → evidence/PDF → verify, plus retry/dead, API key per role, admin tenant.
+- `tests/test_backup.py`: pagar pengaman bucket aplikasi, penolakan `demo-upload` di `PQE_ENV=production`, backup ke folder dan NAS S3 (moto), rotasi dump, kegagalan NAS.
+  Test yang berperan sebagai aplikasi (upload ke bucket aplikasi) memakai `put(..., allow_foreign=True)`.
 
 Fixture di `tests/conftest.py`:
 

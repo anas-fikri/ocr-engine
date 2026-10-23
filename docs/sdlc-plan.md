@@ -36,6 +36,8 @@ Per 23 Oktober 2026 (versi engine 0.1.0):
 | 2 | Halaman Pengaturan SILO di Web UI (impor JSON `mc`, test koneksi, secret terenkripsi, tanpa restart) | ✅ |
 | 2 | Panduan integrasi developer di browser (`/ui/guide.html`, tanpa login) + 4 diagram alur (integrasi, penggunaan, keputusan di aplikasi pengiriman, proses engine) | ✅ |
 | 2 | Halaman Uji Coba Kamera untuk HP (`/ui/coba.html`): simulasi aplikasi kurir tanpa membangun aplikasi, tenant `uji-coba`, HTTPS opsional | ✅ |
+| 2 | Pagar pengaman production: engine hanya menulis/menghapus di bucket miliknya (bucket aplikasi read-only walau key akses penuh), `PQE_ENV=production` menolak perintah demo | ✅ |
+| 2 | Backup NAS terjadwal dari engine (folder SMB/NFS atau NAS S3): foto asli kurir, foto pengiriman, dump database + rotasi; halaman Web UI **Backup NAS** | ✅ |
 | 2 | Laporan export CSV/Excel | ⏳ belum |
 | 3 | Manifest Kubernetes + CI | ✅ (belum dideploy) |
 | 3 | Client library TypeScript & PHP | ✅ (Kotlin/Swift/Dart: contoh di panduan integrasi) |
@@ -70,6 +72,11 @@ Per 23 Oktober 2026 (versi engine 0.1.0):
    balik ke kurir. Foto asli tetap diarsipkan di bucket internal `photos-upload` (verifikasi keaslian, review ops),
    tidak pernah diberikan sebagai link. Engine mati → aplikasi menyimpan sendiri dengan kode lama (fail-open).
    `checkObject` tetap tersedia untuk aplikasi yang sudah terlanjur menyimpan ke SILO dulu.
+8. **Backup NAS dikerjakan engine, plus pagar pengaman bucket aplikasi.** Karena foto asli kurir dan foto pengiriman
+   sekarang hanya ada di bucket engine, engine sendiri menyalinnya ke NAS secara terjadwal bersama dump database
+   (halaman Web UI **Backup NAS**), alih-alih hanya mengandalkan `mcli mirror` di sisi infra. Backup hanya menyalin,
+   tidak pernah menghapus di NAS. Engine juga dijaga di kode agar tidak bisa menulis/menghapus bucket aplikasi walau
+   memakai key SILO berakses penuh, dan `PQE_ENV=production` menolak perintah demo.
 
 ## Daftar Isi
 
@@ -941,26 +948,38 @@ flowchart TD
 
 ### 4.11 Flow backup & retensi
 
+Backup ke NAS dijalankan **engine** (worker) sesuai jadwal di halaman Web UI **Backup NAS**: foto asli kurir
+(`photos-upload`), foto pengiriman (`photos-processed`), dan dump database. Foto asli di bucket aplikasi bisa ikut
+disalin engine (opsi) atau tetap di-mirror tim infra. Backup hanya menyalin; penghapusan retensi di SILO tidak diterapkan
+ke NAS. Detail: [operations.md bagian 6](operations.md#6-postgresql--backup).
+
 ```mermaid
 flowchart LR
     subgraph SILO
-        O[(photos-original<br/>versioning + object lock)]
-        P[(photos-processed)]
+        A[(bucket aplikasi<br/>versioning + object lock)]
+        U[(photos-upload<br/>foto asli kurir)]
+        P[(photos-processed<br/>foto pengiriman)]
         T[(photos-thumb)]
     end
     PG[(Postgres engine)]
+    W[Worker engine<br/>jadwal Backup NAS]
 
     subgraph NAS[NAS - lokasi berbeda]
-        NO[(mirror original)]
-        NP[(mirror processed - opsional)]
-        ND[(pg_dump harian + WAL)]
+        NU[(photos/photos-upload)]
+        NP[(photos/photos-processed)]
+        NA[(photos/bucket aplikasi - opsional)]
+        ND[(database/pqe-waktu.dump<br/>simpan 14 terakhir)]
     end
 
-    O -->|mcli mirror --watch| NO
-    P -.->|opsional| NP
-    PG -->|pg_dump + WAL archive| ND
+    U --> W
+    P --> W
+    PG -->|pg_dump harian| W
+    W --> NU
+    W --> NP
+    W --> ND
+    A -.->|opsi engine atau mcli mirror infra| NA
 
-    O --> L{Umur objek}
+    U --> L{Umur objek}
     L -- "≤ 90 hari" --> L1[Hot storage]
     L -- "90 hari - 3 tahun" --> L2[Cold / tier murah<br/>jika tersedia]
     L -- "> 3 tahun" --> L3[Hapus otomatis<br/>+ catat di audit log]
@@ -968,9 +987,11 @@ flowchart LR
 
 | Data | Backup | Retensi default |
 |---|---|---|
-| Original | **Wajib** mirror ke NAS | 3 tahun, lalu hapus otomatis |
-| Postgres | **Wajib** pg_dump harian + WAL | 3 tahun data analisis |
-| Processed & thumb | Opsional (bisa dibuat ulang dari original) | 3 tahun |
+| Foto asli kurir (`photos-upload`) | **Wajib**, disalin engine ke NAS (bawaan aktif) | 3 tahun (lifecycle di SILO) |
+| Foto pengiriman (`photos-processed`) | **Wajib**, disalin engine ke NAS (bawaan aktif) | 3 tahun, lalu dihapus engine dari SILO |
+| Postgres | **Wajib**, dump oleh engine setiap 24 jam (bawaan), simpan 14 terakhir; tambah WAL archiving untuk PITR | 3 tahun data analisis |
+| Foto asli di bucket aplikasi | **Wajib** jika aplikasi memakai level 0/1: opsi engine (`include_app_originals`) atau `mcli mirror` infra | 3 tahun, lalu hapus otomatis |
+| Thumbnail | Opsional (bisa dibuat ulang) | 3 tahun |
 
 Uji restore berkala (misal bulanan, sampel acak). Durasi retensi final dikonfirmasi ke legal/finance (UU PDP dan kemungkinan kewajiban simpan dokumen pajak).
 

@@ -22,6 +22,8 @@ spec:
             - secretRef: {name: pqe-secrets}
           volumeMounts:
             - {name: tenants, mountPath: /app/config/tenants, readOnly: true}
+            # Backup NAS: pasang volume NAS (NFS/PVC) di /backup pada API (tombol Test NAS) DAN worker (yang menyalin)
+            # - {name: nas, mountPath: /backup}
           ports: [{containerPort: 9100, name: metrics}]
           livenessProbe: {httpGet: {path: /metrics, port: metrics}, periodSeconds: 30, failureThreshold: 3}
           resources:
@@ -30,6 +32,8 @@ spec:
       volumes:
         - name: tenants
           configMap: {name: pqe-tenants}
+        # - name: nas
+        #   nfs: {server: 192.168.1.20, path: /volume1/pqe-backup}   # atau persistentVolumeClaim: {claimName: pqe-nas}
 ---
 # Tambah worker otomatis saat CPU tinggi (antrean menumpuk).
 apiVersion: autoscaling/v2

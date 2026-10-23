@@ -24,7 +24,9 @@ Engine bisa dipakai oleh aplikasi apa pun (Android, iOS, Flutter, web, Laravel, 
 | Multi-aplikasi & multi-jenis foto | Tenant per aplikasi, profile per jenis foto (POD penerima, resi, paket, lokasi, barang), semua lewat config |
 | Mode bertahap | `shadow` → `warn` → `enforce` per tenant/profile tanpa deploy ulang |
 | Integrasi tercepat: scan dulu, baru simpan | Aplikasi mengirim file foto langsung ke engine (`POST /v1/analyze?sync=true`, client `checkFile`). Engine memeriksa dulu; hanya foto yang diterima disimpan ke SILO dan linknya dikembalikan di `stored.url`. Foto ditolak tidak disimpan, pesannya dikirim balik ke kurir. Engine mati → aplikasi menyimpan sendiri (fail-open). Alternatif: `checkObject` untuk foto yang sudah di SILO, atau tanpa ubah aplikasi (baca SILO / metadata saat upload) |
-| Web UI | Dashboard, antrean review ops (opsional), pencarian, uji foto, editor config tenant, API key, **Pengaturan SILO** (impor JSON mc, tes koneksi), status sistem |
+| Web UI | Dashboard, antrean review ops (opsional), pencarian, uji foto, editor config tenant, API key, **Pengaturan SILO** (impor JSON mc, tes koneksi), **Backup NAS**, status sistem. Bisa dibuka dari HP |
+| Pagar pengaman production | Engine hanya bisa menulis/menghapus di bucket miliknya; bucket aplikasi tetap read-only walau key SILO punya akses penuh. `PQE_ENV=production` (bawaan) menolak perintah demo yang menulis foto sintetis |
+| Backup NAS | Salinan terjadwal foto asli kurir, foto pengiriman, dan database ke NAS (folder SMB/NFS atau NAS S3-compatible), diatur di Web UI (test, jadwal, backup sekarang, status). Hanya menyalin, tidak pernah menghapus di NAS |
 | Panduan developer di browser | `/ui/guide.html`: panduan integrasi interaktif tanpa login, diagram alur (integrasi, penggunaan, keputusan di aplikasi pengiriman, proses engine), contoh kode curl/PHP/TS/Python/Kotlin dengan URL server terisi otomatis |
 | Uji coba tanpa aplikasi | `/ui/coba.html`: buka dari HP, ambil foto dengan kamera, lihat pesan yang tampil di layar kurir + detail analisis (simulasi penuh atau uji cepat) |
 | Evidence pelanggan | JSON/PDF per resi atau per invoice, hanya foto layak (bawaan: PASS + WARN; REJECT tidak pernah), dengan hash verifikasi keaslian |
@@ -63,7 +65,8 @@ docker compose up -d --build
 docker compose exec engine pqe demo-upload
 ```
 
-Perintah di atas menjalankan engine + SILO lokal + PostgreSQL, lalu mengisi 12 contoh foto. Setelah itu:
+Perintah di atas menjalankan engine + SILO lokal + PostgreSQL, lalu mengisi 12 contoh foto (compose lokal memakai
+`PQE_ENV=development`; di server perintah demo ditolak). Setelah itu:
 
 - Web UI: http://localhost:8000/ui (API key lokal: `pqe_local_admin_change_me`)
 - Panduan developer: http://localhost:8000/ui/guide.html

@@ -17,6 +17,7 @@ Daftar isi:
 - [Gambar, webhook, dan integrasi](#gambar-webhook-dan-integrasi)
 - [Pengaturan SILO: test koneksi gagal](#pengaturan-silo-test-koneksi-gagal)
 - [Infrastruktur & deployment](#infrastruktur--deployment)
+- [Backup NAS](#backup-nas)
 - [Waktu & retensi](#waktu--retensi)
 - [Langkah diagnosis umum](#langkah-diagnosis-umum)
 
@@ -143,6 +144,8 @@ Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Pengaturan SILO) ata
 | Gejala | Penyebab | Solusi |
 |---|---|---|
 | `no such service: #` atau `zsh: unknown file attribute` saat paste perintah di Mac | zsh tidak menganggap `#` sebagai komentar saat di-paste, dan membaca `( ... )` sebagai pola file | Paste perintah tanpa komentar/kurung, atau jalankan `setopt interactivecomments` dulu |
+| `pqe demo-upload` gagal: "Ditolak: PQE_ENV=production. demo-upload menulis 12 foto sintetis ke bucket ..." | Pagar pengaman: di server (`PQE_ENV=production`, bawaan) perintah demo ditolak agar foto sintetis tidak masuk bucket produksi | Benar dan disengaja. Untuk uji lokal pakai `docker-compose.yml` (sudah `PQE_ENV=development`). Untuk smoke test di staging: `pqe demo-upload --bucket <bucket-staging> --force`. Jangan ke bucket produksi |
+| `ForeignBucketWrite: engine tidak boleh menulis/menghapus di bucket '...' (bukan bucket engine)` | Pagar pengaman: engine hanya boleh menulis/menghapus di `ENGINE_BUCKET_PROCESSED`, `ENGINE_BUCKET_THUMB`, `ENGINE_BUCKET_UPLOAD`, dan `upload_bucket` di config tenant. Bucket aplikasi selalu read-only bagi engine, apa pun hak akses key-nya | Disengaja. Jika memang perlu memindahkan foto lama ke bucket aplikasi, pakai `pqe migrate-legacy --bucket ...` (tujuan dipilih eksplisit). Jika engine harus menyimpan upload ke bucket lain, isi `upload_bucket` di config tenant |
 | `Cannot connect to the Docker daemon` | Docker Desktop belum berjalan | Buka Docker Desktop, tunggu sampai statusnya "running", ulangi perintah |
 | Folder `ocr-engine/ocr-engine` (clone dobel) | `git clone` dijalankan lagi dari dalam folder hasil clone | `cd ..` ke folder induk, hapus folder dalam yang dobel, lanjut di folder `ocr-engine` pertama |
 | Job **gagal permanen (dead)** di Web UI → Sistem | Error sementara berulang sampai `PQE_JOB_MAX_ATTEMPTS` (default 5), biasanya SILO/DB tidak bisa diakses | Baca kolom error terakhir, perbaiki penyebabnya (kredensial, jaringan, bucket), lalu **Ulangi** / **Ulangi semua** (admin). Via API: `POST /v1/admin/jobs/retry-dead` |
@@ -155,6 +158,25 @@ Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Pengaturan SILO) ata
 | Container engine restart terus | Biasanya `DATABASE_URL` tidak bisa dijangkau saat start atau env wajib salah | `docker compose logs engine` / `kubectl logs`. Perbaiki env, lalu restart |
 | SILO lokal: bucket notification tidak jalan | Aturan event belum ditambahkan ke bucket | Jalankan `./scripts/silo-enable-events.sh` setelah bucket ada. Polling tetap jalan sebagai cadangan |
 | Antrean menumpuk (`pqe_queue_lag_seconds` tinggi) | Worker kurang, CPU penuh, atau SILO lambat | Tambah `PQE_WORKER_CONCURRENCY` / replika worker (K8s: HPA). Cek error di log worker |
+
+## Backup NAS
+
+Halaman Web UI → **Backup NAS** menampilkan error terakhir; tombol **Test NAS** memeriksa setiap langkah. Detail mount dan
+restore: [operations.md bagian 6](operations.md#6-postgresql--backup).
+
+| Gejala | Penyebab | Solusi |
+|---|---|---|
+| "folder /backup tidak ada di dalam container" | Tujuan folder tetapi tidak ada folder yang dipasang ke `/backup` (compose lama, atau pod K8s tanpa volume) | Pakai compose terbaru (memasang `NAS_MOUNT` ke `/backup`), isi `NAS_MOUNT` di `.env`, `docker compose up -d`. K8s: tambahkan volume PVC/NFS di `/backup` pada pod worker dan API |
+| "folder /backup tidak bisa ditulis engine (user uid 10001)" | Folder NAS milik user lain (contoh root atau user NAS) | Mount SMB dengan `uid=10001,gid=10001`, atau `sudo chown -R 10001 <folder NAS_MOUNT>`. Untuk NFS, izinkan uid 10001 menulis di export |
+| Test NAS ✅ tetapi file tidak muncul di NAS | `NAS_MOUNT` masih bawaan `./backup` (folder lokal di server), bukan share NAS | Mount share NAS di server, arahkan `NAS_MOUNT` ke sana, `docker compose up -d`. File lama di `./backup` bisa disalin manual ke NAS |
+| "Ruang kosong NAS" ❌ (< 1 GB) | NAS hampir penuh | Kosongkan/perbesar share. Backup tidak pernah menghapus foto di NAS, jadi kapasitas harus direncanakan (± ukuran bucket `photos-upload` + `photos-processed`) |
+| "pg_dump tidak ada di image engine" | Image engine lama (sebelum `postgresql-client` ditambahkan) | Build ulang image (`docker compose up -d --build`) |
+| "pg_dump gagal: ... server version mismatch" | Server PostgreSQL lebih baru dari pg_dump di image (pg_dump 17 mendukung server sampai 17) | Pakai Postgres 14–17, atau build image dengan `postgresql-client` yang lebih baru |
+| NAS S3: `EndpointConnectionError`, `404`/`NoSuchBucket`, `SignatureDoesNotMatch`, `AccessDenied` | Endpoint tidak terjangkau dari container, bucket belum dibuat di NAS, secret salah, atau akun NAS tanpa izin tulis | Cek endpoint dari server (`curl <endpoint>`), buat bucket di NAS, isi ulang secret key (kosong = tidak diubah), beri akun izin tulis ke bucket. Jangan pakai `127.0.0.1` (itu container engine) |
+| `409 SECRET_KEY_MISSING` saat menyimpan tujuan NAS S3 | `PQE_SECRET_KEY` belum diisi di server | Isi `PQE_SECRET_KEY` lalu restart. Tujuan folder tidak butuh secret |
+| "Foto belum tersalin" terus bertambah | Jadwal mati, tidak ada proses worker (backup dijalankan worker; `pqe api` saja tidak menjalankan backup), atau setiap putaran gagal | Aktifkan jadwal, pastikan `pqe run`/`pqe worker` berjalan, perbaiki error terakhir, lalu **Backup foto sekarang**. Pantau `pqe_backup_pending` dan `pqe_backup_errors_total` |
+| Tombol "Backup ... sekarang" tidak ada efek | Tidak ada worker yang berjalan, atau worker lain sedang menjalankan backup (lease maks. 15 menit) | Pastikan worker berjalan. Status "sedang berjalan" akan selesai sendiri; permintaan tetap menunggu di `state.requested` |
+| Foto yang sudah dihapus dari SILO (retensi) masih ada di NAS | Disengaja: backup hanya menyalin, penghapusan di SILO tidak diterapkan ke NAS | Hapus manual di NAS sesuai kebijakan retensi legal jika diperlukan |
 
 ## Waktu & retensi
 

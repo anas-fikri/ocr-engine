@@ -22,6 +22,8 @@ spec:
             - secretRef: {name: pqe-secrets}
           volumeMounts:
             - {name: tenants, mountPath: /app/config/tenants, readOnly: true}
+            # Backup NAS: pasang volume NAS (NFS/PVC) di /backup pada API (tombol Test NAS) DAN worker (yang menyalin)
+            # - {name: nas, mountPath: /backup}
           ports: [{containerPort: 8000, name: http}]
           readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 10, failureThreshold: 3}
           livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20}
@@ -31,6 +33,8 @@ spec:
       volumes:
         - name: tenants
           configMap: {name: pqe-tenants}
+        # - name: nas
+        #   nfs: {server: 192.168.1.20, path: /volume1/pqe-backup}   # atau persistentVolumeClaim: {claimName: pqe-nas}
 ---
 apiVersion: v1
 kind: Service

@@ -33,6 +33,7 @@ versi interaktif tanpa login di `<base-url>/ui/guide.html`.
 | `GET /v1/admin/tenants`, `/tenants/{code}`, `/history`, `/profiles/builtin`, `/jobs`, `/webhooks`, `/sources` | ✓ | ✓ | ✓ | | | |
 | `PUT/POST /v1/admin/tenants...`, `/api-keys`, `/jobs/.../retry`, `/webhooks/retry-dead`, `/audit` | ✓ | | | | | |
 | `GET/PUT /v1/admin/settings/storage`, `POST /v1/admin/settings/storage/test` | ✓ | | | | | |
+| `GET/PUT /v1/admin/settings/backup`, `POST /v1/admin/settings/backup/test`, `POST /v1/admin/backup/run` | ✓ | | | | | |
 | `GET /v1/verify/{sha256}`, `/v1/meta/reason-codes`, `/v1/meta/fields`, `/healthz`, `/readyz`, `/metrics`, `/ui/guide.html`, `/ui/coba.html` (halaman; API-nya tetap butuh key) | | | | | | ✓ |
 | `GET /v1/me`, `GET /v1/meta/profiles` | ✓ | ✓ | ✓ | ✓ | ✓ | |
 | `POST /v1/events/s3` | token `PQE_S3_EVENT_TOKEN` (dipakai SILO) | | | | | |
@@ -276,6 +277,10 @@ Semua butuh role `admin`, kecuali endpoint baca yang juga boleh `ops`/`viewer` (
 | `GET /v1/admin/settings/storage` | - | Konfigurasi SILO efektif + asal tiap nilai. Lihat [Pengaturan SILO](#pengaturan-silo) |
 | `PUT /v1/admin/settings/storage` | JSON | Simpan konfigurasi SILO (berlaku tanpa restart, maks. 10 detik) |
 | `POST /v1/admin/settings/storage/test` | JSON | Uji koneksi dengan nilai yang dikirim, tanpa menyimpan |
+| `GET /v1/admin/settings/backup` | - | Konfigurasi & status backup NAS. Lihat [Backup NAS](#backup-nas) |
+| `PUT /v1/admin/settings/backup` | JSON | Simpan konfigurasi backup NAS (berlaku di putaran worker berikutnya) |
+| `POST /v1/admin/settings/backup/test` | JSON | Uji tujuan NAS dengan nilai yang dikirim, tanpa menyimpan |
+| `POST /v1/admin/backup/run` | JSON `{"kind": "photos"\|"database"\|"all"}` | Minta worker menjalankan backup sekarang (±10 detik) |
 
 Contoh mengubah config:
 
@@ -363,6 +368,75 @@ Respons `test` (tidak menyimpan apa pun; field kosong memakai nilai efektif saat
 
 Arti error yang sering muncul: [troubleshooting.md](troubleshooting.md#pengaturan-silo-test-koneksi-gagal).
 
+### Backup NAS
+
+Cara kerja, mount NAS, dan restore: [operations.md bagian 6](operations.md#62-backup-nas-otomatis-web-ui--backup-nas).
+Field: [configuration.md §1.7](configuration.md#17-backup-nas-lewat-web-ui).
+
+`PUT /v1/admin/settings/backup` (semua field opsional; yang tidak dikirim tidak berubah; `s3_secret_key` kosong = tidak diubah):
+
+```json
+{
+  "enabled": true,
+  "target": "folder",
+  "folder_path": "/backup",
+  "include_upload_originals": true,
+  "include_processed": true,
+  "include_database": true,
+  "include_app_originals": false,
+  "include_thumbs": false,
+  "photo_interval_minutes": 15,
+  "db_interval_hours": 24,
+  "db_keep": 14
+}
+```
+
+Tujuan NAS S3: `"target": "s3"` + `s3_endpoint`, `s3_bucket`, `s3_prefix`, `s3_region`, `s3_access_key`, `s3_secret_key`,
+`s3_addressing_style` (`path`/`auto`/`virtual`).
+
+Respons `GET`/`PUT`/`run` (rahasia tidak pernah dikembalikan):
+
+```json
+{
+  "config": {"enabled": true, "target": "folder", "folder_path": "/backup", "s3_secret_key": {"set": false}, "...": "..."},
+  "state": {
+    "last_photo_run": "2026-10-23T23:38:01+00:00", "last_photo_result": {"photos": 71, "files": 76},
+    "last_db_run": "2026-10-23T23:38:01+00:00",
+    "last_db_result": {"file": "pqe-20261023-233801.dump", "bytes": 48840, "rotated": 0},
+    "files_total": 76, "last_error": null, "last_run_at": "2026-10-23T23:38:01+00:00", "requested": null
+  },
+  "pending": 0,
+  "backed_up": 71,
+  "free_space": {"total": 270582939648, "free": 21152727040},
+  "secret_key_configured": true
+}
+```
+
+`pending` = foto selesai dianalisis yang belum tersalin; `backed_up` = foto yang sudah tersalin; `free_space` hanya untuk
+tujuan folder. `state.requested` terisi saat permintaan `run` menunggu worker.
+
+Respons `test`:
+
+```json
+{
+  "ok": true,
+  "target": "folder /backup",
+  "checks": [
+    {"check": "Tujuan backup (folder /backup)", "ok": true, "detail": "folder ada"},
+    {"check": "Tulis ke NAS", "ok": true, "detail": "tulis, baca, hapus berhasil"},
+    {"check": "Ruang kosong NAS", "ok": true, "detail": "19.7 GB kosong dari 252.0 GB"},
+    {"check": "Baca bucket foto asli (upload) 'photos-upload'", "ok": true, "detail": "bisa diakses"},
+    {"check": "Baca bucket foto pengiriman 'photos-processed'", "ok": true, "detail": "bisa diakses"},
+    {"check": "Dump database", "ok": true, "detail": "dump postgresql siap"}
+  ]
+}
+```
+
+Error: `422 INVALID_SETTINGS` (angka di luar rentang, `folder_path` bukan path absolut, endpoint tanpa `http(s)://`, atau
+tujuan `s3` aktif tanpa endpoint/bucket), `422 VALIDATION_ERROR` (nilai `target`/`s3_addressing_style`/`kind` di luar
+pilihan), `409 SECRET_KEY_MISSING` (mengirim `s3_secret_key` tetapi `PQE_SECRET_KEY` belum diisi). Audit log:
+`settings.backup.update`, `backup.run_requested`.
+
 ---
 
 ## Operasional
@@ -447,7 +521,8 @@ tercatat di `enhancement.before.codes`.
 |---|---|---|---|
 | 422 | `INVALID_CONFIG` / `INVALID_YAML` | `/v1/admin/tenants...` | Config tenant tidak valid |
 | 422 | `INVALID_SETTINGS` | `/v1/admin/settings/storage...` | Field tidak dikenal, `addressing_style`/`signature_version` salah, endpoint tanpa `http(s)://` |
-| 409 | `SECRET_KEY_MISSING` | `PUT /v1/admin/settings/storage` | `PQE_SECRET_KEY` belum diisi di server, secret key SILO tidak bisa disimpan terenkripsi |
+| 422 | `INVALID_SETTINGS` | `/v1/admin/settings/backup...` | Angka di luar rentang, `folder_path` bukan path absolut, endpoint NAS tanpa `http(s)://`, tujuan `s3` tanpa endpoint/bucket |
+| 409 | `SECRET_KEY_MISSING` | `PUT /v1/admin/settings/storage`, `PUT /v1/admin/settings/backup` | `PQE_SECRET_KEY` belum diisi di server, secret key SILO/NAS tidak bisa disimpan terenkripsi |
 
 ## Webhook
 

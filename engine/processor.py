@@ -7,12 +7,12 @@ import threading
 import time
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from engine import metrics
 from engine.analyzers import AnalysisContext, DuplicateMatch
 from engine.analyzers.duplicate import hamming
-from engine.db import Job, Photo, WebhookDelivery, as_aware, session_scope, utcnow
+from engine.db import BackupItem, Job, Photo, WebhookDelivery, as_aware, session_scope, utcnow
 from engine.imaging.loader import UnreadableImage
 from engine.jobs import apply_mapped, claim_job, fail_job, finish_job
 from engine.mapping import map_metadata
@@ -183,6 +183,7 @@ def process_photo(photo_id: str, storage: Storage | None = None) -> str:
         p.duration_ms = int((time.perf_counter() - t0) * 1000)
         s.flush()
         queue_photo_event(s, p, "analysis.completed")
+        s.execute(delete(BackupItem).where(BackupItem.photo_id == p.id))  # hasil baru: salin ulang ke NAS
         metrics.PHOTOS_ANALYZED.labels(tenant=tenant_code, verdict=p.verdict).inc()
         metrics.ANALYSIS_SECONDS.observe(p.duration_ms / 1000)
     return "done"
@@ -217,6 +218,7 @@ def _mark_error(photo_id: str, code: str, message: str, *, mapped: dict | None =
         p.analyzed_at = utcnow()
         s.flush()
         queue_photo_event(s, p, "analysis.completed")
+        s.execute(delete(BackupItem).where(BackupItem.photo_id == p.id))  # hasil baru: salin ulang ke NAS
         metrics.PHOTOS_FAILED.labels(tenant=p.tenant_code, code=code).inc()
 
 

@@ -89,6 +89,13 @@ def test_backup_to_folder(client, admin_headers, samples, tmp_path):
     status = client.get("/v1/admin/settings/backup", headers=admin_headers).json()
     assert status["pending"] == 0 and status["backed_up"] == 2 and status["state"]["last_error"] is None
 
+    # dianalisis ulang (misal threshold diubah) -> hasil baru harus disalin lagi
+    from engine.worker import Worker
+
+    assert client.post(f"/v1/photos/{ok['id']}/reprocess", headers=admin_headers).status_code in (200, 202)
+    Worker().run_until_empty()
+    assert client.get("/v1/admin/settings/backup", headers=admin_headers).json()["pending"] == 1
+
 
 def test_backup_to_s3_nas_and_errors(client, admin_headers, samples, env, monkeypatch):
     import boto3

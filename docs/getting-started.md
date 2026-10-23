@@ -57,6 +57,10 @@ docker compose exec engine pqe demo-upload
 Perintah ini meng-upload 12 foto sintetis (tajam, buram, pecah, gelap, terlalu terang, kecil, kompresi berat, dll.)
 ke bucket `ekas-pcptransport` lengkap dengan metadata resi/kurir. Dalam beberapa detik engine menganalisis semuanya.
 
+Compose lokal memakai `PQE_ENV=development`, jadi perintah ini diizinkan. Di server (`PQE_ENV=production`, bawaan
+`.env.example`) perintah ini **ditolak** agar foto sintetis tidak pernah masuk bucket produksi. Engine juga tidak pernah
+menulis atau menghapus di bucket aplikasi dalam operasi normal; `demo-upload` adalah pengecualian eksplisit untuk uji lokal.
+
 ## 4. Lihat hasilnya
 
 1. Buka http://localhost:8000/ui dan masuk dengan API key admin.
@@ -69,7 +73,10 @@ ke bucket `ekas-pcptransport` lengkap dengan metadata resi/kurir. Dalam beberapa
 5. **Pengaturan SILO** (admin): koneksi ke SILO. Di compose lokal sudah terisi dari env; untuk mencoba SILO lain,
    tempel JSON `mc` lalu **Test koneksi** (jangan pakai `127.0.0.1` dari dalam Docker, lihat
    [configuration.md §1.6](configuration.md#16-pengaturan-silo-lewat-web-ui)).
-6. **Panduan Integrasi ↗**: http://localhost:8000/ui/guide.html, panduan untuk programmer aplikasi (tanpa login),
+6. **Backup NAS** (admin): di compose lokal tujuan folder `/backup` = folder `./backup` di repo. Klik **Test NAS**, centang
+   **Aktifkan backup terjadwal**, **Simpan**, lalu **Backup database sekarang**; file muncul di `./backup` dalam ±10 detik.
+   Di server, mount share NAS lalu isi `NAS_MOUNT` ([operations.md 6.3](operations.md#63-mount-nas-untuk-tujuan-folder)).
+7. **Panduan Integrasi ↗**: http://localhost:8000/ui/guide.html, panduan untuk programmer aplikasi (tanpa login),
    lengkap dengan diagram alur integrasi, alur penggunaan, keputusan di aplikasi kurir, dan proses di dalam engine.
 
 Panduan Web UI lengkap: [web-ui-guide.md](web-ui-guide.md).
@@ -182,7 +189,7 @@ moto_server -H 127.0.0.1 -p 5055
 
 export DATABASE_URL=sqlite:///./pqe.db AWS_ENDPOINT=http://127.0.0.1:5055
 export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test ENGINE_CREATE_BUCKETS=true
-export PQE_BOOTSTRAP_ADMIN_KEY=pqe_local_admin_change_me
+export PQE_BOOTSTRAP_ADMIN_KEY=pqe_local_admin_change_me PQE_ENV=development
 pqe run                         # http://localhost:8000/ui
 pqe demo-upload                 # di terminal lain, dengan env yang sama
 ```

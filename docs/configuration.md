@@ -3,13 +3,14 @@
 Semua yang bisa diatur di Photo Quality Engine ada di tiga tempat:
 
 1. **Environment variable**: koneksi (SILO, database), keamanan, dan perilaku worker. Berlaku untuk seluruh engine, diubah lewat `.env` / K8s ConfigMap+Secret, dan butuh restart.
-2. **Pengaturan SILO (Web UI, admin)**: koneksi ke SILO (endpoint, access/secret key, bucket). Menimpa environment variable SILO dan berlaku **tanpa restart**. Lihat [1.6](#16-pengaturan-silo-lewat-web-ui).
+2. **Pengaturan SILO dan Backup NAS (Web UI, admin)**: koneksi ke SILO (endpoint, access/secret key, bucket) yang menimpa environment variable SILO, serta tujuan dan jadwal backup NAS. Berlaku **tanpa restart**. Lihat [1.6](#16-pengaturan-silo-lewat-web-ui) dan [1.7](#17-backup-nas-lewat-web-ui).
 3. **Config tenant (YAML)**: aturan per aplikasi, yaitu sumber foto, mapping metadata, profile per jenis foto, threshold, koreksi pencahayaan opsional, kompresi, review, webhook, dan retensi. Diubah lewat Web UI atau API **tanpa restart**.
 
 Daftar isi:
 
 - [1. Environment variable](#1-environment-variable)
   - [1.6 Pengaturan SILO lewat Web UI](#16-pengaturan-silo-lewat-web-ui)
+  - [1.7 Backup NAS lewat Web UI](#17-backup-nas-lewat-web-ui)
 - [2. Config tenant (YAML)](#2-config-tenant-yaml)
   - [2.1 Field tingkat atas](#21-field-tingkat-atas)
   - [2.2 sources: dari mana foto diambil](#22-sources-dari-mana-foto-diambil)
@@ -72,6 +73,7 @@ Skema tabel dibuat otomatis saat start (`pqe init` / `pqe run` / `pqe api` / `pq
 | `PQE_SYNC_TIMEOUT_MS` | `3000` | Batas tunggu default `?sync=true`. Lewat batas → respons `202` (fail-open), hasil menyusul | Turunkan jika aplikasi butuh respons lebih cepat |
 | `PQE_SECRET_KEY` | kosong | Kunci untuk mengenkripsi rahasia yang disimpan di database lewat Web UI (secret key SILO di halaman **Pengaturan SILO**). Isi dengan nilai acak panjang, contoh `openssl rand -hex 32` | **Selalu isi di produksi** dan simpan di K8s Secret. Jika kosong, secret key SILO tidak bisa disimpan lewat Web UI (`409 SECRET_KEY_MISSING`). Jika **diganti**, secret yang sudah tersimpan tidak bisa dibaca lagi dan harus diisi ulang di Pengaturan SILO |
 | `PQE_CORS_ORIGINS` | kosong | Origin web (dipisah koma) yang boleh memanggil API langsung dari browser. Kosong = CORS mati | Isi hanya jika aplikasi web memanggil engine dari browser |
+| `PQE_ENV` | `production` | `production` = pagar pengaman perintah: `pqe demo-upload` ditolak kecuali dengan `--force`. `development` = perintah demo diizinkan. Apa pun nilainya, engine **tidak pernah** menulis/menghapus di bucket selain bucket engine (`ENGINE_BUCKET_*`) dan `upload_bucket` tenant, jadi bucket aplikasi tetap read-only walau key punya akses penuh | `development` hanya untuk lokal (`docker-compose.yml` sudah mengaturnya). Biarkan `production` di server |
 
 ### 1.4 Worker & ingestor
 
@@ -95,9 +97,11 @@ Variabel ini hanya dibaca `docker-compose.yml`, tidak oleh engine:
 |---|---|---|
 | `SILO_ROOT_USER` / `SILO_ROOT_PASSWORD` | `siloadmin` / `siloadmin-local-only` | Akun root SILO lokal. Di compose lokal juga dipakai sebagai `AWS_ACCESS_KEY_ID/SECRET` engine |
 | `POSTGRES_PASSWORD` | `pqe-local-only` | Password Postgres lokal |
+| `NAS_MOUNT` | `./backup` | Folder di PC/server tempat share NAS di-mount (SMB/NFS). Dipasang ke `/backup` di container engine, dipakai tujuan **folder** di halaman Backup NAS. Harus bisa ditulis uid 10001 ([operations.md 6.3](operations.md#63-mount-nas-untuk-tujuan-folder)) |
 
 Compose lokal juga mengisi `PQE_SECRET_KEY` dengan nilai contoh `local-secret-key-change-me` agar halaman Pengaturan
-SILO langsung bisa dicoba. **Jangan** pakai nilai itu di server.
+SILO langsung bisa dicoba, dan `PQE_ENV=development` agar `pqe demo-upload` bisa dijalankan. **Jangan** pakai nilai
+itu di server.
 
 ### 1.6 Pengaturan SILO lewat Web UI
 
@@ -156,7 +160,31 @@ Aturan penyimpanan:
 - Setiap simpan menaikkan versi dan tercatat di audit log (`settings.storage.update`, berisi nama field yang diubah,
   **tanpa** nilai rahasia).
 - Tetap pakai **service account khusus engine** dengan permission minimal (halaman ini menampilkan contoh policy-nya),
-  bukan akun admin/root SILO. Lihat [operations.md](operations.md).
+  bukan akun admin/root SILO. Lihat [operations.md](operations.md). Sebagai lapisan tambahan, engine sendiri menolak
+  menulis/menghapus di bucket aplikasi (lihat `PQE_ENV` di 1.3).
+
+### 1.7 Backup NAS lewat Web UI
+
+Menu **Backup NAS** (role `admin`) mengatur salinan terjadwal foto dan database ke NAS. Nilainya tersimpan di database
+(bukan env) dan dibaca worker setiap putaran (±10 detik), jadi berlaku tanpa restart.
+
+| Field | Bawaan | Arti |
+|---|---|---|
+| `enabled` | `false` | Jadwal aktif. Jika mati, backup tetap bisa dijalankan manual |
+| `target` | `folder` | `folder` (NAS di-mount ke container) atau `s3` (NAS S3-compatible) |
+| `folder_path` | `/backup` | Path absolut di dalam container (= `NAS_MOUNT` di compose) |
+| `s3_endpoint`, `s3_bucket`, `s3_prefix`, `s3_region`, `s3_access_key`, `s3_secret_key`, `s3_addressing_style` | `us-east-1`, `path` | Tujuan NAS S3. Secret disimpan terenkripsi dengan `PQE_SECRET_KEY` (tanpa itu: `409 SECRET_KEY_MISSING`) |
+| `include_upload_originals` | `true` | Foto asli kurir di `ENGINE_BUCKET_UPLOAD` |
+| `include_processed` | `true` | Foto pengiriman yang diterima (`ENGINE_BUCKET_PROCESSED`) |
+| `include_database` | `true` | Dump database engine |
+| `include_app_originals` | `false` | Foto asli di bucket aplikasi |
+| `include_thumbs` | `false` | Thumbnail |
+| `photo_interval_minutes` | `15` | Jeda backup foto (1–1440) |
+| `db_interval_hours` | `24` | Jeda dump database (1–720) |
+| `db_keep` | `14` | Jumlah dump database terakhir yang disimpan di NAS (1–365) |
+
+Setiap simpan tercatat di audit log (`settings.backup.update`), permintaan manual sebagai `backup.run_requested`.
+Detail cara kerja, mount NAS, dan restore: [operations.md bagian 6](operations.md#6-postgresql--backup).
 
 ---
 

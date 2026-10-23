@@ -88,6 +88,9 @@ docker compose ps             # tunggu engine "healthy"
 > lalu buka `https://<IP-PC>:8443/ui/coba.html` (sertifikat CA lokal Caddy, khusus uji coba). Foto simulasi masuk tenant
 > `uji-coba` (retensi 30 hari). Di produksi, nonaktifkan tenant `uji-coba` lewat Web UI jika tidak dipakai.
 
+Compose lokal memakai `PQE_ENV=development` agar `pqe demo-upload` boleh dijalankan, dan memasang folder `./backup`
+(`NAS_MOUNT`) ke `/backup` untuk mencoba halaman **Backup NAS**.
+
 Image SILO yang dipakai: `docker.io/pgsty/silo:RELEASE.2026-10-18T00-00-00Z` (fork komunitas MinIO dari Pigsty, kompatibel S3). Engine otomatis membuat bucket `ekas-pcptransport`, `photos-processed`, `photos-thumb`, `photos-upload` (`ENGINE_CREATE_BUCKETS=true`). Folder `config/tenants` di-mount read-only ke container.
 
 ### Mencoba alur end-to-end
@@ -138,7 +141,8 @@ Catatan:
 
 - Seluruh `.env` dimuat ke container engine (`env_file: .env`). `DATABASE_URL` ditimpa compose agar mengarah ke Postgres di compose.
 - `ENGINE_CREATE_BUCKETS` di `.env.example` bernilai `false`: bucket engine harus sudah dibuat tim infra (bagian 4).
-- Engine hanya **membaca** `AWS_BUCKET` (bucket aplikasi tetap read-only untuk engine) dan **menulis** ke `ENGINE_BUCKET_PROCESSED`, `ENGINE_BUCKET_THUMB`, `ENGINE_BUCKET_UPLOAD`. Dengan integrasi "scan dulu, baru simpan", foto pengiriman yang diterima disimpan engine di `ENGINE_BUCKET_PROCESSED` (link `stored`) dan foto asli diarsipkan di `ENGINE_BUCKET_UPLOAD`; aplikasi tidak perlu memberi engine akses tulis ke bucket aplikasi.
+- Engine hanya **membaca** `AWS_BUCKET` dan **menulis** ke `ENGINE_BUCKET_PROCESSED`, `ENGINE_BUCKET_THUMB`, `ENGINE_BUCKET_UPLOAD`. Ini dijaga di kode (pagar pengaman, lihat bagian 11): walau key yang dipakai punya akses penuh, engine menolak menulis/menghapus di bucket aplikasi, dan `PQE_ENV=production` (bawaan `.env.example`) menolak `pqe demo-upload`. Dengan integrasi "scan dulu, baru simpan", foto pengiriman yang diterima disimpan engine di `ENGINE_BUCKET_PROCESSED` (link `stored`) dan foto asli diarsipkan di `ENGINE_BUCKET_UPLOAD`; aplikasi tidak perlu memberi engine akses tulis ke bucket aplikasi.
+- Backup NAS: mount share NAS di server, isi `NAS_MOUNT` di `.env` (dipasang ke `/backup`), lalu atur di Web UI → **Backup NAS** (bagian 6.2–6.3).
 - Sesuaikan `config/tenants/courier-app.yaml` (bucket, prefix, mapping) dengan struktur key foto di SILO kantor sebelum start. Setelah tenant tersimpan di DB, ubah lewat Web UI (menu Tenant) atau `pqe import-tenants --force`.
 
 ---
@@ -324,39 +328,140 @@ Catatan:
 - Ukuran kecil: estimasi < 5 GB untuk 3 tahun pada 1.000 foto/hari ([sdlc-plan.md](sdlc-plan.md) 3.5).
 - SQLite (`sqlite:///./pqe.db`) **hanya** untuk uji lokal satu proses.
 
-### 6.2 Backup database
+### 6.2 Backup NAS otomatis (Web UI → Backup NAS)
 
-```bash
-# harian (cron / CronJob), simpan ke NAS
-pg_dump -Fc -h postgres-host -U pqe pqe > /nas/backup/pqe/pqe-$(date +%F).dump
+Engine menyalin sendiri foto dan database ke NAS secara terjadwal. Pengaturannya di Web UI menu **Backup NAS** (role
+`admin`), tersimpan di database (secret NAS S3 terenkripsi dengan `PQE_SECRET_KEY`), dan dijalankan oleh worker (`pqe run`
+atau `pqe worker`): loop pemeliharaan worker memeriksa jadwal dan permintaan manual setiap ±10 detik. Jika ada beberapa
+worker, hanya satu yang menjalankan backup dalam satu waktu (lease 15 menit di tabel `settings`).
+
+**Tujuan (pilih satu):**
+
+| Jenis | Kapan dipakai | Yang diisi |
+|---|---|---|
+| **Folder** (bawaan) | Share NAS (SMB/NFS) di-mount di server, lalu dipasang ke container | `folder_path` di dalam container, bawaan `/backup` (= `NAS_MOUNT` di server, lihat 6.3) |
+| **NAS S3-compatible** | NAS punya layanan S3 (Synology, QNAP, MinIO di NAS) | endpoint, bucket, prefix (opsional), region, access key, secret key, gaya alamat (`path` disarankan) |
+
+**Yang dibackup (bawaan):**
+
+| Pilihan | Bawaan | Keterangan |
+|---|:-:|---|
+| Foto asli dari kurir (`include_upload_originals`) | ✅ | Foto asli di bucket engine (`photos-upload`, alur "scan dulu"). Bukti keaslian (hash, EXIF) |
+| Foto pengiriman yang diterima (`include_processed`) | ✅ | Versi di `photos-processed` yang link-nya disimpan aplikasi (`stored.url`) |
+| Database engine (`include_database`) | ✅ | `pg_dump --format=custom` (PostgreSQL) atau salinan konsisten SQLite |
+| Foto asli di bucket aplikasi (`include_app_originals`) | ❌ | Aktifkan jika bucket aplikasi belum dibackup tim infra (lihat 6.5) |
+| Thumbnail (`include_thumbs`) | ❌ | Bisa dibuat ulang |
+
+**Jadwal (bawaan):** foto setiap **15 menit** (`photo_interval_minutes`), database setiap **24 jam** (`db_interval_hours`),
+simpan **14** dump terakhir (`db_keep`). Tombol **Backup foto sekarang** / **Backup database sekarang** meminta worker
+menjalankannya di putaran berikutnya (±10 detik), juga saat jadwal dimatikan.
+
+**Tata letak di NAS:**
+
+```
+photos/<bucket>/<key>              contoh photos/photos-processed/courier-app/2026/10/23/<id>.jpg
+database/pqe-<YYYYmmdd-HHMMSS>.dump   (PostgreSQL)  atau  database/pqe-<...>.sqlite (SQLite)
 ```
 
-Untuk restore ke titik waktu tertentu, aktifkan WAL archiving di server Postgres (`archive_mode=on`, `archive_command` ke NAS) atau pakai fitur PITR dari layanan Postgres yang dipakai.
+**Sifat backup:**
 
-Uji restore **bulanan**:
+- **Hanya menyalin.** Foto di NAS tidak pernah dihapus engine. Penghapusan di SILO (retensi 3 tahun, lifecycle) **tidak**
+  ikut diterapkan ke NAS. Satu-satunya yang dihapus adalah dump database lama di luar `db_keep`.
+- **Inkremental.** Foto yang sudah tersalin dicatat di tabel `backup_items` dan tidak disalin lagi. File yang sudah ada
+  di NAS dengan ukuran sama dilewati. Hanya foto berstatus selesai (`done`/`error`) yang disalin; foto yang masih antre
+  menyusul di putaran berikutnya.
+- Satu putaran foto dibatasi ±50 detik agar worker tetap responsif; sisanya dilanjutkan putaran berikutnya.
+- Jika NAS tidak bisa dijangkau, putaran berhenti, error tercatat (Web UI dan metrik), dan foto tetap dihitung
+  "belum tersalin" sampai berhasil.
+- Image engine sudah memuat `postgresql-client` (pg_dump 17, kompatibel dengan PostgreSQL 14–17).
+
+Tombol **Test NAS** memeriksa: folder/bucket tujuan ada, tulis-baca-hapus file uji, ruang kosong (> 1 GB, tujuan folder),
+akses baca bucket `photos-upload` dan `photos-processed`, dan kesiapan dump database. API: `GET/PUT
+/v1/admin/settings/backup`, `POST /v1/admin/settings/backup/test`, `POST /v1/admin/backup/run`
+([api-reference.md](api-reference.md#backup-nas)).
+
+### 6.3 Mount NAS untuk tujuan folder
+
+`docker-compose.yml` dan `docker-compose.remote-silo.yml` memasang folder `NAS_MOUNT` di server (bawaan `./backup`) ke
+`/backup` di container. Mount share NAS di server, lalu arahkan `NAS_MOUNT` ke sana:
+
+**Linux (SMB/CIFS):**
+
+```bash
+sudo mkdir -p /mnt/nas
+sudo mount -t cifs //192.168.1.20/pqe-backup /mnt/nas -o username=pqe-backup,uid=10001,gid=10001,file_mode=0660,dir_mode=0770
+```
+
+Lalu di `.env`: `NAS_MOUNT=/mnt/nas`, dan `docker compose up -d`. Supaya permanen, tambahkan baris yang sama di `/etc/fstab`
+(simpan password di file credentials, bukan di fstab). Untuk NFS: `sudo mount -t nfs 192.168.1.20:/volume1/pqe-backup /mnt/nas`.
+
+**macOS (Docker Desktop):** buka share di Finder (**Go → Connect to Server** → `smb://192.168.1.20/pqe-backup`). Share
+muncul di `/Volumes/pqe-backup`; isi `NAS_MOUNT=/Volumes/pqe-backup` lalu `docker compose up -d`.
+
+**Izin tulis:** engine berjalan sebagai user **uid 10001** di container. Folder harus bisa ditulis uid itu: `uid=10001` pada
+opsi mount SMB seperti di atas, atau `sudo chown -R 10001 /mnt/nas` (NFS/folder lokal). Tanpa itu, **Test NAS** menampilkan
+pesan "tidak bisa ditulis engine (user uid 10001)".
+
+**Kubernetes:** pasang PVC atau volume NFS di `/backup` pada pod **worker** (yang menjalankan backup) dan pod **API**
+(tombol Test NAS dijalankan di pod API). Contoh potongan spec pod:
+
+```yaml
+volumes:
+  - name: nas
+    nfs: {server: 192.168.1.20, path: /volume1/pqe-backup}
+containers:
+  - name: worker
+    volumeMounts:
+      - {name: nas, mountPath: /backup}
+```
+
+Pod berjalan sebagai uid 10001, jadi export NFS harus mengizinkan uid itu menulis.
+
+### 6.4 Restore
+
+**Foto** (salin balik ke SILO dengan struktur yang sama):
+
+```bash
+mcli alias set pcp https://s3.pcpexpress.com ADMIN_KEY ADMIN_SECRET
+mcli mirror /mnt/nas/photos/photos-processed pcp/photos-processed
+mcli mirror /mnt/nas/photos/photos-upload    pcp/photos-upload
+mcli cp /mnt/nas/photos/photos-processed/courier-app/2026/10/23/<id>.jpg pcp/photos-processed/courier-app/2026/10/23/<id>.jpg
+```
+
+Untuk tujuan NAS S3, ganti sumber dengan alias NAS (`mcli alias set nas http://192.168.1.20:9000 ...`, lalu
+`mcli mirror nas/pqe-backup/photos/photos-processed pcp/photos-processed`; tambahkan prefix jika diisi).
+
+**Database (PostgreSQL):**
+
+```bash
+pg_restore --clean --if-exists --no-owner -h postgres-host -U pqe -d pqe /mnt/nas/database/pqe-20261023-020000.dump
+```
+
+**Database (SQLite, hanya uji lokal):** hentikan engine, salin `database/pqe-<...>.sqlite` ke lokasi `DATABASE_URL`, start lagi.
+
+Uji restore **bulanan** ke database terpisah:
 
 ```bash
 createdb -h staging-host -U postgres pqe_restore_test
-pg_restore -h staging-host -U postgres -d pqe_restore_test /nas/backup/pqe/pqe-YYYY-MM-DD.dump
+pg_restore --no-owner -h staging-host -U postgres -d pqe_restore_test /mnt/nas/database/pqe-YYYYmmdd-HHMMSS.dump
 psql -h staging-host -U postgres -d pqe_restore_test -c "select count(*), max(received_at) from photos;"
 ```
 
-### 6.3 Backup foto SILO ke NAS
+### 6.5 Tambahan di sisi infra
 
-Sesuai [sdlc-plan.md](sdlc-plan.md) 4.11:
+- **Point-in-time recovery database:** dump harian berarti kehilangan maksimal 24 jam data analisis. Untuk lebih rapat,
+  aktifkan WAL archiving di server Postgres (`archive_mode=on`, `archive_command` ke NAS) atau fitur PITR layanan Postgres.
+- **Foto asli di bucket aplikasi:** jika tim infra sudah mem-backup bucket aplikasi, biarkan `include_app_originals` mati.
+  Alternatif di sisi infra (sesuai [sdlc-plan.md](sdlc-plan.md) 4.11):
 
-```bash
-mcli alias set nas https://nas-silo.pcpexpress.local NAS_USER NAS_PASSWORD   # SILO/S3 di NAS
-mcli mirror --watch pcp/ekas-pcptransport nas/ekas-pcptransport              # wajib (original)
-mcli mirror --watch pcp/photos-upload     nas/photos-upload                  # wajib jika memakai "scan dulu" (asli dari upload)
-mcli mirror --watch pcp/photos-processed  nas/photos-processed               # wajib jika memakai "scan dulu" (link stored aplikasi)
-```
+  ```bash
+  mcli alias set nas https://nas-silo.pcpexpress.local NAS_USER NAS_PASSWORD
+  mcli mirror --watch pcp/ekas-pcptransport nas/ekas-pcptransport
+  ```
 
-Jalankan `mcli mirror --watch` sebagai service (systemd / Deployment terpisah). Original **wajib** di-backup. Jika aplikasi
-memakai integrasi "scan dulu, baru simpan" (`checkFile`), `photos-upload` berisi foto asli dan `photos-processed` berisi
-foto pengiriman yang linknya disimpan aplikasi (`stored.url`), jadi keduanya **wajib** di-backup juga. Tanpa integrasi itu,
-processed & thumbnail opsional karena bisa dibuat ulang dengan analisis ulang. NAS sebaiknya di lokasi berbeda dari server
-SILO. Uji restore sampel acak tiap bulan.
+  Jalankan sebagai service (systemd / Deployment terpisah).
+- **Versioning & object lock** di SILO (bagian 4.5) tetap disarankan sebagai perlindungan dari penghapusan tidak sengaja
+  dan ransomware. NAS sebaiknya di lokasi berbeda dari server SILO.
 
 ---
 
@@ -385,6 +490,9 @@ SILO. Uji restore sampel acak tiap bulan.
 | `pqe_queue_lag_seconds` | gauge | - | Umur job tertua yang masih antre |
 | `pqe_dead_jobs` | gauge | - | Jumlah job dead (perlu ditinjau) |
 | `pqe_pending_webhooks` | gauge | - | Webhook menunggu dikirim |
+| `pqe_backup_pending` | gauge | - | Foto yang belum tersalin ke NAS (diperbarui setiap putaran backup di worker) |
+| `pqe_backup_files_total` | counter | `kind` (`original`/`processed`/`thumbnail`/`database`) | File yang disalin ke NAS |
+| `pqe_backup_errors_total` | counter | `kind` (`photos`/`database`) | Kegagalan backup ke NAS |
 
 **Penting, metrik bersifat per proses:**
 
@@ -454,6 +562,21 @@ groups:
           summary: "Ingestor gagal membaca source {{ $labels.tenant }} ({{ $labels.type }})"
           description: "Lihat Web UI -> Sistem -> Source ingest (kolom Error)."
 
+      - alert: PqeBackupNasGagal
+        expr: increase(pqe_backup_errors_total[1h]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "Backup NAS gagal ({{ $labels.kind }})"
+          description: "Web UI -> Backup NAS menampilkan pesan error terakhir. Cek mount NAS / koneksi NAS S3."
+
+      - alert: PqeBackupNasTertinggal
+        expr: pqe_backup_pending > 500 and deriv(pqe_backup_pending[2h]) > 0
+        for: 2h
+        labels: {severity: warning}
+        annotations:
+          summary: "Foto belum tersalin ke NAS terus bertambah"
+          description: "Backup tidak berjalan (jadwal mati, worker mati, NAS penuh/tidak terjangkau)."
+
       - alert: PqeTidakReady
         expr: probe_success{job="pqe-readyz"} == 0
         for: 5m
@@ -464,7 +587,9 @@ groups:
 
 Alert terakhir mengasumsikan blackbox exporter dengan job `pqe-readyz` yang memeriksa `https://<host>/readyz`. Di Kubernetes, readiness probe `pqe-api` sudah memakai `/readyz`.
 
-Pantau juga kapasitas SILO/NAS (alert > 80%) dan status `mcli mirror` di sisi infra.
+Pantau juga kapasitas SILO/NAS (alert > 80%; ruang kosong tujuan folder juga terlihat di Web UI → Backup NAS) dan,
+jika dipakai, status `mcli mirror` di sisi infra. `pqe_backup_pending` dan `pqe_backup_*_total` muncul di endpoint
+metrik proses worker (`pqe run` di :8000, `pqe worker` di :9100).
 
 ---
 
@@ -495,6 +620,8 @@ Pantau juga kapasitas SILO/NAS (alert > 80%) dan status `mcli mirror` di sisi in
 | Rotasi kredensial SILO | Rotasi berkala / kebocoran | `mcli admin user add pcp pqe-engine-2 SECRET_BARU` + `mcli admin policy attach pcp pqe-engine --user pqe-engine-2`. Lalu **salah satu**: (a) Web UI → **Pengaturan SILO** → isi access key & secret key baru → **Test koneksi** → **Simpan** (tanpa restart, berlaku ≤ 10 detik), atau (b) update secret K8s/`.env` dan restart semua pod. Verifikasi `/readyz`, lalu `mcli admin user remove pcp pqe-engine`. Catatan: nilai di Pengaturan SILO menimpa env, jadi jika pernah disimpan di sana, rotasi juga harus lewat sana (atau **kembalikan ke env**) |
 | Semua job gagal dengan `SignatureDoesNotMatch` / `AccessDenied` / `EndpointConnectionError` setelah ada yang mengubah Pengaturan SILO | Nilai salah tersimpan di Pengaturan SILO | Web UI → **Pengaturan SILO** → perbaiki atau klik **kembalikan ke env** pada field yang salah → **Test koneksi**. Siapa yang mengubah: audit log `settings.storage.update`. Setelah pulih: **Ulangi semua** job dead |
 | `PQE_SECRET_KEY` hilang / berubah | Secret K8s dibuat ulang tanpa nilai lama | Secret key SILO yang tersimpan tidak bisa dibuka; engine memakai `AWS_SECRET_ACCESS_KEY` env (jika ada). Isi ulang secret key di **Pengaturan SILO**, atau kembalikan nilai `PQE_SECRET_KEY` lama |
+| Backup NAS gagal / "Foto belum tersalin" terus naik | NAS tidak ter-mount, penuh, kredensial NAS S3 salah, jadwal mati, worker mati | Web UI → **Backup NAS** → baca error terakhir → **Test NAS**. Perbaiki mount/izin (6.3) atau kredensial, lalu **Backup foto sekarang**. Foto yang belum tersalin tidak hilang; disalin begitu NAS kembali |
+| Perlu memulihkan foto / database | SILO rusak, objek terhapus, DB rusak | Restore dari NAS (6.4). Setelah DB dipulihkan, jalankan `pqe reconcile` agar foto yang masuk setelah dump terakhir tercatat lagi |
 | Config tenant rusak / salah | Edit YAML keliru | Web UI -> Tenant -> Riwayat versi, salin versi lama, simpan. Config yang gagal di-parse dilewati (tenant lain tetap jalan) dan tercatat di log |
 
 ---
@@ -503,8 +630,9 @@ Pantau juga kapasitas SILO/NAS (alert > 80%) dan status `mcli mirror` di sisi in
 
 1. Baca catatan rilis / diff, terutama perubahan `engine/db.py` (skema) dan `requirements.lock`.
 2. Pastikan CI hijau (lint, test engine, test client di runtime yang sudah di-patch, build image).
-3. Backup database (`pg_dump`) sebelum upgrade produksi.
-4. Deploy ke staging (bucket staging), jalankan smoke test: `/readyz`, `pqe demo-upload` ke bucket staging, cek Web UI.
+3. Backup database sebelum upgrade produksi: Web UI → **Backup NAS** → **Backup database sekarang** (atau `pg_dump` manual).
+4. Deploy ke staging (bucket staging), jalankan smoke test: `/readyz`, `pqe demo-upload --bucket <bucket-staging> --force`
+   (`--force` karena `PQE_ENV=production`; **jangan** ke bucket produksi), cek Web UI.
 5. Produksi: ganti tag image di `kustomization.yaml` lalu `kubectl apply -k deploy/k8s`. Rolling update tidak berdampak ke kurir.
 6. Pantau 24 jam: antrean, error rate, distribusi verdict.
 
@@ -521,6 +649,12 @@ Docker compose: `git pull && docker compose up -d --build`. Rollback: checkout v
 - [ ] `PQE_SECRET_KEY` diisi nilai acak panjang (`openssl rand -hex 32`, bukan `local-secret-key-change-me` dari compose lokal), sama di semua pod, dan salinannya disimpan aman. Kunci ini mengenkripsi secret key SILO yang disimpan lewat Web UI.
 - [ ] Halaman **Pengaturan SILO** hanya bisa diakses role `admin`. Batasi jumlah admin key, dan cek audit log `settings.storage.update` secara berkala.
 - [ ] Engine memakai **service account khusus** dengan policy minimum (bagian 4.2), bukan admin/root SILO.
+- [ ] `PQE_ENV=production` (bawaan) di server. Pagar pengaman di engine: engine hanya bisa menulis/menghapus di bucket
+      miliknya (`ENGINE_BUCKET_PROCESSED`, `ENGINE_BUCKET_THUMB`, `ENGINE_BUCKET_UPLOAD`, dan `upload_bucket` di config
+      tenant). Bucket aplikasi tetap **read-only** walau key yang dipakai punya akses penuh, dan `pqe demo-upload` ditolak
+      kecuali dengan `--force`. Pagar ini tambahan, bukan pengganti service account least privilege.
+- [ ] **Backup NAS** aktif (Web UI → Backup NAS) untuk foto asli kurir, foto pengiriman, dan database, sudah di-**Test NAS**,
+      dan restore sudah diuji (bagian 6). Akun NAS khusus backup, share NAS tidak bisa diakses umum.
 - [ ] Semua bucket **private**. Foto hanya diakses lewat presigned URL: `ENGINE_PRESIGN_TTL_UI` (default 900 detik) dan `ENGINE_PRESIGN_TTL_CUSTOMER` (default 604800 = 7 hari, maksimum yang diizinkan S3 SigV4).
 - [ ] Engine diakses lewat **TLS** (ingress / reverse proxy). `AWS_PUBLIC_ENDPOINT` memakai https.
 - [ ] Secret (`.env`, K8s Secret) **tidak** di-commit. `.gitignore` sudah mengecualikan `.env` dan `.env.*` kecuali `.env.example`.

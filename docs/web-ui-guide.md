@@ -23,6 +23,7 @@ Daftar isi:
 - [Tenant (admin)](#tenant-admin)
 - [API key (admin)](#api-key-admin)
 - [Pengaturan SILO (admin)](#pengaturan-silo-admin)
+- [Backup NAS (admin)](#backup-nas-admin)
 - [Sistem](#sistem)
 - [Tips](#tips)
 
@@ -282,6 +283,43 @@ Catatan:
 - Kartu kanan menampilkan contoh **policy permission minimal** untuk service account engine sesuai nama bucket di form.
   Gunakan service account khusus engine, bukan akun admin/root SILO.
 - Setiap simpan tercatat di audit log (`settings.storage.update`, tanpa nilai rahasia).
+- Bucket aplikasi hanya dibaca. Ini dijaga di kode engine: walau key yang diisi punya akses penuh, engine menolak
+  menulis atau menghapus di bucket aplikasi.
+
+---
+
+## Backup NAS (admin)
+
+Menu **Backup NAS** mengatur salinan terjadwal foto dan database engine ke NAS. Hanya role `admin`. Backup **hanya
+menyalin**: file di NAS tidak pernah dihapus engine, kecuali dump database lama di luar jumlah simpan.
+
+**Kartu atas:** status jadwal (Aktif/Mati), **Foto belum tersalin**, **Foto sudah tersalin**, dan **Ruang kosong NAS**
+(tujuan folder). Jika backup terakhir gagal, muncul kotak merah berisi pesan error dan waktunya.
+
+**Kartu Tujuan:**
+
+| Field | Isi |
+|---|---|
+| Aktifkan backup terjadwal | Jadwal jalan otomatis. Jika mati, tombol backup manual tetap bisa dipakai |
+| Jenis NAS | **Folder (NAS di-mount lewat SMB/NFS)** atau **NAS S3-compatible (Synology/QNAP/MinIO)** |
+| Folder di dalam container | Bawaan `/backup` = folder `NAS_MOUNT` di server. Share NAS di-mount di server ke folder itu |
+| Endpoint, Bucket, Prefix, Region, Access key, Secret key, Gaya alamat | Untuk NAS S3. Secret disimpan terenkripsi dan tidak ditampilkan lagi; kosongkan jika tidak ingin mengubah |
+
+- **Test NAS**: menguji nilai di form (belum disimpan) dan menampilkan ✅/❌ untuk: tujuan ada, tulis-baca-hapus file uji,
+  ruang kosong (> 1 GB, tujuan folder), akses baca bucket `photos-upload` dan `photos-processed`, dan kesiapan dump
+  database.
+- **Simpan**: berlaku di putaran worker berikutnya (±10 detik), tanpa restart.
+
+**Kartu Yang dibackup:** Foto asli dari kurir, Foto pengiriman yang diterima, Database engine (ketiganya wajib, aktif secara
+bawaan), Foto asli di bucket aplikasi, dan Thumbnail (mati secara bawaan). **Jadwal**: foto setiap 15 menit, database
+setiap 24 jam, simpan 14 dump terakhir.
+
+**Status:** waktu backup foto dan database terakhir (jumlah foto/file, nama dan ukuran dump), total file disalin, dan
+status permintaan. Tombol **Backup foto sekarang** / **Backup database sekarang** meminta worker menjalankannya dalam
+±10 detik; halaman memuat ulang status otomatis setelah ±12 detik.
+
+Cara mount NAS di server (Linux, macOS, Kubernetes), izin uid 10001, dan restore: [operations.md bagian 6](operations.md#6-postgresql--backup).
+Masalah umum: [troubleshooting.md](troubleshooting.md#backup-nas).
 
 ---
 
@@ -303,6 +341,7 @@ Catatan:
 ## Tips
 
 - Bahasa pesan alasan mengikuti bahasa browser (Indonesia/Inggris).
+- Web UI bisa dibuka dari HP: menu berpindah ke baris kedua, kartu tersusun satu kolom, dan tabel lebar bisa digeser di dalam kartunya.
 - Waktu ditampilkan dalam zona waktu komputer Anda.
 - Mulai hari dengan Dashboard → klik **Menunggu review ops** → periksa antrean dari atas (opsional jika `review_required: false`, tetapi berguna untuk menangkap kecurangan dan kalibrasi).
 - Jika satu kurir/cabang mendominasi daftar masalah, cek dulu pola alasannya. `BLURRY` berulang biasanya soal cara memotret; `PIXELATED`/`HEAVY_COMPRESSION` berulang biasanya setting kompresi di aplikasi atau HP tertentu.
