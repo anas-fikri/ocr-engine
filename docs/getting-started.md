@@ -16,11 +16,20 @@ Tanpa Docker? Lihat [Menjalankan tanpa Docker](#menjalankan-tanpa-docker) di baw
 ## 1. Jalankan
 
 ```bash
-git clone <url-repo> ocr-engine && cd ocr-engine
-cp .env.example .env            # opsional untuk mode lokal; nilai default sudah jalan
+git clone https://github.com/anas-fikri/ocr-engine.git
+cd ocr-engine
+cp .env.example .env
 docker compose up -d --build
-docker compose ps               # engine harus "healthy" dalam ±30 detik
+docker compose ps
 ```
+
+`cp .env.example .env` opsional untuk mode lokal (nilai bawaan sudah jalan). Build pertama butuh beberapa menit
+(mengunduh image dan Tesseract OCR). Setelah itu `docker compose ps` harus menunjukkan engine `healthy` (±30 detik).
+
+> **Mac (zsh):** paste perintah tanpa komentar `# ...` di belakangnya, dan jangan paste teks dalam kurung. zsh di Mac
+> tidak menganggap `#` sebagai komentar saat di-paste (error `no such service: #`) dan membaca `( ... )` sebagai pola
+> file (`unknown file attribute`). Alternatif: jalankan `setopt interactivecomments` sekali. Docker Desktop harus
+> sedang berjalan. Apple Silicon (M1/M2/M3) didukung: semua image tersedia untuk `arm64`.
 
 | Layanan | URL | Login |
 |---|---|---|

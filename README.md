@@ -56,12 +56,21 @@ Penjelasan lengkap (alur, fallback, retensi, backup): [docs/sdlc-plan.md](docs/s
 ## Mulai cepat
 
 ```bash
-docker compose up -d --build             # engine + SILO lokal + PostgreSQL
+git clone https://github.com/anas-fikri/ocr-engine.git
+cd ocr-engine
+cp .env.example .env
+docker compose up -d --build
 docker compose exec engine pqe demo-upload
-# buka http://localhost:8000/ui  (API key: pqe_local_admin_change_me)
-# panduan developer: http://localhost:8000/ui/guide.html
-# uji coba dari HP (kamera): http://<IP-PC>:8000/ui/coba.html
 ```
+
+Perintah di atas menjalankan engine + SILO lokal + PostgreSQL, lalu mengisi 12 contoh foto. Setelah itu:
+
+- Web UI: http://localhost:8000/ui (API key lokal: `pqe_local_admin_change_me`)
+- Panduan developer: http://localhost:8000/ui/guide.html
+- Uji coba dari HP (kamera): `http://<IP-PC>:8000/ui/coba.html`
+
+Butuh Docker Desktop yang sedang berjalan (Mac Intel/Apple Silicon, Windows, Linux). Blok perintah di dokumentasi ini
+sengaja tanpa komentar `#` agar aman di-paste ke zsh (Mac).
 
 Integrasi tercepat dari aplikasi pengiriman: scan dulu, baru simpan (satu panggilan):
 

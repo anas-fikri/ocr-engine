@@ -142,6 +142,9 @@ Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Pengaturan SILO) ata
 
 | Gejala | Penyebab | Solusi |
 |---|---|---|
+| `no such service: #` atau `zsh: unknown file attribute` saat paste perintah di Mac | zsh tidak menganggap `#` sebagai komentar saat di-paste, dan membaca `( ... )` sebagai pola file | Paste perintah tanpa komentar/kurung, atau jalankan `setopt interactivecomments` dulu |
+| `Cannot connect to the Docker daemon` | Docker Desktop belum berjalan | Buka Docker Desktop, tunggu sampai statusnya "running", ulangi perintah |
+| Folder `ocr-engine/ocr-engine` (clone dobel) | `git clone` dijalankan lagi dari dalam folder hasil clone | `cd ..` ke folder induk, hapus folder dalam yang dobel, lanjut di folder `ocr-engine` pertama |
 | Job **gagal permanen (dead)** di Web UI → Sistem | Error sementara berulang sampai `PQE_JOB_MAX_ATTEMPTS` (default 5), biasanya SILO/DB tidak bisa diakses | Baca kolom error terakhir, perbaiki penyebabnya (kredensial, jaringan, bucket), lalu **Ulangi** / **Ulangi semua** (admin). Via API: `POST /v1/admin/jobs/retry-dead` |
 | Error `PROCESSING_FAILED` di foto | Foto yang job-nya dead | Sama seperti di atas. Setelah diulang dan sukses, status foto kembali `done` |
 | `GET /readyz` → `503`, `storage: error` | Engine tidak bisa mengakses SILO: endpoint salah, kredensial salah, atau bucket `ENGINE_BUCKET_PROCESSED` belum ada | Cek nilai efektif di Web UI → **Pengaturan SILO** (nilai di sana menimpa `AWS_ENDPOINT`, `AWS_ACCESS_KEY_ID/SECRET`, dst.) lalu **Test koneksi**. Minta tim infra membuat bucket engine, atau `ENGINE_CREATE_BUCKETS=true` (lokal). Lihat [Pengaturan SILO: test koneksi gagal](#pengaturan-silo-test-koneksi-gagal) |
