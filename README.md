@@ -25,7 +25,8 @@ Engine bisa dipakai oleh aplikasi apa pun (Android, iOS, Flutter, web, Laravel, 
 | Mode bertahap | `shadow` → `warn` → `enforce` per tenant/profile tanpa deploy ulang |
 | 3 cara integrasi | Tanpa ubah aplikasi (baca SILO) · tambah metadata saat upload · panggil REST API |
 | Web UI | Dashboard, antrean review ops (opsional), pencarian, uji foto, editor config tenant, API key, **Pengaturan SILO** (impor JSON mc, tes koneksi), status sistem |
-| Panduan developer di browser | `/ui/guide.html`: panduan integrasi interaktif tanpa login, contoh kode curl/PHP/TS/Python/Kotlin dengan URL server terisi otomatis |
+| Panduan developer di browser | `/ui/guide.html`: panduan integrasi interaktif tanpa login, diagram alur (integrasi, penggunaan, keputusan kurir, proses engine), contoh kode curl/PHP/TS/Python/Kotlin dengan URL server terisi otomatis |
+| Uji coba tanpa aplikasi | `/ui/coba.html`: buka dari HP, ambil foto dengan kamera, lihat pesan yang tampil di layar kurir + detail analisis (simulasi penuh atau uji cepat) |
 | Evidence pelanggan | JSON/PDF per resi atau per invoice, hanya foto layak (bawaan: PASS + WARN; REJECT tidak pernah), dengan hash verifikasi keaslian |
 | Andal | Antrean dengan retry & dead-letter, reconciliation harian, idempotent, webhook bertanda tangan HMAC |
 | Siap produksi | Docker, docker-compose (SILO + Postgres), manifest Kubernetes, metrik Prometheus, CI |
@@ -58,6 +59,7 @@ docker compose up -d --build             # engine + SILO lokal + PostgreSQL
 docker compose exec engine pqe demo-upload
 # buka http://localhost:8000/ui  (API key: pqe_local_admin_change_me)
 # panduan developer: http://localhost:8000/ui/guide.html
+# uji coba dari HP (kamera): http://<IP-PC>:8000/ui/coba.html
 ```
 
 Langkah lengkap: [docs/getting-started.md](docs/getting-started.md).
@@ -114,4 +116,4 @@ docs/                 dokumentasi
 Versi **0.1.0**. Fase 1 dan sebagian fase 2 dari [rencana SDLC](docs/sdlc-plan.md) sudah diimplementasikan
 dan diuji end-to-end. Threshold bawaan dikalibrasi dengan foto sintetis dan foto publik. **Wajib dikalibrasi ulang
 dengan foto POD asli** dalam mode `shadow` sebelum `warn`/`enforce` (lihat
-[configuration.md](docs/configuration.md#kalibrasi-threshold)).
+[configuration.md](docs/configuration.md#6-kalibrasi-threshold)).

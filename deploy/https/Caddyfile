@@ -1,0 +1,12 @@
+# HTTPS lokal untuk uji coba dari HP (kamera langsung di browser butuh HTTPS).
+# Sertifikat dibuat sendiri oleh Caddy (CA lokal): browser HP akan memberi peringatan sekali,
+# pilih "Lanjutkan / Advanced -> Proceed". Untuk produksi pakai ingress + sertifikat resmi.
+{
+	local_certs
+	auto_https disable_redirects
+}
+
+https://{$PQE_HTTPS_HOST:localhost}:8443, https://localhost:8443 {
+	tls internal
+	reverse_proxy engine:8000
+}

@@ -163,6 +163,8 @@ Aturan penyimpanan:
 ## 2. Config tenant (YAML)
 
 **Tenant** = satu aplikasi yang terhubung ke engine (contoh: aplikasi kurir). Setiap tenant punya satu dokumen YAML. Contoh lengkap: [`config/tenants/courier-app.yaml`](../config/tenants/courier-app.yaml).
+Tenant [`uji-coba`](../config/tenants/uji-coba.yaml) dipakai halaman Uji Coba Kamera (`/ui/coba.html`): tanpa sumber
+bucket, mode `enforce` untuk semua jenis foto (lewat `profiles.default`), retensi 30 hari.
 
 Field yang tidak dikenal akan **ditolak** saat validasi, supaya salah ketik langsung ketahuan.
 

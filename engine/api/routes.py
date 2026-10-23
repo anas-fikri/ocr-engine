@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import concurrent.futures
 import posixpath
 import time
@@ -196,6 +197,8 @@ async def analyze_preview(
     tenant: Annotated[str | None, Query()] = None,
     photo_type: Annotated[str | None, Query(description="Profile yang dipakai")] = None,
     lang: Annotated[str | None, Query(pattern="^(id|en)$")] = None,
+    include_output: Annotated[bool, Query(description="true = sertakan foto hasil engine (diperbaiki/kompres) "
+                                                      "sebagai data URL di `output_image`")] = False,
 ):
     code = tenant or principal.tenant_code
     if code:
@@ -222,6 +225,10 @@ async def analyze_preview(
     out["mode"] = profile.mode
     out["retake_message"] = retake_text(request_lang(request, lang)) if out["retake_required"] else None
     out["reasons"] = localize_reasons(out["reasons"], request_lang(request, lang))
+    if include_output:
+        c = result.compression
+        out["output_image"] = (None if c is None or c.passthrough or c.data is None else
+                               f"data:{c.content_type};base64,{base64.b64encode(c.data).decode()}")
     return out
 
 
@@ -301,6 +308,33 @@ class ReviewRequest(BaseModel):
 
 
 REVIEW_STATUS = {"approve": "approved", "request_retake": "retake_requested", "mark_fraud": "fraud", "reset": "none"}
+
+
+@router.get("/photos/{photo_id}/file", summary="Unduh file foto lewat engine (tanpa akses langsung ke SILO)")
+def get_photo_file(
+    photo_id: str,
+    principal: Annotated[Principal, Depends(require("admin", "ops", "viewer", "app"))],
+    variant: Annotated[Literal["original", "processed", "thumbnail"], Query()] = "processed",
+):
+    """Berguna jika browser/HP tidak bisa menjangkau host SILO (presigned URL). Foto yang tidak perlu
+    dikompres (`passthrough`) memakai file original sebagai `processed`."""
+    with session_scope() as s:
+        p = _get_photo_for(principal, photo_id, s)
+        passthrough = bool((p.compression or {}).get("passthrough"))
+        loc = {
+            "original": (p.bucket, p.object_key),
+            "processed": (p.processed_bucket, p.processed_key) if p.processed_key else
+                         ((p.bucket, p.object_key) if passthrough else (None, None)),
+            "thumbnail": (p.thumb_bucket, p.thumb_key),
+        }[variant]
+    if not loc[1]:
+        raise api_error(404, "FILE_NOT_FOUND", f"foto ini tidak punya versi {variant}")
+    try:
+        obj = get_storage().get(*loc)
+    except ObjectNotFound as e:
+        raise api_error(404, "FILE_NOT_FOUND", f"file {variant} tidak ada di SILO") from e
+    return Response(obj.data, media_type=obj.content_type or "application/octet-stream",
+                    headers={"Cache-Control": "private, max-age=300"})
 
 
 @router.post("/photos/{photo_id}/review", summary="Keputusan ops atas foto")
@@ -483,6 +517,26 @@ def reason_codes(request: Request, lang: str | None = None):
 @router.get("/meta/fields", summary="Daftar field metadata yang dikenali engine")
 def meta_fields():
     return list(MAPPABLE_FIELDS)
+
+
+@router.get("/meta/profiles", summary="Daftar jenis foto (profile) dan mode-nya untuk satu tenant")
+def meta_profiles(
+    principal: Annotated[Principal, Depends(current_principal)],
+    tenant: Annotated[str | None, Query(description="Default: tenant milik API key")] = None,
+):
+    code = tenant or principal.tenant_code
+    if not code:
+        from engine.tenant_config import build_profile, builtin_profiles
+
+        return {"tenant": None, "default_profile": "default",
+                "profiles": [{"name": n, "mode": build_profile(n).mode} for n in sorted(builtin_profiles())]}
+    check_tenant(principal, code)
+    try:
+        cfg = registry.get(code).config
+    except TenantNotFound as e:
+        raise api_error(404, "TENANT_NOT_FOUND", f"tenant {code} tidak terdaftar") from e
+    return {"tenant": code, "default_profile": cfg.default_profile, "review_required": cfg.review_required,
+            "profiles": [{"name": n, "mode": cfg.resolve_profile(n)[1].mode} for n in cfg.profile_names()]}
 
 
 @router.get("/me", summary="Info API key yang sedang dipakai")

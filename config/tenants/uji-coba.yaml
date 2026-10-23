@@ -1,0 +1,20 @@
+# Tenant khusus uji coba (halaman /ui/coba.html), supaya foto percobaan tidak tercampur
+# dengan data aplikasi kurir. Tidak memantau bucket mana pun: foto hanya masuk lewat upload.
+# Referensi lengkap setiap field: docs/configuration.md
+
+code: uji-coba
+name: Uji Coba (halaman kamera)
+default_lang: id
+timezone: Asia/Jakarta
+retention_days: 30            # data percobaan cukup disimpan 30 hari
+store_mode: processed
+review_required: false
+default_profile: pod_recipient
+
+sources: []
+mapping: {}
+sinks: []
+
+profiles:
+  default:
+    mode: enforce             # tampilkan pengalaman kurir paling ketat; halaman uji bisa mensimulasikan mode lain

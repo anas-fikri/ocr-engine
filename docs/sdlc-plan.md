@@ -31,7 +31,8 @@ Per 23 Oktober 2026 (versi engine 0.1.0):
 | 2 | `retake_required` + `retake_message` (wajib foto ulang jika kualitas tidak bisa dimaksimalkan) | ✅ |
 | 2 | Review ops opsional per tenant (`review_required`, bawaan `false`: PASS + WARN langsung masuk evidence) | ✅ |
 | 2 | Halaman Pengaturan SILO di Web UI (impor JSON `mc`, test koneksi, secret terenkripsi, tanpa restart) | ✅ |
-| 2 | Panduan integrasi developer di browser (`/ui/guide.html`, tanpa login) | ✅ |
+| 2 | Panduan integrasi developer di browser (`/ui/guide.html`, tanpa login) + 4 diagram alur (integrasi, penggunaan, keputusan kurir, proses engine) | ✅ |
+| 2 | Halaman Uji Coba Kamera untuk HP (`/ui/coba.html`): simulasi aplikasi kurir tanpa membangun aplikasi, tenant `uji-coba`, HTTPS opsional | ✅ |
 | 2 | Laporan export CSV/Excel | ⏳ belum |
 | 3 | Manifest Kubernetes + CI | ✅ (belum dideploy) |
 | 3 | Client library TypeScript & PHP | ✅ (Kotlin/Swift/Dart: contoh di panduan integrasi) |

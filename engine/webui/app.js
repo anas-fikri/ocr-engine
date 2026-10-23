@@ -25,6 +25,16 @@ async function api(path, opts = {}) {
   return data;
 }
 
+// Presigned URL gagal dimuat (browser/HP tidak bisa menjangkau host SILO): ambil lewat engine.
+async function viaEngine(img) {
+  if (img.dataset.retried) return;
+  img.dataset.retried = "1";
+  try {
+    const r = await fetch(`/v1/photos/${img.dataset.photo}/file?variant=${img.dataset.variant}`, { headers: { "X-API-Key": storedKey() || "" } });
+    if (r.ok) img.src = URL.createObjectURL(await r.blob());
+  } catch { /* biarkan kosong */ }
+}
+
 function toast(msg, err = false) {
   const t = $("#toast");
   t.textContent = msg; t.className = "toast" + (err ? " err" : "");
@@ -54,11 +64,15 @@ window.addEventListener("hashchange", route);
 
 const pages = { dashboard, review, photos, test: testPhoto, tenants, keys, silo, system };
 function route() {
-  const page = (location.hash.replace(/^#\//, "").split("?")[0]) || "dashboard";
+  const [path, query] = location.hash.replace(/^#\//, "").split("?");
+  const page = path || "dashboard";
+  const params = Object.fromEntries(new URLSearchParams(query || ""));
+  if (page === "photos" && query) photos.f = params; // contoh: #/photos?awb=AWB123&id=<photo_id>
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === page));
   const fn = pages[page] || dashboard;
   $("#main").innerHTML = `<div class="empty">Memuat...</div>`;
-  fn().catch((e) => { if (e.message !== "unauthorized") $("#main").innerHTML = `<div class="card error">${esc(e.message)}</div>`; });
+  fn().then(() => { if (params.id) openPhoto(params.id); })
+    .catch((e) => { if (e.message !== "unauthorized") $("#main").innerHTML = `<div class="card error">${esc(e.message)}</div>`; });
 }
 
 const tenantOptions = (sel = "", all = true) =>
@@ -111,7 +125,7 @@ function photoTable(items) {
     ${items.map((p) => {
       const main = (p.reasons || []).find((r) => r.severity !== "info");
       return `<tr class="clickable" data-id="${esc(p.id)}">
-        <td>${p.urls && p.urls.thumbnail ? `<img class="thumb" loading="lazy" src="${esc(p.urls.thumbnail)}" alt="">` : `<div class="thumb"></div>`}</td>
+        <td>${p.urls && p.urls.thumbnail ? `<img class="thumb" loading="lazy" src="${esc(p.urls.thumbnail)}" data-photo="${esc(p.id)}" data-variant="thumbnail" onerror="viaEngine(this)" alt="">` : `<div class="thumb"></div>`}</td>
         <td><b>${esc(p.awb || "-")}</b><div class="muted small">${esc(p.external_id || "")}</div></td>
         <td>${esc(p.tenant)}<div class="muted small">${esc(p.photo_type || "-")}</div></td>
         <td>${esc(p.courier_id || "-")}<div class="muted small">${esc(p.branch || "")}</div></td>
@@ -192,7 +206,7 @@ async function openPhoto(id, onChange) {
     <p class="muted">${esc(p.tenant)} · profile ${esc(p.profile || "-")} · aksi mode: <b>${esc(p.action || "-")}</b></p>
     <div class="grid cols-2">
       <div class="images">
-        ${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank"><img src="${esc(p.urls.processed)}" alt="foto"></a>` : `<div class="empty">Tidak ada pratinjau</div>`}
+        ${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank"><img src="${esc(p.urls.processed)}" data-photo="${esc(p.id)}" data-variant="processed" onerror="viaEngine(this)" alt="foto"></a>` : `<div class="empty">Tidak ada pratinjau</div>`}
         <div class="small"><a href="${esc(p.urls.original)}" target="_blank">Buka original</a>${p.urls.processed ? ` · <a href="${esc(p.urls.processed)}" target="_blank">Buka versi kompres</a>` : ""}</div>
       </div>
       <div>

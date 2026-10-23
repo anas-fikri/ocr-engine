@@ -7,7 +7,12 @@ menghubungkan aplikasinya ke Photo Quality Engine. Ikuti dari atas ke bawah. Sem
 >
 > **Versi ringkas di browser:** buka `https://<server-engine>/ui/guide.html` (tanpa login). Isinya sama dengan
 > dokumen ini dalam bentuk interaktif: contoh kode curl/PHP/TypeScript/Python/Kotlin dengan URL server yang sudah
-> terisi otomatis dan tombol salin. Link-nya juga ada di menu Web UI (**Panduan Integrasi ↗**) dan di halaman login.
+> terisi otomatis dan tombol salin, plus **diagram alur** (integrasi sampai go-live, alur penggunaan saat runtime,
+> keputusan di aplikasi kurir, proses di dalam engine). Link-nya juga ada di menu Web UI (**Panduan Integrasi ↗**) dan di halaman login.
+>
+> **Coba dulu sebelum menulis kode:** buka `https://<server-engine>/ui/coba.html` dari HP. Halaman itu berperan sebagai
+> aplikasi kurir (ambil foto → kirim → tampil pesan untuk kurir + detail analisis), lihat
+> [getting-started.md §4b](getting-started.md#4b-uji-coba-dari-hp-tanpa-membangun-aplikasi).
 
 ## Daftar isi
 
@@ -774,7 +779,7 @@ bisa diatur admin tanpa mengubah aplikasi.
 
 **Bagaimana tahu threshold sudah cocok?**
 Admin menjalankan mode `shadow`, meninjau hasil di Web UI, lalu menyesuaikan profile. Lihat
-[configuration.md](configuration.md#kalibrasi-threshold).
+[configuration.md](configuration.md#6-kalibrasi-threshold).
 
 **Siapa yang dihubungi jika ada masalah?**
 Cek [troubleshooting.md](troubleshooting.md) dulu. Hampir semua masalah umum ada di sana beserta solusinya.

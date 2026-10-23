@@ -57,7 +57,7 @@ Daftar isi:
 
 | Gejala | Penyebab | Solusi |
 |---|---|---|
-| Banyak foto bagus kena `BLURRY` / terlalu ketat | Threshold bawaan belum dikalibrasi dengan foto POD asli. Foto dengan latar bokeh/polos luas atau objek kecil juga bisa skor rendah | Kalibrasi: [configuration.md §6](configuration.md#kalibrasi-threshold). Turunkan `thresholds.sharpness` atau `params.sharpness.low/high` di profile terkait. Selama kalibrasi pakai mode `shadow` |
+| Banyak foto bagus kena `BLURRY` / terlalu ketat | Threshold bawaan belum dikalibrasi dengan foto POD asli. Foto dengan latar bokeh/polos luas atau objek kecil juga bisa skor rendah | Kalibrasi: [configuration.md §6](configuration.md#6-kalibrasi-threshold). Turunkan `thresholds.sharpness` atau `params.sharpness.low/high` di profile terkait. Selama kalibrasi pakai mode `shadow` |
 | Foto buram tetap `PASS` | Threshold terlalu longgar untuk jenis foto itu | Naikkan `thresholds.sharpness` untuk profile tersebut (contoh `pod_document`) |
 | `EXIF_MISSING` di hampir semua foto | **Normal.** Banyak aplikasi/plugin kamera, kompresi, upload web, dan WhatsApp menghapus EXIF | Tidak perlu tindakan, ini hanya info dan tidak memengaruhi verdict. Untuk validasi waktu/lokasi, minta aplikasi mengirim `captured_at`, `lat`, `lng` |
 | `DUPLICATE_SIMILAR` pada foto yang sebenarnya berbeda | Pemandangan sangat mirip (pintu/gudang yang sama, paket sejenis, sudut sama) menghasilkan pHash mirip | Ops cukup **Setujui** setelah membandingkan. Jika sering, turunkan `params.duplicate.max_distance` (contoh 4) untuk profile itu |
@@ -87,7 +87,7 @@ Daftar isi:
 
 | Gejala | Penyebab | Solusi |
 |---|---|---|
-| Thumbnail/foto tidak tampil di Web UI (gambar rusak) | Presigned URL memakai host internal yang tidak bisa dibuka browser (contoh `http://silo:9000`) | Isi `AWS_PUBLIC_ENDPOINT` dengan host yang bisa dibuka browser (compose lokal: `http://localhost:9000`), lalu restart engine |
+| Thumbnail/foto tidak tampil di Web UI (gambar rusak) | Presigned URL memakai host internal yang tidak bisa dibuka browser (contoh `http://silo:9000`) | Web UI otomatis mencoba lagi lewat engine (`GET /v1/photos/{id}/file`), jadi biasanya tetap tampil. Agar link **Buka original** juga jalan, isi `AWS_PUBLIC_ENDPOINT` dengan host yang bisa dibuka browser (compose lokal: `http://localhost:9000`; dari HP: `http://<IP-PC>:9000`), lalu restart engine |
 | Link foto "Request has expired" / `AccessDenied` | Presigned URL kedaluwarsa (UI 15 menit, pelanggan 7 hari) | Muat ulang halaman/detail untuk link baru. Ubah `ENGINE_PRESIGN_TTL_UI` jika perlu |
 | Detail foto: "Tidak ada pratinjau" | Tenant `store_mode: none` (tanpa versi kompres) | Pakai link **Buka original**, atau ubah ke `store_mode: processed` |
 | `POST /v1/analyze?sync=true` menjawab `202` dengan `poll_url` | Analisis belum selesai dalam `timeout_ms` (default 3000). Ini **fail-open** yang disengaja | Lanjutkan proses bisnis. Ambil hasil dari `GET /v1/photos/<id>` (poll), atau pakai webhook. Naikkan `timeout_ms` (maks 30000) jika memang perlu menunggu |
@@ -98,6 +98,21 @@ Daftar isi:
 | Webhook berhenti dikirim setelah aplikasi sempat down lama | Setelah 8 percobaan (jeda sampai 1 jam), pengiriman berstatus `dead` | Web UI → Sistem → "Webhook gagal permanen" → **Kirim ulang semua** (admin), atau `POST /v1/admin/webhooks/retry-dead`. Daftar: `GET /v1/admin/webhooks?status=dead` |
 | Client TS/PHP selalu `unavailable: true` | Engine tidak bisa dijangkau dari aplikasi (DNS, firewall, URL salah) atau timeout terlalu kecil | Tes `curl <PQE_URL>/healthz` dari server aplikasi. Naikkan `timeoutMs`. Proses bisnis tetap jalan (fail-open) |
 | Test client gagal "sudah di-patch" | Runtime Node/PHP belum memuat security release 21 Okt 2026 | Upgrade ke Node 22.23.4 / 24.22.1 / 26.12.1 atau PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 (lihat [clients/README.md](../clients/README.md)) |
+
+## Uji Coba Kamera (HP)
+
+| Gejala | Penyebab | Solusi |
+|---|---|---|
+| HP tidak bisa membuka `http://<IP-PC>:8000/ui/coba.html` | HP beda jaringan, IP salah, atau firewall PC memblokir port 8000 | Sambungkan HP ke Wi-Fi yang sama, cek IP dengan `ip addr`/`ipconfig`, izinkan port 8000 (dan 8443 untuk HTTPS) di firewall |
+| Tombol **Kamera langsung** tidak aktif | Browser hanya mengizinkan kamera di halaman HTTPS atau localhost | Pakai **📷 Ambil foto** (kamera bawaan HP, bisa lewat HTTP), atau jalankan `docker-compose.https.yml` dan buka `https://<IP-PC>:8443/ui/coba.html` ([getting-started.md §4b](getting-started.md#4b-uji-coba-dari-hp-tanpa-membangun-aplikasi)) |
+| Peringatan "koneksi tidak aman / sertifikat tidak valid" di HTTPS uji coba | Sertifikat dibuat sendiri oleh Caddy (CA lokal) | Wajar untuk uji coba: pilih **Advanced → Proceed**. Untuk produksi pakai ingress dengan sertifikat resmi |
+| "Kamera tidak bisa dibuka: Permission denied" | Izin kamera untuk situs ditolak | Buka pengaturan situs di browser HP, izinkan Kamera, muat ulang halaman |
+| "Lokasi tidak tersedia" | Lokasi juga butuh HTTPS dan izin | Abaikan (dilanjutkan tanpa GPS) atau pakai HTTPS |
+| Mode **Simulasi aplikasi kurir** tidak bisa dipilih | Role `viewer`, atau tenant belum dipilih | Pakai key `admin`/`ops`/`app` dan pilih tenant (bawaan `uji-coba`) |
+| Tenant `uji-coba` tidak ada di daftar | Database dibuat sebelum file `config/tenants/uji-coba.yaml` ada dan import otomatis belum jalan | Restart engine (tenant baru di folder config di-import saat start) atau `pqe import-tenants` |
+| Hasil "Engine belum selesai dalam 3 dtk" | Analisis lebih lama dari batas sync (foto besar, OCR, PC sibuk) | Ini perilaku fail-open yang benar; hasil menyusul di halaman yang sama. Jika sering, tambah `PQE_WORKER_CONCURRENCY` atau CPU |
+| Foto dari **Kamera langsung** selalu "Metadata kamera tidak tersedia" | Foto dari browser tidak membawa EXIF | Wajar dan hanya informasi (tidak memengaruhi verdict). Pakai **📷 Ambil foto** untuk menguji EXIF |
+| Foto uji ditandai `DUPLICATE_EXACT` / `DUPLICATE_SIMILAR` | File yang sama (atau versi gelap/terang dari foto yang sama) sudah pernah dikirim | Benar secara logika: pengiriman berbeda tidak boleh memakai foto yang sama. Ambil foto baru |
 
 ## Pengaturan SILO: test koneksi gagal
 

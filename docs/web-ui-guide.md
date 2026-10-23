@@ -5,7 +5,10 @@ Web UI dipakai tim **ops/SPV**, **admin engine**, dan **viewer** (finance, manaj
 - Alamat: `https://<host-engine>/ui` (lokal: http://localhost:8000/ui)
 - Tidak perlu instalasi. Web UI disajikan langsung oleh engine.
 - **Panduan integrasi untuk programmer aplikasi** ada di `https://<host-engine>/ui/guide.html` (tanpa login). Link-nya
-  ada di menu (**Panduan Integrasi ↗**) dan di halaman login, jadi programmer bisa dikirimi link itu saja.
+  ada di menu (**Panduan Integrasi ↗**) dan di halaman login, jadi programmer bisa dikirimi link itu saja. Halaman itu
+  juga memuat diagram alur integrasi, alur penggunaan, keputusan di aplikasi kurir, dan proses di dalam engine.
+- **Uji Coba Kamera** ada di `https://<host-engine>/ui/coba.html` (menu **Uji Coba Kamera ↗**): halaman yang dioptimalkan
+  untuk HP untuk mencoba engine seperti aplikasi kurir, lihat [Uji Coba Kamera](#uji-coba-kamera-hp).
 
 Daftar isi:
 
@@ -16,6 +19,7 @@ Daftar isi:
 - [Detail foto](#detail-foto)
 - [Panduan keputusan ops](#panduan-keputusan-ops)
 - [Uji foto](#uji-foto)
+- [Uji Coba Kamera (HP)](#uji-coba-kamera-hp)
 - [Tenant (admin)](#tenant-admin)
 - [API key (admin)](#api-key-admin)
 - [Pengaturan SILO (admin)](#pengaturan-silo-admin)
@@ -177,7 +181,7 @@ Skor internal dan risiko keaslian tidak pernah ditampilkan ke pelanggan.
 
 ## Uji foto
 
-Menganalisis foto **tanpa menyimpan apa pun**. Dipakai untuk mencoba threshold, onboarding aplikasi baru, atau melatih tim. Butuh role `admin` atau `ops`.
+Menganalisis foto **tanpa menyimpan apa pun**. Dipakai untuk mencoba threshold, onboarding aplikasi baru, atau melatih tim. Bisa dipakai role `admin`, `ops`, dan `viewer`. Untuk mencoba dari HP dengan kamera, pakai [Uji Coba Kamera](#uji-coba-kamera-hp).
 
 1. Pilih **Tenant** untuk memakai profile tenant itu, atau "(profile bawaan)".
 2. Pilih **Jenis foto / profile**. Tanpa tenant, daftar berisi profile bawaan engine (`default`, `pod_recipient`, `pod_document`, `package`, `goods`, `location`). Setelah tenant dipilih, daftar berganti ke semua profile tenant tersebut (termasuk profile buatan tenant).
@@ -186,6 +190,26 @@ Menganalisis foto **tanpa menyimpan apa pun**. Dipakai untuk mencoba threshold, 
 Hasilnya: verdict, profile, mode, aksi, kotak **Wajib foto ulang** / **Diperbaiki otomatis** (jika berlaku, dengan verdict sebelum perbaikan), skor, catatan beserta saran, hasil kompresi (ukuran sebelum → sesudah, dimensi, quality, SSIM), waktu proses, dan JSON lengkap.
 
 Catatan: cek duplikat tidak dijalankan di sini (tidak dibandingkan dengan foto lain), dan tidak ada data yang tersimpan maupun webhook yang terkirim.
+
+---
+
+## Uji Coba Kamera (HP)
+
+Halaman terpisah (`/ui/coba.html`) untuk mencoba engine **tanpa membangun aplikasi mobile**. Halaman ini berperan
+sebagai aplikasi kurir dan dioptimalkan untuk layar HP. Masuk dengan API key `admin`, `ops`, atau `app` (`viewer` hanya
+bisa uji cepat). API key tersimpan di browser yang sama dengan Web UI, jadi cukup login sekali.
+
+| Bagian | Isi |
+|---|---|
+| **1. Pengaturan uji** | **Simulasi aplikasi kurir** (foto disimpan, alur sama dengan aplikasi asli: upload → antrean → worker → SILO, tunggu maks. 3 detik) atau **Uji cepat** (tidak disimpan). Tenant (bawaan `uji-coba`), jenis foto, **Tampilkan sebagai mode** (`shadow`/`warn`/`enforce`, hanya mengubah tampilan), nomor resi (otomatis `UJI...`, berganti setelah foto diterima; tetap sama saat foto ulang), ID kurir, lokasi GPS (butuh HTTPS) |
+| **2. Ambil foto** | **📷 Ambil foto**: kamera bawaan HP (seperti aplikasi kurir, EXIF ikut). **🎥 Kamera langsung**: viewfinder di browser dengan tombol jepret, balik kamera, dan lampu (jika HP mendukung). Butuh HTTPS atau localhost. **🖼 Galeri / file** |
+| **3. Hasil** | **Yang dilihat kurir**: tiruan layar aplikasi dengan pesan dan tombol (Foto ulang / Tetap kirim / Lapor ke SPV / Lanjut) sesuai `action` dan `retake_required`, plus waktu tunggu kurir. **Detail untuk tim**: verdict, wajib foto ulang, aksi, waktu tunggu & proses engine, ukuran sebelum → sesudah, masuk evidence atau tidak, perbandingan foto asli vs hasil engine, perbaikan otomatis, skor, catatan, kompresi, EXIF, JSON respons. Di mode simulasi ada tombol **Buka di Web UI** dan **Evidence PDF resi ini** |
+| **Riwayat sesi ini** | Thumbnail percobaan sebelumnya; klik untuk melihat hasilnya lagi (hanya di browser, hilang saat halaman ditutup) |
+
+Cara membuka dari HP dan menyalakan HTTPS untuk kamera langsung: [getting-started.md §4b](getting-started.md#4b-uji-coba-dari-hp-tanpa-membangun-aplikasi).
+
+Data simulasi masuk tenant `uji-coba` (retensi 30 hari, tanpa sumber bucket, tanpa webhook), jadi dashboard
+aplikasi kurir tidak terpengaruh. Filter **Tenant** di Web UI untuk melihat atau menyembunyikannya.
 
 ---
 

@@ -24,8 +24,8 @@ versi interaktif tanpa login di `<base-url>/ui/guide.html`.
 | Endpoint | admin | ops | viewer | app | customer | publik |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|
 | `POST /v1/analyze` | ✓ | ✓ | | ✓ (tenant sendiri) | | |
-| `POST /v1/analyze/preview` | ✓ | ✓ | | ✓ | | |
-| `GET /v1/photos`, `GET /v1/photos/{id}` | ✓ | ✓ | ✓ | ✓ (tenant sendiri) | | |
+| `POST /v1/analyze/preview` | ✓ | ✓ | ✓ | ✓ | | |
+| `GET /v1/photos`, `GET /v1/photos/{id}`, `GET /v1/photos/{id}/file` | ✓ | ✓ | ✓ | ✓ (tenant sendiri) | | |
 | `POST /v1/photos/{id}/review`, `/reprocess` | ✓ | ✓ | | | | |
 | `GET /v1/photos/{id}/reviews` | ✓ | ✓ | ✓ | | | |
 | `GET /v1/evidence/...`, `POST /v1/evidence/batch` | ✓ | ✓ | | ✓ (tenant sendiri) | ✓ (customer_id sendiri) | |
@@ -33,8 +33,8 @@ versi interaktif tanpa login di `<base-url>/ui/guide.html`.
 | `GET /v1/admin/tenants`, `/tenants/{code}`, `/history`, `/profiles/builtin`, `/jobs`, `/webhooks`, `/sources` | ✓ | ✓ | ✓ | | | |
 | `PUT/POST /v1/admin/tenants...`, `/api-keys`, `/jobs/.../retry`, `/webhooks/retry-dead`, `/audit` | ✓ | | | | | |
 | `GET/PUT /v1/admin/settings/storage`, `POST /v1/admin/settings/storage/test` | ✓ | | | | | |
-| `GET /v1/verify/{sha256}`, `/v1/meta/*`, `/healthz`, `/readyz`, `/metrics`, `/ui/guide.html` | | | | | | ✓ |
-| `GET /v1/me` | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| `GET /v1/verify/{sha256}`, `/v1/meta/reason-codes`, `/v1/meta/fields`, `/healthz`, `/readyz`, `/metrics`, `/ui/guide.html`, `/ui/coba.html` (halaman; API-nya tetap butuh key) | | | | | | ✓ |
+| `GET /v1/me`, `GET /v1/meta/profiles` | ✓ | ✓ | ✓ | ✓ | ✓ | |
 | `POST /v1/events/s3` | token `PQE_S3_EVENT_TOKEN` (dipakai SILO) | | | | | |
 
 API key `admin`/`ops`/`viewer` tanpa tenant bisa melihat semua tenant. Untuk endpoint yang butuh satu tenant
@@ -83,7 +83,9 @@ ditambah field metadata yang sama seperti di atas (semua opsional). File disimpa
 
 Menganalisis file **tanpa menyimpan apa pun** (tidak ada di DB maupun SILO). Untuk kalibrasi dan onboarding.
 
-**Query:** `tenant` (opsional, pakai profile tenant), `photo_type` (nama profile), `lang`.
+**Query:** `tenant` (opsional, pakai profile tenant), `photo_type` (nama profile), `lang`, `include_output`
+(`true` = sertakan foto hasil engine, yang sudah diperbaiki/dikompres, sebagai data URL di field `output_image`;
+`null` jika foto disimpan apa adanya). Dipakai halaman Uji Coba Kamera untuk membandingkan sebelum/sesudah.
 **Body:** `multipart/form-data` field `file`.
 
 **Respons:**
@@ -130,6 +132,13 @@ Mencari foto. Diurutkan dari yang terbaru diterima.
 | `limit`, `offset` | `50`, `0` | Maks. `limit` 200 |
 
 **Respons:** `{"total": 123, "limit": 50, "offset": 0, "items": [<objek foto ringkas>]}`
+
+### `GET /v1/photos/{id}/file?variant=processed`
+
+Mengambil file foto **lewat engine**, untuk browser/HP yang tidak bisa menjangkau host SILO (presigned URL).
+`variant`: `processed` (bawaan; versi kompres/hasil perbaikan, atau original jika tidak perlu dikompres),
+`original`, `thumbnail`. Respons berisi gambar (`Content-Type` sesuai file). `404 FILE_NOT_FOUND` jika versi itu
+tidak ada. Aplikasi produksi sebaiknya tetap memakai `urls.*` (presigned) agar tidak membebani engine.
 
 ### `GET /v1/photos/{id}`
 
@@ -213,6 +222,16 @@ Gambar yang dipakai adalah versi processed (jika pencahayaan diperbaiki otomatis
 
 Daftar field metadata yang dikenali: `awb`, `courier_id`, `photo_type`, `customer_id`, `branch`, `captured_at`,
 `lat`, `lng`, `source`, `external_id`.
+
+### `GET /v1/meta/profiles?tenant=`
+
+Daftar jenis foto (profile) dan mode-nya. Tanpa `tenant` memakai tenant milik API key; key tanpa tenant mendapat
+profile bawaan.
+
+```json
+{"tenant": "uji-coba", "default_profile": "pod_recipient", "review_required": false,
+ "profiles": [{"name": "pod_recipient", "mode": "enforce"}, {"name": "pod_document", "mode": "enforce"}]}
+```
 
 ### `GET /v1/me`
 

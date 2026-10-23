@@ -60,9 +60,43 @@ ke bucket `ekas-pcptransport` lengkap dengan metadata resi/kurir. Dalam beberapa
 5. **Pengaturan SILO** (admin): koneksi ke SILO. Di compose lokal sudah terisi dari env; untuk mencoba SILO lain,
    tempel JSON `mc` lalu **Test koneksi** (jangan pakai `127.0.0.1` dari dalam Docker, lihat
    [configuration.md §1.6](configuration.md#16-pengaturan-silo-lewat-web-ui)).
-6. **Panduan Integrasi ↗**: http://localhost:8000/ui/guide.html, panduan untuk programmer aplikasi (tanpa login).
+6. **Panduan Integrasi ↗**: http://localhost:8000/ui/guide.html, panduan untuk programmer aplikasi (tanpa login),
+   lengkap dengan diagram alur integrasi, alur penggunaan, keputusan di aplikasi kurir, dan proses di dalam engine.
 
 Panduan Web UI lengkap: [web-ui-guide.md](web-ui-guide.md).
+
+## 4b. Uji coba dari HP tanpa membangun aplikasi
+
+Halaman **Uji Coba Kamera** (`/ui/coba.html`) berperan sebagai aplikasi kurir: ambil foto dengan kamera HP, kirim ke
+engine, lalu lihat pesan yang akan tampil di layar kurir beserta detail analisisnya.
+
+1. Cari IP PC yang menjalankan engine di jaringan kantor (`ip addr` di Linux, `ipconfig` di Windows), misal `192.168.1.10`.
+   HP harus di jaringan (Wi-Fi) yang sama, dan port 8000 tidak diblokir firewall PC.
+2. Di HP buka `http://192.168.1.10:8000/ui/coba.html`, masuk dengan API key admin (`pqe_local_admin_change_me` di lokal).
+3. Pilih mode:
+   - **Simulasi aplikasi kurir** (bawaan): sama dengan integrasi level 2 (`POST /v1/analyze?sync=true&timeout_ms=3000`).
+     Foto disimpan ke tenant **`uji-coba`** (dibuat otomatis dari `config/tenants/uji-coba.yaml`, mode `enforce`,
+     retensi 30 hari), jadi tidak tercampur dengan data aplikasi kurir. Foto muncul di Web UI dan evidence resi uji.
+   - **Uji cepat**: hanya dianalisis, tidak disimpan.
+4. Tekan **📷 Ambil foto** (membuka kamera bawaan HP, EXIF ikut terkirim) atau **Pilih dari galeri**.
+5. Hasil: tampilan **layar kurir** (pesan foto ulang / tetap kirim / diterima, sesuai `action` dan
+   `retake_required`), waktu tunggu kurir, perbandingan foto asli vs hasil engine, skor, alasan, perbaikan otomatis,
+   kompresi, dan EXIF. **Tampilkan sebagai mode** memperlihatkan pengalaman kurir di `shadow`/`warn`/`enforce` tanpa
+   mengubah config. Tombol **Buka di Web UI** langsung membuka detail foto tersebut.
+
+Tips menguji: foto resi yang jelas, lalu foto sambil bergerak (buram), di tempat gelap (diperbaiki otomatis),
+zoom digital berlebihan (pecah), dan foto layar/screenshot.
+
+**Kamera langsung di browser** (viewfinder di halaman, tanpa membuka aplikasi kamera) butuh HTTPS. Jalankan proxy
+HTTPS bawaan:
+
+```bash
+PQE_HTTPS_HOST=192.168.1.10 docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
+# lalu buka di HP: https://192.168.1.10:8443/ui/coba.html
+```
+
+Sertifikatnya dibuat sendiri oleh Caddy, jadi browser HP menampilkan peringatan sekali: pilih **Lanjutkan /
+Advanced → Proceed**. Ini hanya untuk uji coba; produksi memakai ingress dengan sertifikat resmi.
 
 ## 5. Coba API
 

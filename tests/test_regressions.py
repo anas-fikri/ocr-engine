@@ -179,3 +179,68 @@ def test_storage_settings_page_api(client, admin_headers, env, monkeypatch):
     app_key = client.post("/v1/admin/api-keys", json={"name": "aplikasi", "role": "app", "tenant": "test-app"},
                           headers=admin_headers).json()["api_key"]
     assert client.get("/v1/admin/settings/storage", headers={"X-API-Key": app_key}).status_code == 403
+
+
+def test_trial_page_endpoints(client, admin_headers, samples):
+    """Halaman uji coba: preview mengembalikan foto hasil engine, file diambil lewat engine, daftar profile."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    # preview: foto gelap diperbaiki, hasilnya ikut dikirim sebagai data URL (tidak disimpan)
+    r = client.post("/v1/analyze/preview", params={"tenant": "test-app", "include_output": True},
+                    headers=admin_headers, files={"file": ("gelap.jpg", samples["reject_dark"], "image/jpeg")})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["enhancement"]["applied"] is True
+    head, data = body["output_image"].split(",", 1)
+    assert head.startswith("data:image/") and Image.open(io.BytesIO(base64.b64decode(data))).size[0] > 0
+    plain = client.post("/v1/analyze/preview", headers=admin_headers,
+                        files={"file": ("a.jpg", samples["reject_dark"], "image/jpeg")}).json()
+    assert "output_image" not in plain
+
+    # simulasi aplikasi kurir: simpan, lalu ambil file lewat engine (HP tidak perlu akses ke SILO)
+    r = client.post("/v1/analyze", params={"tenant": "test-app", "sync": True}, headers=admin_headers,
+                    files={"file": ("gelap.jpg", samples["reject_dark"], "image/jpeg")}, data={"awb": "UJI1"})
+    pid = r.json()["id"]
+    for variant in ("processed", "original", "thumbnail"):
+        f = client.get(f"/v1/photos/{pid}/file", params={"variant": variant}, headers=admin_headers)
+        assert f.status_code == 200, (variant, f.text)
+        assert f.headers["content-type"].startswith("image/")
+        Image.open(io.BytesIO(f.content)).verify()
+    processed = client.get(f"/v1/photos/{pid}/file", headers=admin_headers).content
+    assert processed != samples["reject_dark"]  # versi hasil perbaikan, bukan original
+    assert client.get(f"/v1/photos/{pid}/file", params={"variant": "lain"}, headers=admin_headers).status_code == 422
+    assert client.get("/v1/photos/tidak-ada/file", headers=admin_headers).status_code == 404
+
+    other = client.post("/v1/admin/api-keys", json={"name": "lain", "role": "app", "tenant": "tenant-lain"},
+                        headers=admin_headers)
+    if other.status_code == 200:  # key tenant lain tidak boleh melihat file tenant ini
+        assert client.get(f"/v1/photos/{pid}/file", headers={"X-API-Key": other.json()["api_key"]}).status_code == 404
+
+    # daftar profile + mode
+    builtin = client.get("/v1/meta/profiles", headers=admin_headers).json()
+    assert builtin["tenant"] is None and "pod_recipient" in [p["name"] for p in builtin["profiles"]]
+    t = client.get("/v1/meta/profiles", params={"tenant": "test-app"}, headers=admin_headers).json()
+    assert t["tenant"] == "test-app" and all(p["mode"] in ("shadow", "warn", "enforce") for p in t["profiles"])
+    assert client.get("/v1/meta/profiles", params={"tenant": "tidak-ada"}, headers=admin_headers).status_code == 404
+
+
+def test_shipped_tenant_configs_are_valid():
+    """Config contoh di repo (termasuk tenant uji-coba) harus selalu valid."""
+    from pathlib import Path
+
+    import yaml
+
+    from engine.tenant_config import TenantConfig
+
+    files = sorted(Path("config/tenants").glob("*.yaml"))
+    assert {f.stem for f in files} >= {"courier-app", "uji-coba"}
+    for f in files:
+        cfg = TenantConfig.model_validate(yaml.safe_load(f.read_text(encoding="utf-8")))
+        cfg.validate_all_profiles()
+        assert cfg.code == f.stem
+    uji = TenantConfig.model_validate(yaml.safe_load(Path("config/tenants/uji-coba.yaml").read_text()))
+    assert uji.sources == [] and uji.retention_days == 30
+    assert uji.resolve_profile("pod_document")[1].mode == "enforce"

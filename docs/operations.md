@@ -82,6 +82,11 @@ docker compose ps             # tunggu engine "healthy"
 > **Semua nilai default di atas hanya untuk lokal.** Jika compose ini dipasang di mesin yang bisa diakses orang lain, ganti `PQE_BOOTSTRAP_ADMIN_KEY`, `SILO_ROOT_PASSWORD`, `POSTGRES_PASSWORD`, `PQE_S3_EVENT_TOKEN`, dan `PQE_SECRET_KEY` di `.env` **sebelum** `up` pertama kali.
 >
 > Panduan integrasi untuk programmer aplikasi tersedia di http://localhost:8000/ui/guide.html (tanpa login).
+>
+> **Uji coba dari HP:** `http://<IP-PC>:8000/ui/coba.html`. Untuk kamera langsung di browser (butuh HTTPS) tambahkan
+> `docker-compose.https.yml`: `PQE_HTTPS_HOST=<IP-PC> docker compose -f docker-compose.yml -f docker-compose.https.yml up -d`,
+> lalu buka `https://<IP-PC>:8443/ui/coba.html` (sertifikat CA lokal Caddy, khusus uji coba). Foto simulasi masuk tenant
+> `uji-coba` (retensi 30 hari). Di produksi, nonaktifkan tenant `uji-coba` lewat Web UI jika tidak dipakai.
 
 Image SILO yang dipakai: `docker.io/pgsty/silo:RELEASE.2026-10-18T00-00-00Z` (fork komunitas MinIO dari Pigsty, kompatibel S3). Engine otomatis membuat bucket `ekas-pcptransport`, `photos-processed`, `photos-thumb`, `photos-upload` (`ENGINE_CREATE_BUCKETS=true`). Folder `config/tenants` di-mount read-only ke container.
 

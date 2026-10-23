@@ -38,7 +38,8 @@ ocr-engine/
 │   │   └── common.py           # helper error & bahasa
 │   ├── defaults/profiles.yaml  # profile bawaan (threshold, params, kompresi)
 │   ├── locales/{id,en}.yaml    # pesan per kode alasan
-│   ├── webui/                  # Web UI vanilla JS (index.html, app.js, style.css) + guide.html (panduan publik), tanpa build step
+│   ├── webui/                  # Web UI vanilla JS tanpa build step: index.html + app.js + style.css,
+│   │                           # guide.html + diagram.js (panduan publik + diagram SVG), coba.html + coba.js (uji coba kamera HP)
 │   ├── pipeline.py             # pipeline MURNI: bytes + profile -> hasil (tanpa DB/S3)
 │   ├── verdict.py              # skor -> PASS/WARN/REJECT + alasan + aksi sesuai mode
 │   ├── processor.py            # proses satu job: SILO -> pipeline -> simpan varian & hasil -> webhook
