@@ -11,6 +11,7 @@ TENANT_YAML = """
 code: test-app
 name: Test App
 retention_days: 30
+review_required: true
 default_profile: pod_recipient
 sources:
   - type: s3_poll

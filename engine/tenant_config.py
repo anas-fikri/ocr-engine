@@ -48,6 +48,12 @@ class Thumbnail(_Strict):
     quality: int = 70
 
 
+class Enhance(_Strict):
+    """Perbaikan pencahayaan otomatis (tanpa AI). Lihat engine/imaging/enhance.py."""
+
+    enabled: bool = True
+
+
 class Profile(_Strict):
     mode: Literal["shadow", "warn", "enforce"] = "shadow"
     checks: list[str]
@@ -55,6 +61,7 @@ class Profile(_Strict):
     params: dict[str, dict[str, Any]] = {}
     compression: Compression = Compression()
     thumbnail: Thumbnail = Thumbnail()
+    enhance: Enhance = Enhance()
 
     @field_validator("checks")
     @classmethod
@@ -108,6 +115,9 @@ class TenantConfig(_Strict):
     timezone: str = "Asia/Jakarta"
     retention_days: int = 1095
     store_mode: Literal["processed", "none"] = "processed"
+    # false (default): foto PASS & WARN langsung masuk evidence, review ops opsional.
+    # true: foto WARN baru masuk evidence setelah di-approve ops.
+    review_required: bool = False
     upload_bucket: str | None = None
     default_profile: str = "default"
     sources: list[Source] = []

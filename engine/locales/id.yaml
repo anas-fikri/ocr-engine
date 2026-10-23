@@ -3,6 +3,7 @@ verdict:
   PASS: Foto layak
   WARN: Foto kurang ideal
   REJECT: Foto tidak layak
+retake: Kualitas foto tidak memenuhi syarat dan tidak bisa diperbaiki otomatis. Silakan ambil foto ulang.
 reasons:
   BLURRY:
     message: Foto buram

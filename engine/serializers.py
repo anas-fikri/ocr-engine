@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from engine.db import Photo, as_aware
-from engine.i18n import localize_reasons, verdict_text
+from engine.i18n import localize_reasons, retake_text, verdict_text
 from engine.storage import Storage
 
 
@@ -14,11 +14,40 @@ def _iso(dt) -> str | None:
     return dt.isoformat() if dt else None
 
 
-def evidence_eligible(p: Photo) -> bool:
-    """Foto boleh tampil di evidence pelanggan: PASS, atau sudah di-approve ops."""
+def review_required_for(tenant_code: str) -> bool:
+    from engine.tenants import TenantNotFound, registry
+
+    try:
+        return registry.get(tenant_code).config.review_required
+    except TenantNotFound:
+        return False
+
+
+def evidence_eligible(p: Photo, review_required: bool | None = None) -> bool:
+    """Foto boleh tampil di evidence pelanggan.
+
+    - review_required = false (bawaan): PASS dan WARN langsung masuk, REJECT tidak.
+    - review_required = true: hanya PASS, atau WARN/REJECT yang sudah di-approve ops.
+    Foto yang ditandai ops "minta foto ulang" atau "kecurangan" tidak pernah masuk.
+    """
     if p.review_status in ("retake_requested", "fraud"):
         return False
-    return p.status == "done" and (p.verdict == "PASS" or p.review_status == "approved")
+    if p.status != "done":
+        return False
+    if p.review_status == "approved" or p.verdict == "PASS":
+        return True
+    if review_required is None:
+        review_required = review_required_for(p.tenant_code)
+    return p.verdict == "WARN" and not review_required
+
+
+def retake_required(p: Photo) -> bool:
+    """Kualitas tidak bisa dimaksimalkan (termasuk setelah perbaikan otomatis): wajib foto ulang."""
+    if p.review_status == "approved":
+        return False
+    if p.review_status == "retake_requested":
+        return True
+    return p.verdict == "REJECT" and p.status in ("done", "error")
 
 
 def photo_to_dict(
@@ -39,6 +68,8 @@ def photo_to_dict(
         "verdict": p.verdict,
         "verdict_text": verdict_text(p.verdict, lang) if p.verdict else None,
         "action": p.action,
+        "retake_required": retake_required(p),
+        "retake_message": retake_text(lang) if retake_required(p) else None,
         "photo_type": p.photo_type,
         "profile": p.profile,
         "awb": p.awb,
@@ -77,6 +108,7 @@ def photo_to_dict(
             "config_version": p.config_version,
             "image": p.image_info or {},
             "compression": p.compression or {},
+            "enhancement": (p.image_info or {}).get("enhancement", {"attempted": False, "applied": False}),
             "exif": p.exif or {},
             "metrics": p.metrics or {},
             "location": {"lat": p.lat, "lng": p.lng} if p.lat is not None else None,

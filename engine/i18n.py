@@ -45,6 +45,10 @@ def verdict_text(verdict: str, lang: str) -> str:
     return _catalog(lang)["verdict"].get(verdict, verdict)
 
 
+def retake_text(lang: str) -> str:
+    return _catalog(lang)["retake"]
+
+
 def all_reason_codes() -> list[str]:
     return sorted(_catalog("id")["reasons"])
 

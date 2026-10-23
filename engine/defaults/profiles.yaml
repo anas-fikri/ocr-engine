@@ -38,6 +38,8 @@ default:
   thumbnail:
     long_side_px: 320
     quality: 70
+  enhance:
+    enabled: true          # koreksi pencahayaan/kontras dengan kurva global (tanpa AI, tanpa penajaman)
 
 pod_recipient:
   thresholds:

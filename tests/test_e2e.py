@@ -147,12 +147,22 @@ def test_api_upload_sync_and_object_reference(client, admin_headers, samples):
     app_h = {"X-API-Key": key}
 
     r = client.post("/v1/analyze", params={"sync": True}, headers=app_h,
-                    files={"file": ("foto.jpg", samples["reject_dark"], "image/jpeg")},
+                    files={"file": ("foto.jpg", samples["reject_blur_severe"], "image/jpeg")},
                     data={"awb": "AWB600", "photo_type": "pod_recipient", "courier_id": "K9"})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["verdict"] == "REJECT" and body["awb"] == "AWB600" and body["reasons"][0]["code"] == "TOO_DARK"
+    assert body["verdict"] == "REJECT" and body["awb"] == "AWB600" and body["reasons"][0]["code"] == "BLURRY"
     assert body["reasons"][0]["suggestion"]
+    assert body["retake_required"] is True and "foto ulang" in body["retake_message"]
+
+    # foto gelap diperbaiki otomatis: tidak perlu foto ulang, versi kompres = hasil perbaikan
+    r = client.post("/v1/analyze", params={"sync": True}, headers=app_h,
+                    files={"file": ("gelap.jpg", samples["reject_dark"], "image/jpeg")}, data={"awb": "AWB601"})
+    dark = r.json()
+    assert dark["verdict"] in ("PASS", "WARN") and dark["retake_required"] is False and dark["retake_message"] is None
+    detail = client.get(f"/v1/photos/{dark['id']}", headers=admin_headers).json()
+    assert detail["enhancement"]["applied"] is True and detail["enhancement"]["before"]["verdict"] == "REJECT"
+    assert detail["urls"]["processed"] != detail["urls"]["original"]
 
     put_photo("pod/pod_document/AWB700_resi.jpg", samples["pass_sharp_large"])
     r = client.post("/v1/analyze?sync=true", headers=app_h,

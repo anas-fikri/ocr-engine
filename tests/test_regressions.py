@@ -34,11 +34,11 @@ def test_extends_in_tenant_default_profile():
 def test_reason_filter_total_matches(client, admin_headers, samples):
     from tests.test_e2e import ingest_and_process, put_photo
 
-    put_photo("pod/pod_recipient/AWB1.jpg", samples["reject_dark"])
+    put_photo("pod/pod_recipient/AWB1.jpg", samples["reject_overexposed"])
     put_photo("pod/pod_recipient/AWB2.jpg", samples["reject_blur_severe"])
     put_photo("pod/pod_recipient/AWB3.jpg", samples["pass_huge_camera"])
     ingest_and_process()
-    r = client.get("/v1/photos", params={"reason": "TOO_DARK", "limit": 1}, headers=admin_headers).json()
+    r = client.get("/v1/photos", params={"reason": "TOO_BRIGHT", "limit": 1}, headers=admin_headers).json()
     assert r["total"] == 1 and r["items"][0]["awb"] == "AWB1"
     assert client.get("/v1/photos", params={"reason": "bukan kode"}, headers=admin_headers).status_code == 422
 
@@ -118,3 +118,22 @@ sources:
     items = client.get("/v1/photos", params={"tenant": "legacy-app", "limit": 200}, headers=admin_headers).json()
     assert items["total"] == 10
     assert {p["awb"] for p in items["items"]} == {f"AWB{i:03d}" for i in range(1, 11)}
+
+
+def test_review_optional_by_default_warn_goes_to_evidence(client, admin_headers, samples):
+    """review_required: false (bawaan) -> foto WARN langsung masuk evidence, REJECT tidak."""
+    from tests.conftest import TENANT_YAML
+    from tests.test_e2e import ingest_and_process, put_photo
+
+    h = {**admin_headers, "Content-Type": "application/x-yaml"}
+    no_review = TENANT_YAML.replace("review_required: true\n", "")
+    assert client.put("/v1/admin/tenants", content=no_review, headers=h).status_code == 200
+    put_photo("pod/pod_recipient/AWB30_a.jpg", samples["warn_blur_mild"])
+    put_photo("pod/pod_recipient/AWB30_b.jpg", samples["reject_blur_severe"])
+    ingest_and_process()
+    ev = client.get("/v1/evidence/AWB30", headers=admin_headers).json()
+    assert ev["count"] == 1
+    listing = client.get("/v1/photos", params={"awb": "AWB30"}, headers=admin_headers).json()["items"]
+    items = {p["verdict"]: p for p in listing}
+    assert items["WARN"]["evidence_eligible"] is True and items["WARN"]["retake_required"] is False
+    assert items["REJECT"]["evidence_eligible"] is False and items["REJECT"]["retake_required"] is True

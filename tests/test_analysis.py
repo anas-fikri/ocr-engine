@@ -15,8 +15,11 @@ from engine.synth import base_scene, to_jpeg
 from engine.tenant_config import build_profile
 
 
-def ctx(profile="pod_recipient", **kw):
-    return AnalysisContext(profile=build_profile(profile), received_at=datetime.now(UTC), **kw)
+def ctx(profile="pod_recipient", enhance=False, **kw):
+    """Default tanpa perbaikan otomatis agar deteksi masalah asli bisa diuji; perbaikan diuji terpisah."""
+    p = build_profile(profile)
+    p = p.model_copy(update={"enhance": p.enhance.model_copy(update={"enabled": enhance})})
+    return AnalysisContext(profile=p, received_at=datetime.now(UTC), **kw)
 
 
 @pytest.mark.parametrize("name", [
@@ -192,3 +195,54 @@ def test_jpeg_with_tiny_pixel_dimensions_rejected():
     tiny = to_jpeg(base_scene(320, 240), 85)
     r = analyze(tiny, ctx(), do_compress=False, do_thumbnail=False)
     assert r.verdict.verdict == "REJECT"
+
+
+# ---------------- perbaikan otomatis (kurva tonal global, tanpa AI) ----------------
+
+@pytest.mark.parametrize("name", ["reject_dark", "reject_low_contrast"])
+def test_enhancement_fixes_lighting(samples, name):
+    r = analyze(samples[name], ctx(enhance=True))
+    assert r.enhancement["applied"] is True
+    assert r.enhancement["verified"] == "global_monotonic_curve"
+    assert r.enhancement["before"]["verdict"] == "REJECT"
+    assert r.verdict.verdict in ("PASS", "WARN") and not r.retake_required
+    # versi kompres dibuat dari hasil perbaikan; hash tetap milik foto original
+    assert r.compression.data is not None and not r.compression.passthrough
+    assert r.image.sha256 == load_image(samples[name]).sha256
+
+
+@pytest.mark.parametrize("name", ["reject_blur_severe", "reject_heavy_jpeg", "reject_tiny", "reject_overexposed"])
+def test_unfixable_photos_require_retake(samples, name):
+    r = analyze(samples[name], ctx(enhance=True))
+    assert r.verdict.verdict == "REJECT"
+    assert r.retake_required is True
+    assert r.to_dict()["retake_required"] is True
+
+
+def test_enhancement_never_changes_sharpness_score(samples):
+    """Koreksi kontras tidak boleh membuat skor ketajaman 'naik palsu'."""
+    dark_blur = samples["warn_blur_mild"]
+    before = analyze(dark_blur, ctx(enhance=False), do_compress=False, do_thumbnail=False)
+    after = analyze(dark_blur, ctx(enhance=True), do_compress=False, do_thumbnail=False)
+    assert after.verdict.scores["sharpness"] == before.verdict.scores["sharpness"]
+
+
+def test_curve_verification_detects_any_content_change(samples):
+    import numpy as np
+    from PIL import ImageDraw
+
+    from engine.imaging.enhance import build_curve, verify_tonal_only
+    from engine.synth import _font
+
+    src = np.asarray(load_image(samples["reject_dark"]).pil).copy()
+    lut, ops = build_curve(src)
+    assert ops
+    out = lut[src]
+    assert verify_tonal_only(src, out)
+    edited = Image.fromarray(out.copy())
+    ImageDraw.Draw(edited).text((900, 1300), "Rp 1.250.000", fill=(250, 250, 250), font=_font(20))
+    assert not verify_tonal_only(src, np.asarray(edited))  # teks ditambahkan -> ditolak
+    one = out.copy()
+    one[100, 100] = 255 - one[100, 100]
+    assert not verify_tonal_only(src, one)  # satu piksel diubah -> ditolak
+    assert not verify_tonal_only(src, out[:, ::-1].copy())  # geometri berubah -> ditolak
