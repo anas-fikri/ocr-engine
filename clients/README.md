@@ -1,6 +1,10 @@
 # Client siap pakai
 
-Satu file per bahasa, tanpa dependency. Salin ke project Anda. Panduan lengkap: [docs/integration-guide.md](../docs/integration-guide.md).
+Satu file per bahasa, tanpa dependency. Salin ke project Anda. Panduan lengkap: [docs/integration-guide.md](../docs/integration-guide.md),
+atau versi interaktif di `<server-engine>/ui/guide.html` (tanpa login).
+
+Field terpenting untuk aplikasi kurir: `retake_required` (`true` = minta kurir foto ulang) dan `retake_message`
+(pesan siap tampil). Keduanya ada di objek foto yang dikembalikan client (`r.photo` di TypeScript, `$r['data']` di PHP).
 
 | Bahasa | File | Runtime minimal (wajib versi yang sudah di-patch) |
 |---|---|---|

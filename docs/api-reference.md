@@ -3,7 +3,8 @@
 Referensi lengkap endpoint Photo Quality Engine. Versi interaktif (bisa langsung dicoba dari browser) ada di
 `<base-url>/docs` (Swagger) dan `<base-url>/redoc`. Skema mesin: `<base-url>/openapi.json`.
 
-Cara memakai API dari aplikasi (alur, contoh kode, fail-open): [integration-guide.md](integration-guide.md).
+Cara memakai API dari aplikasi (alur, contoh kode, fail-open): [integration-guide.md](integration-guide.md), atau
+versi interaktif tanpa login di `<base-url>/ui/guide.html`.
 
 ## Konvensi
 
@@ -29,9 +30,10 @@ Cara memakai API dari aplikasi (alur, contoh kode, fail-open): [integration-guid
 | `GET /v1/photos/{id}/reviews` | ✓ | ✓ | ✓ | | | |
 | `GET /v1/evidence/...`, `POST /v1/evidence/batch` | ✓ | ✓ | | ✓ (tenant sendiri) | ✓ (customer_id sendiri) | |
 | `GET /v1/stats` | ✓ | ✓ | ✓ | ✓ (tenant sendiri) | | |
-| `GET /v1/admin/tenants`, `/tenants/{code}`, `/history`, `/profiles/builtin`, `/jobs`, `/sources` | ✓ | ✓ | ✓ | | | |
-| `PUT/POST /v1/admin/tenants...`, `/api-keys`, `/jobs/.../retry`, `/audit` | ✓ | | | | | |
-| `GET /v1/verify/{sha256}`, `/v1/meta/*`, `/healthz`, `/readyz`, `/metrics` | | | | | | ✓ |
+| `GET /v1/admin/tenants`, `/tenants/{code}`, `/history`, `/profiles/builtin`, `/jobs`, `/webhooks`, `/sources` | ✓ | ✓ | ✓ | | | |
+| `PUT/POST /v1/admin/tenants...`, `/api-keys`, `/jobs/.../retry`, `/webhooks/retry-dead`, `/audit` | ✓ | | | | | |
+| `GET/PUT /v1/admin/settings/storage`, `POST /v1/admin/settings/storage/test` | ✓ | | | | | |
+| `GET /v1/verify/{sha256}`, `/v1/meta/*`, `/healthz`, `/readyz`, `/metrics`, `/ui/guide.html` | | | | | | ✓ |
 | `GET /v1/me` | ✓ | ✓ | ✓ | ✓ | ✓ | |
 | `POST /v1/events/s3` | token `PQE_S3_EVENT_TOKEN` (dipakai SILO) | | | | | |
 
@@ -89,6 +91,8 @@ Menganalisis file **tanpa menyimpan apa pun** (tidak ada di DB maupun SILO). Unt
 ```json
 {
   "verdict": "WARN", "action": "log", "profile": "default", "mode": "shadow",
+  "retake_required": false, "retake_message": null,
+  "enhancement": {"attempted": false, "applied": false},
   "scores": {"sharpness": 29.9, "resolution": 100.0, "exposure": 100.0, "authenticity": 100.0},
   "reasons": [{"code": "BLURRY", "check": "sharpness", "severity": "warn", "score": 29.9, "detail": {},
                "message": "Foto buram", "suggestion": "Pegang HP dengan stabil, ..."}],
@@ -100,6 +104,10 @@ Menganalisis file **tanpa menyimpan apa pun** (tidak ada di DB maupun SILO). Unt
   "timings_ms": {"decode": 32, "sharpness": 29, "resolution": 30, "exposure": 9, "exif": 0, "duplicate": 11, "compress": 0, "total": 160}
 }
 ```
+
+`retake_required`, `retake_message`, dan `enhancement` sama artinya dengan di [objek foto](#objek-foto). Jika
+perbaikan otomatis dipakai, `scores`/`verdict` adalah hasil **setelah** perbaikan, `enhancement.before` berisi hasil
+sebelumnya, dan `timings_ms.enhance` terisi.
 
 ---
 
@@ -116,7 +124,7 @@ Mencari foto. Diurutkan dari yang terbaru diterima.
 | `verdict` | `PASS` / `WARN` / `REJECT` | |
 | `status` | `pending` / `done` / `error` | |
 | `review_status` | `none` / `approved` / `retake_requested` / `fraud` | |
-| `needs_review` | `true` | Hanya WARN/REJECT/error yang belum direview (antrean ops) |
+| `needs_review` | `true` | Hanya WARN/REJECT/error yang belum direview (antrean ops). Tidak bergantung pada `review_required` tenant |
 | `reason` | `BLURRY` | Foto yang punya kode alasan ini |
 | `date_from`, `date_to` | `2026-10-01` | Tanggal diterima (UTC), inklusif |
 | `limit`, `offset` | `50`, `0` | Maks. `limit` 200 |
@@ -125,8 +133,20 @@ Mencari foto. Diurutkan dari yang terbaru diterima.
 
 ### `GET /v1/photos/{id}`
 
-Detail lengkap: [objek foto](#objek-foto) + field detail (`compression`, `exif`, `metrics`, `image`, `location`,
-`input_fields`, `config_version`, `duration_ms`, `phash`, `ingest_source`, `capture_source`).
+Detail lengkap: [objek foto](#objek-foto) + field detail (`enhancement`, `compression`, `exif`, `metrics`, `image`,
+`location`, `input_fields`, `config_version`, `duration_ms`, `phash`, `ingest_source`, `capture_source`).
+
+`enhancement` (perbaikan pencahayaan otomatis, lihat
+[integration-guide.md §7.1](integration-guide.md#71-perbaikan-otomatis-tanpa-ai)):
+
+| Field | Keterangan |
+|---|---|
+| `attempted` | bool. Perbaikan dicoba (ada alasan `TOO_DARK`/`TOO_BRIGHT`/`LOW_CONTRAST`/`GLARE` dan `enhance.enabled`) |
+| `applied` | bool. Hasil perbaikan dipakai untuk verdict dan versi processed |
+| `operations` | contoh `["levels:12-140", "gamma:0.62"]` |
+| `verified` | `global_monotonic_curve` jika lolos verifikasi eksak |
+| `before` | `{verdict, scores, codes}` sebelum perbaikan |
+| `reason` | Jika tidak dipakai: `nothing_to_fix` / `verification_failed` / `no_improvement` |
 
 ### `POST /v1/photos/{id}/review`
 
@@ -134,8 +154,8 @@ Keputusan ops. Body: `{"action": "approve" | "request_retake" | "mark_fraud" | "
 
 | `action` | `review.status` | Efek ke evidence pelanggan |
 |---|---|---|
-| `approve` | `approved` | Foto WARN/REJECT ikut tampil di evidence |
-| `request_retake` | `retake_requested` | Tidak tampil |
+| `approve` | `approved` | Foto WARN/REJECT ikut tampil di evidence, `retake_required` menjadi `false` |
+| `request_retake` | `retake_requested` | Tidak tampil, `retake_required` menjadi `true` |
 | `mark_fraud` | `fraud` | Tidak tampil |
 | `reset` | `none` | Kembali ke aturan verdict (hanya PASS yang tampil) |
 
@@ -161,7 +181,10 @@ Riwayat keputusan review: `[{"action", "note", "actor", "at"}]`.
 | `GET /v1/verify/{sha256}` | - | `{"found": true, "received_at": "...", "awb_suffix": "B123", "message": "..."}` atau `{"found": false}` |
 
 `image_url` adalah presigned URL dengan masa berlaku `ENGINE_PRESIGN_TTL_CUSTOMER` (default 7 hari).
-Hanya foto `PASS` atau yang di-approve ops yang muncul.
+Foto yang muncul = foto dengan `evidence_eligible: true`: dengan `review_required: false` (bawaan tenant) `PASS` dan
+`WARN`; dengan `review_required: true` hanya `PASS` atau yang di-approve ops. `REJECT` hanya muncul jika di-approve ops.
+Gambar yang dipakai adalah versi processed (jika pencahayaan diperbaiki otomatis, versi yang sudah diperbaiki);
+`sha256`/`verify_url` selalu merujuk ke file original.
 
 ---
 
@@ -216,8 +239,13 @@ Semua butuh role `admin`, kecuali endpoint baca yang juga boleh `ops`/`viewer` (
 | `GET /v1/admin/jobs?status=dead` | - | Statistik antrean + daftar job (`queued`/`running`/`done`/`dead`) |
 | `POST /v1/admin/jobs/{id}/retry` | - | Ulangi satu job |
 | `POST /v1/admin/jobs/retry-dead` | - | Ulangi semua job dead |
+| `GET /v1/admin/webhooks?status=dead` | - | Daftar pengiriman webhook (`pending`/`done`/`dead`) beserta `last_error` |
+| `POST /v1/admin/webhooks/retry-dead` | - | Kirim ulang semua webhook dead |
 | `GET /v1/admin/sources` | - | Status source ingest (terakhir jalan, error, checkpoint) |
 | `GET /v1/admin/audit?limit=100` | - | Audit log |
+| `GET /v1/admin/settings/storage` | - | Konfigurasi SILO efektif + asal tiap nilai. Lihat [Pengaturan SILO](#pengaturan-silo) |
+| `PUT /v1/admin/settings/storage` | JSON | Simpan konfigurasi SILO (berlaku tanpa restart, maks. 10 detik) |
+| `POST /v1/admin/settings/storage/test` | JSON | Uji koneksi dengan nilai yang dikirim, tanpa menyimpan |
 
 Contoh mengubah config:
 
@@ -225,6 +253,85 @@ Contoh mengubah config:
 curl -X PUT "$PQE_URL/v1/admin/tenants" -H "X-API-Key: $ADMIN_KEY" \
   -H "Content-Type: application/x-yaml" --data-binary @config/tenants/courier-app.yaml
 ```
+
+### Pengaturan SILO
+
+Penjelasan lengkap (prioritas, enkripsi, jebakan `127.0.0.1`): [configuration.md §1.6](configuration.md#16-pengaturan-silo-lewat-web-ui).
+
+**`GET /v1/admin/settings/storage`**
+
+```json
+{
+  "version": 3,
+  "secret_key_configured": true,
+  "fields": {
+    "endpoint":          {"value": "https://s3.pcpexpress.com", "source": "database"},
+    "public_endpoint":   {"value": null, "source": "default"},
+    "region":            {"value": "us-east-1", "source": "env"},
+    "access_key":        {"value": "pqe…01", "source": "database"},
+    "secret_key":        {"value": {"set": true}, "source": "database"},
+    "addressing_style":  {"value": "path", "source": "database"},
+    "signature_version": {"value": "s3v4", "source": "env"},
+    "app_bucket":        {"value": "ekas-pcptransport", "source": "env"},
+    "processed_bucket":  {"value": "photos-processed", "source": "env"},
+    "thumb_bucket":      {"value": "photos-thumb", "source": "env"},
+    "upload_bucket":     {"value": "photos-upload", "source": "env"}
+  }
+}
+```
+
+`source`: `database` (disimpan lewat halaman/API ini), `env`, atau `default`. Secret key tidak pernah dikembalikan
+(hanya `{"set": true/false}`); access key disamarkan. `secret_key_configured` = `PQE_SECRET_KEY` sudah diisi di server.
+
+**`PUT /v1/admin/settings/storage`** dan **`POST /v1/admin/settings/storage/test`** menerima body yang sama. Semua
+field opsional; field kosong/tidak dikirim = tidak diubah.
+
+```json
+{
+  "endpoint": "https://s3.pcpexpress.com",
+  "public_endpoint": "https://s3.pcpexpress.com",
+  "region": "us-east-1",
+  "access_key": "<access key>",
+  "secret_key": "<secret key>",
+  "addressing_style": "path",
+  "signature_version": "s3v4",
+  "app_bucket": "ekas-pcptransport",
+  "processed_bucket": "photos-processed",
+  "thumb_bucket": "photos-thumb",
+  "upload_bucket": "photos-upload",
+  "mc_config": {"url": "https://s3.pcpexpress.com", "accessKey": "...", "secretKey": "...", "api": "s3v4", "path": "auto"},
+  "clear": ["public_endpoint"]
+}
+```
+
+| Field | Keterangan |
+|---|---|
+| `addressing_style` | `auto` / `path` / `virtual` |
+| `signature_version` | `s3v4` / `s3` |
+| `endpoint`, `public_endpoint` | Wajib diawali `http://` atau `https://` |
+| `mc_config` | JSON format `mc`/MinIO client. Dikonversi ke field di atas (`path` `on`→`path`, `off`/`dns`→`virtual`, lainnya→`auto`; `api` `s3v2`/`s3`→`s3`, lainnya→`s3v4`). Field yang ditulis eksplisit menang atas `mc_config` |
+| `clear` | (PUT saja) daftar field yang dikembalikan ke nilai env |
+
+Respons `PUT`: `{"version": <n>, ...}` + isi yang sama dengan `GET`. Error: `422 INVALID_SETTINGS` (nilai/field tidak
+valid), `409 SECRET_KEY_MISSING` (mengirim `secret_key` tetapi `PQE_SECRET_KEY` belum diisi di server). Tercatat di
+audit log `settings.storage.update` (nama field saja, tanpa nilai rahasia).
+
+Respons `test` (tidak menyimpan apa pun; field kosong memakai nilai efektif saat ini):
+
+```json
+{
+  "ok": false,
+  "endpoint": "http://127.0.0.1:9000",
+  "checks": [
+    {"check": "Baca bucket aplikasi 'ekas-pcptransport'", "ok": false, "detail": "EndpointConnectionError: Could not connect to the endpoint URL: ..."},
+    {"check": "Tulis bucket hasil kompres 'photos-processed'", "ok": false, "detail": "..."},
+    {"check": "Akses bucket thumbnail 'photos-thumb'", "ok": false, "detail": "..."},
+    {"check": "Akses bucket upload 'photos-upload'", "ok": false, "detail": "..."}
+  ]
+}
+```
+
+Arti error yang sering muncul: [troubleshooting.md](troubleshooting.md#pengaturan-silo-test-koneksi-gagal).
 
 ---
 
@@ -249,17 +356,19 @@ curl -X PUT "$PQE_URL/v1/admin/tenants" -H "X-API-Key: $ADMIN_KEY" \
 | `verdict` | `PASS` / `WARN` / `REJECT` / null | null selama `pending` |
 | `verdict_text` | string | Teks verdict sesuai bahasa |
 | `action` | `log` / `notify` / `reject` / null | Saran perilaku aplikasi sesuai mode profile |
+| `retake_required` | bool | `true` = kualitas tidak bisa dimaksimalkan (verdict `REJECT` setelah percobaan perbaikan otomatis, termasuk file rusak), atau ops memilih "minta foto ulang". `false` jika ops meng-*approve*. Tidak bergantung pada mode. Ada juga di webhook |
+| `retake_message` | string / null | Pesan siap tampil untuk kurir (sesuai bahasa) jika `retake_required: true` |
 | `photo_type`, `profile` | string | Jenis foto & profile yang dipakai |
 | `awb`, `courier_id`, `customer_id`, `branch`, `external_id` | string / null | Hasil mapping metadata |
 | `captured_at`, `received_at`, `analyzed_at` | ISO-8601 / null | |
 | `scores` | objek | `sharpness`, `resolution`, `exposure`, `ocr`, `authenticity` (0-100, tinggi = baik) + `authenticity_risk` (0-100, tinggi = mencurigakan). Hanya check yang aktif |
 | `reasons[]` | array | `{code, check, severity, score, detail, message, suggestion}`, urut `reject` → `warn` → `info` |
 | `review` | objek | `{status, by, at, note}` |
-| `evidence_eligible` | bool | Apakah foto tampil di evidence pelanggan |
+| `evidence_eligible` | bool | Apakah foto tampil di evidence pelanggan. Bawaan (`review_required: false`): `PASS`/`WARN` = `true`. Lihat [Evidence](#evidence--verifikasi) |
 | `object` | objek | `{bucket, key}` lokasi foto original |
 | `sha256` | string | Hash file original (untuk verifikasi) |
 | `error` | objek / null | `{code, message}` jika `status = error` |
-| `urls` | objek | Presigned URL `original`, `processed` (kompres), `thumbnail`, `expires_in` (detik). Tidak ada di webhook |
+| `urls` | objek | Presigned URL `original` (tidak pernah diubah), `processed` (kompres; versi yang sudah diperbaiki jika `enhancement.applied`), `thumbnail`, `expires_in` (detik). Tidak ada di webhook |
 | `poll_url` | string | Hanya pada respons `202` |
 
 ---
@@ -294,6 +403,16 @@ curl -X PUT "$PQE_URL/v1/admin/tenants" -H "X-API-Key: $ADMIN_KEY" \
 
 Saran (`suggestion`) untuk setiap kode bisa dilihat lewat `GET /v1/meta/reason-codes`.
 Kode alasan keaslian (`authenticity`) tidak pernah menyebabkan `REJECT` dengan konfigurasi bawaan.
+`TOO_DARK`, `TOO_BRIGHT`, `GLARE`, dan `LOW_CONTRAST` memicu percobaan perbaikan otomatis; jika berhasil, kode itu
+tidak lagi muncul (atau turun severity-nya) dan kode aslinya tercatat di `enhancement.before.codes`.
+
+## Kode error khusus admin
+
+| HTTP | `code` | Endpoint | Penyebab |
+|---|---|---|---|
+| 422 | `INVALID_CONFIG` / `INVALID_YAML` | `/v1/admin/tenants...` | Config tenant tidak valid |
+| 422 | `INVALID_SETTINGS` | `/v1/admin/settings/storage...` | Field tidak dikenal, `addressing_style`/`signature_version` salah, endpoint tanpa `http(s)://` |
+| 409 | `SECRET_KEY_MISSING` | `PUT /v1/admin/settings/storage` | `PQE_SECRET_KEY` belum diisi di server, secret key SILO tidak bisa disimpan terenkripsi |
 
 ## Webhook
 

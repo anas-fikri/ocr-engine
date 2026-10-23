@@ -1,13 +1,15 @@
 # Referensi Konfigurasi
 
-Semua yang bisa diatur di Photo Quality Engine ada di dua tempat:
+Semua yang bisa diatur di Photo Quality Engine ada di tiga tempat:
 
 1. **Environment variable**: koneksi (SILO, database), keamanan, dan perilaku worker. Berlaku untuk seluruh engine, diubah lewat `.env` / K8s ConfigMap+Secret, dan butuh restart.
-2. **Config tenant (YAML)**: aturan per aplikasi, yaitu sumber foto, mapping metadata, profile per jenis foto, threshold, kompresi, webhook, dan retensi. Diubah lewat Web UI atau API **tanpa restart**.
+2. **Pengaturan SILO (Web UI, admin)**: koneksi ke SILO (endpoint, access/secret key, bucket). Menimpa environment variable SILO dan berlaku **tanpa restart**. Lihat [1.6](#16-pengaturan-silo-lewat-web-ui).
+3. **Config tenant (YAML)**: aturan per aplikasi, yaitu sumber foto, mapping metadata, profile per jenis foto, threshold, perbaikan otomatis, kompresi, review, webhook, dan retensi. Diubah lewat Web UI atau API **tanpa restart**.
 
 Daftar isi:
 
 - [1. Environment variable](#1-environment-variable)
+  - [1.6 Pengaturan SILO lewat Web UI](#16-pengaturan-silo-lewat-web-ui)
 - [2. Config tenant (YAML)](#2-config-tenant-yaml)
   - [2.1 Field tingkat atas](#21-field-tingkat-atas)
   - [2.2 sources: dari mana foto diambil](#22-sources-dari-mana-foto-diambil)
@@ -28,21 +30,24 @@ Engine membaca environment variable, plus file `.env` di folder kerja kalau ada.
 
 ### 1.1 SILO / S3
 
-Nama variabel sengaja disamakan dengan aplikasi Laravel yang sudah ada.
+Nama variabel sengaja disamakan dengan aplikasi Laravel yang sudah ada. Semua variabel bertanda ⚙ bisa ditimpa
+admin lewat Web UI → **Pengaturan SILO** tanpa restart (lihat [1.6](#16-pengaturan-silo-lewat-web-ui)).
 
 | Variabel | Default | Arti | Kapan diubah |
 |---|---|---|---|
-| `AWS_ENDPOINT` | `https://s3.pcpexpress.com` | Endpoint S3 yang dipakai engine (dari dalam server/container) | Lokal pakai `http://silo:9000` (compose) atau `http://localhost:9000` |
-| `AWS_PUBLIC_ENDPOINT` | kosong (= `AWS_ENDPOINT`) | Host yang dipakai **browser/pelanggan** untuk membuka foto. Presigned URL ditandatangani dengan host ini | Jika host internal berbeda dengan host yang bisa dibuka browser, contoh compose: internal `http://silo:9000`, publik `http://localhost:9000` |
-| `AWS_DEFAULT_REGION` | `us-east-1` | Wajib ada untuk SDK S3. Tidak berpengaruh di SILO | Hampir tidak pernah |
+| `AWS_ENDPOINT` ⚙ | `https://s3.pcpexpress.com` | Endpoint S3 yang dipakai engine (dari dalam server/container) | Lokal pakai `http://silo:9000` (compose) atau `http://localhost:9000` |
+| `AWS_PUBLIC_ENDPOINT` ⚙ | kosong (= `AWS_ENDPOINT`) | Host yang dipakai **browser/pelanggan** untuk membuka foto. Presigned URL ditandatangani dengan host ini | Jika host internal berbeda dengan host yang bisa dibuka browser, contoh compose: internal `http://silo:9000`, publik `http://localhost:9000` |
+| `AWS_DEFAULT_REGION` ⚙ | `us-east-1` | Wajib ada untuk SDK S3. Tidak berpengaruh di SILO | Hampir tidak pernah |
 | `AWS_USE_PATH_STYLE_ENDPOINT` | `true` | `true` = URL `endpoint/bucket/key` (wajib untuk SILO/MinIO) | Hanya jika pindah ke S3 yang memakai virtual-host |
-| `AWS_ACCESS_KEY_ID` | kosong | Access key **service account engine** | Selalu diisi. Jangan pakai akun admin/root SILO |
-| `AWS_SECRET_ACCESS_KEY` | kosong | Secret key pasangannya | Selalu diisi |
-| `AWS_BUCKET` | `ekas-pcptransport` | Bucket foto original milik aplikasi (engine hanya **membaca**). Dipakai sebagai default jika source/API tidak menyebut bucket | Sesuaikan dengan bucket aplikasi |
+| `AWS_ADDRESSING_STYLE` ⚙ | kosong | `auto` / `path` / `virtual`. Jika diisi, **menimpa** `AWS_USE_PATH_STYLE_ENDPOINT`. Sama dengan `path` di konfigurasi `mc` (`on` = `path`, `off` = `virtual`) | Biasanya dibiarkan kosong |
+| `AWS_SIGNATURE_VERSION` ⚙ | `s3v4` | Versi tanda tangan request: `s3v4` (disarankan) atau `s3` (v2, server lama). Sama dengan `api` di konfigurasi `mc` | Hanya untuk server S3 lama yang belum mendukung v4 |
+| `AWS_ACCESS_KEY_ID` ⚙ | kosong | Access key **service account engine** | Selalu diisi. Jangan pakai akun admin/root SILO |
+| `AWS_SECRET_ACCESS_KEY` ⚙ | kosong | Secret key pasangannya | Selalu diisi |
+| `AWS_BUCKET` ⚙ | `ekas-pcptransport` | Bucket foto original milik aplikasi (engine hanya **membaca**). Dipakai sebagai default jika source/API tidak menyebut bucket | Sesuaikan dengan bucket aplikasi |
 | `AWS_URL` | — | **Tidak dibaca engine.** Ada di `.env.example` hanya agar sama dengan config aplikasi Laravel | — |
-| `ENGINE_BUCKET_PROCESSED` | `photos-processed` | Bucket hasil kompres (milik engine) | Sesuai nama bucket dari tim infra |
-| `ENGINE_BUCKET_THUMB` | `photos-thumb` | Bucket thumbnail (milik engine) | Sesuai nama bucket dari tim infra |
-| `ENGINE_BUCKET_UPLOAD` | `photos-upload` | Bucket untuk foto yang diupload **langsung ke engine** lewat `POST /v1/analyze` (multipart). Bisa ditimpa per tenant dengan `upload_bucket` | Sesuai nama bucket dari tim infra |
+| `ENGINE_BUCKET_PROCESSED` ⚙ | `photos-processed` | Bucket hasil kompres (milik engine) | Sesuai nama bucket dari tim infra |
+| `ENGINE_BUCKET_THUMB` ⚙ | `photos-thumb` | Bucket thumbnail (milik engine) | Sesuai nama bucket dari tim infra |
+| `ENGINE_BUCKET_UPLOAD` ⚙ | `photos-upload` | Bucket untuk foto yang diupload **langsung ke engine** lewat `POST /v1/analyze` (multipart). Bisa ditimpa per tenant dengan `upload_bucket` | Sesuai nama bucket dari tim infra |
 | `ENGINE_CREATE_BUCKETS` | `false` | `true` = saat start, engine membuat bucket processed/thumb/upload **dan** `AWS_BUCKET` jika belum ada | `true` hanya untuk lokal/uji coba. Di produksi bucket dibuat tim infra |
 | `ENGINE_PRESIGN_TTL_UI` | `900` | Masa berlaku link foto (detik) untuk Web UI dan API `/v1/photos` | Perpanjang jika ops sering membuka tab lama |
 | `ENGINE_PRESIGN_TTL_CUSTOMER` | `604800` (7 hari) | Masa berlaku link foto di `/v1/evidence/...` (untuk pelanggan) | Maksimal 7 hari (batas presigned S3 v4) |
@@ -65,6 +70,7 @@ Skema tabel dibuat otomatis saat start (`pqe init` / `pqe run` / `pqe api` / `pq
 | `PQE_DEFAULT_LANG` | `id` | Bahasa pesan API jika request tidak mengirim `Accept-Language` atau `?lang=` | Jarang |
 | `PQE_MAX_UPLOAD_MB` | `25` | Batas ukuran file di `POST /v1/analyze` (multipart). Lebih besar → `413 FILE_TOO_LARGE` | Jika ada kamera yang menghasilkan file sangat besar |
 | `PQE_SYNC_TIMEOUT_MS` | `3000` | Batas tunggu default `?sync=true`. Lewat batas → respons `202` (fail-open), hasil menyusul | Turunkan jika aplikasi butuh respons lebih cepat |
+| `PQE_SECRET_KEY` | kosong | Kunci untuk mengenkripsi rahasia yang disimpan di database lewat Web UI (secret key SILO di halaman **Pengaturan SILO**). Isi dengan nilai acak panjang, contoh `openssl rand -hex 32` | **Selalu isi di produksi** dan simpan di K8s Secret. Jika kosong, secret key SILO tidak bisa disimpan lewat Web UI (`409 SECRET_KEY_MISSING`). Jika **diganti**, secret yang sudah tersimpan tidak bisa dibaca lagi dan harus diisi ulang di Pengaturan SILO |
 | `PQE_CORS_ORIGINS` | kosong | Origin web (dipisah koma) yang boleh memanggil API langsung dari browser. Kosong = CORS mati | Isi hanya jika aplikasi web memanggil engine dari browser |
 
 ### 1.4 Worker & ingestor
@@ -90,6 +96,68 @@ Variabel ini hanya dibaca `docker-compose.yml`, tidak oleh engine:
 | `SILO_ROOT_USER` / `SILO_ROOT_PASSWORD` | `siloadmin` / `siloadmin-local-only` | Akun root SILO lokal. Di compose lokal juga dipakai sebagai `AWS_ACCESS_KEY_ID/SECRET` engine |
 | `POSTGRES_PASSWORD` | `pqe-local-only` | Password Postgres lokal |
 
+Compose lokal juga mengisi `PQE_SECRET_KEY` dengan nilai contoh `local-secret-key-change-me` agar halaman Pengaturan
+SILO langsung bisa dicoba. **Jangan** pakai nilai itu di server.
+
+### 1.6 Pengaturan SILO lewat Web UI
+
+Admin bisa mengatur koneksi SILO dari Web UI → **Pengaturan SILO** (atau API `GET/PUT /v1/admin/settings/storage`,
+lihat [api-reference.md](api-reference.md#pengaturan-silo)), tanpa mengedit `.env` dan tanpa restart.
+
+**Urutan prioritas per field:** nilai yang disimpan di halaman ini (database) > environment variable > bawaan.
+Field yang tidak diisi di halaman ini tetap memakai env. Setiap field menampilkan asalnya ("dari halaman ini",
+"dari env server", "bawaan"), dan field dari database punya link **kembalikan ke env**.
+
+| Field di halaman / API | Menimpa env |
+|---|---|
+| Endpoint (`endpoint`) | `AWS_ENDPOINT` |
+| Endpoint publik (`public_endpoint`) | `AWS_PUBLIC_ENDPOINT` |
+| Region (`region`) | `AWS_DEFAULT_REGION` |
+| Access key (`access_key`) | `AWS_ACCESS_KEY_ID` |
+| Secret key (`secret_key`) | `AWS_SECRET_ACCESS_KEY` |
+| Gaya alamat (`addressing_style`) | `AWS_ADDRESSING_STYLE` |
+| Signature (`signature_version`) | `AWS_SIGNATURE_VERSION` |
+| Bucket foto aplikasi (`app_bucket`) | `AWS_BUCKET` |
+| Bucket hasil kompres / thumbnail / upload (`processed_bucket`, `thumb_bucket`, `upload_bucket`) | `ENGINE_BUCKET_PROCESSED` / `ENGINE_BUCKET_THUMB` / `ENGINE_BUCKET_UPLOAD` |
+
+**Impor dari konfigurasi `mc` / MinIO client.** Tempel JSON seperti di bawah ke kotak "Impor dari konfigurasi mc",
+klik **Isi form dari JSON**, lalu **Test koneksi** dan **Simpan**:
+
+```json
+{"url": "https://s3.pcpexpress.com", "accessKey": "<access key>", "secretKey": "<secret key>", "api": "s3v4", "path": "auto"}
+```
+
+| Kunci JSON `mc` | Menjadi | Konversi |
+|---|---|---|
+| `url` | Endpoint | Garis miring di akhir dibuang |
+| `accessKey` / `secretKey` | Access key / Secret key | Apa adanya |
+| `api` | Signature | `s3v2` / `s3` → `s3`; selain itu → `s3v4` |
+| `path` | Gaya alamat | `on` → `path`; `off` / `dns` → `virtual`; selain itu (`auto`) → `auto` |
+
+> **Awas `127.0.0.1` / `localhost`.** Endpoint dipakai oleh **server engine**, bukan browser Anda. Di dalam Docker
+> atau Kubernetes, `127.0.0.1` berarti container engine itu sendiri, sehingga koneksi gagal (`EndpointConnectionError`).
+> Ganti dengan nama service (compose lokal: `http://silo:9000`) atau host/IP server SILO (`https://s3.pcpexpress.com`).
+> Halaman ini memberi peringatan jika JSON yang ditempel memakai `127.0.0.1`/`localhost`. Jika browser juga perlu
+> host lain untuk membuka foto, isi **Endpoint publik**.
+
+**Test koneksi** memakai nilai di form (sebelum disimpan; field kosong memakai nilai efektif saat ini) dan menjalankan
+empat cek: (1) list bucket foto aplikasi, (2) tulis lalu hapus objek uji `_pqe_connection_test/...` di bucket hasil
+kompres, (3) akses bucket thumbnail, (4) akses bucket upload. Setiap cek menampilkan ✅/❌ beserta pesan error asli
+dari SILO (lihat [troubleshooting](troubleshooting.md#pengaturan-silo-test-koneksi-gagal)).
+
+Aturan penyimpanan:
+
+- Field yang dikosongkan di form **tidak diubah**. Untuk kembali ke env, pakai link **kembalikan ke env**
+  (API: `{"clear": ["endpoint"]}`).
+- **Secret key disimpan terenkripsi** dengan `PQE_SECRET_KEY` dan tidak pernah ditampilkan lagi (hanya status
+  "tersimpan"). Access key ditampilkan tersamar. Tanpa `PQE_SECRET_KEY`, field lain tetap bisa disimpan tetapi secret
+  key tidak (`409 SECRET_KEY_MISSING`); isi `PQE_SECRET_KEY` lalu restart, atau isi `AWS_SECRET_ACCESS_KEY` lewat env.
+- Perubahan berlaku di **semua proses** (API, worker, ingestor) **paling lambat 10 detik**, tanpa restart.
+- Setiap simpan menaikkan versi dan tercatat di audit log (`settings.storage.update`, berisi nama field yang diubah,
+  **tanpa** nilai rahasia).
+- Tetap pakai **service account khusus engine** dengan permission minimal (halaman ini menampilkan contoh policy-nya),
+  bukan akun admin/root SILO. Lihat [operations.md](operations.md).
+
 ---
 
 ## 2. Config tenant (YAML)
@@ -110,6 +178,7 @@ Field yang tidak dikenal akan **ditolak** saat validasi, supaya salah ketik lang
 | `store_mode` | | `processed` | `processed` = simpan versi kompres + thumbnail ke SILO. `none` = hanya analisis (tanpa kompres & thumbnail; Web UI tidak menampilkan pratinjau, hanya link original) |
 | `upload_bucket` | | `ENGINE_BUCKET_UPLOAD` | Bucket tujuan file yang diupload langsung ke `POST /v1/analyze` (multipart) |
 | `default_profile` | | `default` | Profile yang dipakai jika `photo_type` foto kosong atau tidak dikenal |
+| `review_required` | | `false` | Apakah foto `WARN` harus di-*approve* ops dulu sebelum masuk evidence pelanggan. `false` = `PASS` dan `WARN` langsung masuk evidence, review ops **opsional** (antrean Review tetap bisa dipakai untuk memantau). `true` = hanya `PASS` atau foto yang di-*approve* ops. `REJECT` tidak pernah masuk tanpa approve. Lihat [bagian 5](#5-mode-verdict-dan-action) |
 | `sources` | | `[]` | Dari mana foto diambil. Kosong = tenant hanya menerima foto lewat API |
 | `mapping` | | `{}` | Aturan membaca metadata. Lihat [2.3](#23-mapping-membaca-resi-kurir-jenis-foto) |
 | `sinks` | | `[]` | Webhook ke aplikasi. Lihat [2.4](#24-sinks-webhook-ke-aplikasi) |
@@ -364,6 +433,7 @@ Cek hasil akhir: Web UI → Tenant → Ubah → **Validasi** → "Profile hasil 
 | `checks` | `[sharpness, resolution, exposure, exif, duplicate]` | Pemeriksaan yang dijalankan. Pilihan: `sharpness`, `resolution`, `exposure`, `exif`, `duplicate`, `ocr`. `pod_document` menambah `ocr` |
 | `thresholds` | lihat tabel di bawah | Batas skor per pemeriksaan |
 | `params` | lihat [bagian 3](#3-cara-skor-dihitung) | Parameter perhitungan |
+| `enhance` | `{enabled: true}` | Perbaikan pencahayaan otomatis tanpa AI. Lihat [di bawah](#perbaikan-pencahayaan-otomatis-enhance) |
 | `compression` | lihat [bagian 4](#4-kompresi--thumbnail) | Kompresi |
 | `thumbnail` | `{long_side_px: 320, quality: 70}` | Thumbnail |
 
@@ -392,6 +462,37 @@ Nilai bawaan:
 (format `reject / warn`)
 
 **authenticity** (keaslian) defaultnya hanya bisa WARN (`reject: null`). Temuan keaslian adalah indikasi untuk ditinjau manusia, bukan bukti.
+
+#### Perbaikan pencahayaan otomatis (enhance)
+
+```yaml
+profiles:
+  default:
+    enhance:
+      enabled: true     # bawaan. false = foto dinilai apa adanya, tanpa percobaan perbaikan
+```
+
+Jika ada alasan `TOO_DARK`, `TOO_BRIGHT`, `LOW_CONTRAST`, atau `GLARE` (severity `warn`/`reject`), engine mencoba
+memperbaiki pencahayaan **sebelum** verdict final diputuskan:
+
+1. Susun **satu** kurva pencahayaan (LUT 256 nilai) dari statistik foto: *levels* (rentang persentil 0,5-99,5
+   direntangkan ke 0-255 jika rentangnya < 200) lalu *gamma* (jika median kecerahan < 90 atau > 170, digeser ke ±120;
+   gamma dibatasi 0,3-3,0). Kurva dipaksa monoton naik.
+2. Terapkan kurva yang sama ke **seluruh piksel dan ketiga kanal warna**. Tidak ada penajaman, resize, crop, rotasi,
+   AI, atau label/watermark.
+3. **Verifikasi eksak:** setiap nilai masukan pada setiap kanal harus menghasilkan tepat satu nilai keluaran dan
+   urutannya tidak terbalik. Gagal satu saja = hasil dibuang (`reason: verification_failed`).
+4. Nilai ulang **hanya** `exposure` dan `ocr` pada hasil perbaikan. Skor `sharpness`, `resolution`, `authenticity`
+   tetap dari foto asli.
+5. Hasil dipakai hanya jika verdict **membaik** (`REJECT` → `WARN`/`PASS`, atau `WARN` → `PASS`); jika tidak,
+   `reason: no_improvement`. Jika dipakai, versi processed dan thumbnail dibuat dari hasil perbaikan (JPEG
+   quality 95 sebelum kompresi, selalu disimpan sebagai file baru meskipun kecil).
+
+Karena kurva memberi nilai yang sama untuk nilai piksel yang sama di mana pun posisinya, perbaikan ini **tidak bisa
+menambah atau mengubah huruf/angka**. Foto original dan `sha256` tidak pernah berubah. Detail hasil tersimpan di
+field `enhancement` foto (lihat [integration-guide.md §7.1](integration-guide.md#71-perbaikan-otomatis-tanpa-ai)).
+
+Foto yang tetap `REJECT` setelah percobaan ini (buram berat, pecah, terlalu kecil) mendapat `retake_required: true`.
 
 ---
 
@@ -524,6 +625,14 @@ Lokasi file (jika `store_mode: processed`): `<ENGINE_BUCKET_PROCESSED>/<tenant>/
 
 Alur yang disarankan: semua tenant mulai di `shadow` (1-2 minggu, kalibrasi), lalu `warn`, lalu `enforce` setelah disetujui ops & finance. Mode bisa berbeda per profile (contoh `pod_document: enforce`, `location: warn`).
 
+Verdict dihitung **setelah** percobaan perbaikan otomatis (lihat [enhance](#perbaikan-pencahayaan-otomatis-enhance)).
+Selain `action`, setiap foto punya dua field turunan:
+
+| Field | Aturan |
+|---|---|
+| `retake_required` | `true` jika verdict `REJECT` (kualitas tidak bisa dimaksimalkan), atau ops memilih "minta foto ulang". `false` jika ops meng-*approve*. Disertai `retake_message` (ID/EN) untuk kurir. Tidak bergantung pada `mode` |
+| `evidence_eligible` | `review_required: false` (bawaan): `PASS` dan `WARN` = `true`, `REJECT` = `false` (kecuali di-*approve* ops). `review_required: true`: hanya `PASS` atau yang di-*approve* ops. Foto "minta foto ulang"/"kecurangan" atau yang gagal diproses selalu `false` |
+
 ---
 
 <a id="kalibrasi-threshold"></a>
@@ -579,7 +688,7 @@ Alur yang disarankan: semua tenant mulai di `shadow` (1-2 minggu, kalibrasi), la
   - `PUT /v1/admin/tenants` dengan body YAML (`Content-Type: application/x-yaml`), atau
   - edit file YAML lalu `pqe import-tenants --force` (menimpa dari file).
 - Setiap simpan yang mengubah isi menaikkan **versi** (`v1`, `v2`, ...). Riwayat lengkap tersimpan (Web UI → Riwayat versi, atau `GET /v1/admin/tenants/<code>/history`) dan tercatat di audit log.
-- Engine membaca ulang config dari DB **paling lambat 5 detik**, tanpa restart, di semua proses (API, worker, ingestor).
+- Engine membaca ulang config dari DB **paling lambat 5 detik**, tanpa restart, di semua proses (API, worker, ingestor). (Pengaturan SILO: paling lambat 10 detik.)
 - Config yang tidak valid **tidak bisa disimpan**. Pesan errornya menyebut field yang salah.
 - Perubahan berlaku untuk foto yang dianalisis **setelahnya**. Setiap foto menyimpan `config_version` (versi config tenant saat dianalisis), jadi hasil lama tetap bisa dijelaskan. Gunakan **Analisis ulang** untuk menerapkan aturan baru ke foto lama.
 - Validasi file tanpa menyimpan: `pqe validate-tenant config/tenants/*.yaml`.

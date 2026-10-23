@@ -4,6 +4,10 @@ Dokumen ini untuk **programmer aplikasi** (Android, iOS, Flutter, web, backend L
 menghubungkan aplikasinya ke Photo Quality Engine. Ikuti dari atas ke bawah. Semua contoh kode bisa langsung disalin.
 
 > Butuh gambaran sistemnya dulu? Baca [README](../README.md). Ingin mencoba engine di PC? Baca [getting-started.md](getting-started.md).
+>
+> **Versi ringkas di browser:** buka `https://<server-engine>/ui/guide.html` (tanpa login). Isinya sama dengan
+> dokumen ini dalam bentuk interaktif: contoh kode curl/PHP/TypeScript/Python/Kotlin dengan URL server yang sudah
+> terisi otomatis dan tombol salin. Link-nya juga ada di menu Web UI (**Panduan Integrasi ↗**) dan di halaman login.
 
 ## Daftar isi
 
@@ -13,7 +17,7 @@ menghubungkan aplikasinya ke Photo Quality Engine. Ikuti dari atas ke bawah. Sem
 4. [Level 0: tanpa mengubah aplikasi](#4-level-0-tanpa-mengubah-aplikasi)
 5. [Level 1: tambahkan metadata saat upload ke SILO](#5-level-1-tambahkan-metadata-saat-upload-ke-silo)
 6. [Level 2: panggil API engine](#6-level-2-panggil-api-engine)
-7. [Menampilkan hasil ke kurir](#7-menampilkan-hasil-ke-kurir)
+7. [Menampilkan hasil ke kurir](#7-menampilkan-hasil-ke-kurir) (termasuk `retake_required` dan perbaikan otomatis)
 8. [Menerima webhook](#8-menerima-webhook)
 9. [Evidence untuk pelanggan (penagihan)](#9-evidence-untuk-pelanggan-penagihan)
 10. [Kode error](#10-kode-error)
@@ -313,6 +317,8 @@ curl -s -H "X-API-Key: $PQE_API_KEY" "$PQE_URL/v1/photos/<id>"
   "verdict": "REJECT",
   "verdict_text": "Foto tidak layak",
   "action": "notify",
+  "retake_required": true,
+  "retake_message": "Kualitas foto tidak memenuhi syarat dan tidak bisa diperbaiki otomatis. Silakan ambil foto ulang.",
   "photo_type": "pod_recipient",
   "profile": "pod_recipient",
   "awb": "AWB123",
@@ -357,9 +363,16 @@ Arti field penting:
 | `status` | `pending` / `done` / `error` | `error` = file rusak atau gagal diproses (lihat `error.code`) |
 | `verdict` | `PASS` / `WARN` / `REJECT` | Penilaian kualitas |
 | `action` | `log` / `notify` / `reject` | **Yang sebaiknya dilakukan aplikasi**, sudah memperhitungkan mode tenant |
+| `retake_required` | `true` / `false` | `true` = kualitas tidak bisa dimaksimalkan (sudah dicoba diperbaiki otomatis tapi tetap `REJECT`, atau ops meminta foto ulang): **foto harus diambil ulang**. Lihat [§7](#7-menampilkan-hasil-ke-kurir) |
+| `retake_message` | teks / `null` | Pesan siap tampil untuk kurir (ID/EN sesuai `Accept-Language`). Hanya terisi jika `retake_required: true` |
+| `evidence_eligible` | `true` / `false` | Apakah foto ini tampil di evidence pelanggan (lihat [§9](#9-evidence-untuk-pelanggan-penagihan)) |
 | `reasons[].severity` | `reject` / `warn` / `info` | `info` hanya informasi, jangan ditampilkan sebagai kesalahan |
 | `scores` | 0-100 | Makin tinggi makin baik. `authenticity_risk` makin tinggi makin mencurigakan |
-| `urls.processed` | URL sementara | Versi terkompres (<1 MB). Berlaku `expires_in` detik |
+| `urls.processed` | URL sementara | Versi terkompres (<1 MB). Jika pencahayaan diperbaiki otomatis, ini versi yang sudah diperbaiki. Berlaku `expires_in` detik |
+| `urls.original` | URL sementara | File asli dari kamera, **tidak pernah diubah**. `sha256` selalu merujuk ke file ini |
+
+Detail foto (`GET /v1/photos/{id}`) dan endpoint uji `POST /v1/analyze/preview` juga berisi objek `enhancement`
+(apakah perbaikan otomatis dicoba/dipakai). Penjelasannya di [§7.1](#71-perbaikan-otomatis-tanpa-ai).
 
 ### 6.4 Laravel (backend) dengan fail-open
 
@@ -382,6 +395,8 @@ if ($r['ok'] && ($r['data']['status'] ?? null) === 'done') {
     $quality = [
         'verdict' => $r['data']['verdict'],
         'action'  => $r['data']['action'],
+        'retake_required' => $r['data']['retake_required'],   // true = minta kurir foto ulang
+        'retake_message'  => $r['data']['retake_message'],
         'reasons' => array_values(array_filter($r['data']['reasons'], fn ($x) => $x['severity'] !== 'info')),
     ];
 }
@@ -417,7 +432,7 @@ const pqe = new PhotoQualityClient({ baseUrl: process.env.PQE_URL!, apiKey: proc
 
 const r = await pqe.analyzeObject(objectKey, { awb, photo_type: "pod_recipient", courier_id: courierId }, { sync: true, timeoutMs: 3000 });
 if (r.ok && r.photo.status === "done") {
-  // r.photo.verdict, r.photo.action, r.photo.reasons
+  // r.photo.retake_required (true = minta foto ulang), r.photo.retake_message, r.photo.action, r.photo.reasons
 } else {
   // r.unavailable === true -> engine lambat/mati. Lanjutkan proses seperti biasa.
 }
@@ -465,22 +480,30 @@ curl -s -H "X-API-Key: $PQE_API_KEY" "$PQE_URL/v1/photos?external_id=foto-998877
 
 ## 7. Menampilkan hasil ke kurir
 
-Gunakan `action` (bukan `verdict`) untuk menentukan perilaku aplikasi. `action` sudah memperhitungkan mode
-yang diatur admin (`shadow` → `warn` → `enforce`), jadi aplikasi tidak perlu diubah saat mode dinaikkan.
+Dua field menentukan apa yang ditampilkan:
 
-| `action` | Perilaku aplikasi yang disarankan |
+- **`retake_required`** menjawab *"apakah foto ini harus diambil ulang?"*. Engine selalu mencoba memperbaiki
+  pencahayaan dulu (lihat [§7.1](#71-perbaikan-otomatis-tanpa-ai)). Jika hasilnya tetap `REJECT` (buram berat,
+  pecah, terlalu kecil, putih/hitam total), `retake_required` = `true` dan `retake_message` berisi pesan siap tampil.
+  Foto `WARN` (kurang ideal tapi masih terbaca) **tidak** perlu diulang.
+- **`action`** menjawab *"seberapa tegas aplikasi boleh bertindak saat ini?"*. Nilainya sudah memperhitungkan mode
+  yang diatur admin (`shadow` → `warn` → `enforce`), jadi aplikasi tidak perlu diubah saat mode dinaikkan.
+
+| Kondisi | Perilaku aplikasi yang disarankan |
 |---|---|
-| `log` | Tidak menampilkan apa-apa |
-| `notify` | Tampilkan peringatan + saran, beri pilihan **"Foto ulang"** atau **"Tetap kirim"** |
-| `reject` | Tampilkan alasan + saran, minta foto ulang. Sediakan jalur darurat (misal "Lapor ke SPV") agar kurir tidak terjebak |
+| `retake_required: true` dan `action: reject` | Tampilkan `retake_message` + `suggestion` alasan pertama, minta foto ulang. Sediakan jalur darurat (misal "Lapor ke SPV") agar kurir tidak terjebak |
+| `retake_required: true` dan `action: notify` | Tampilkan `retake_message` + saran, beri pilihan **"Foto ulang"** atau **"Tetap kirim"** |
+| `action: notify` (verdict `WARN`) | Opsional: tampilkan saran ringan. Foto tetap diterima dan masuk evidence (bawaan) |
+| `action: log` (mode `shadow`, atau verdict `PASS`) | Tidak menampilkan apa-apa |
 | *(tidak ada hasil / engine tidak tersedia)* | Lanjutkan seperti biasa, jangan tampilkan apa-apa |
 
-Contoh teks (pakai `message` dan `suggestion` dari respons, bahasa mengikuti `Accept-Language`):
+Contoh teks (pakai `retake_message`, lalu `message` dan `suggestion` dari alasan; bahasa mengikuti `Accept-Language`):
 
 ```
 ⚠ Foto buram
-Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.
-[ Foto ulang ]   [ Tetap kirim ]
+Kualitas foto tidak memenuhi syarat dan tidak bisa diperbaiki otomatis. Silakan ambil foto ulang.
+Saran: Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.
+[ Foto ulang ]   [ Tetap kirim ]      <- "Tetap kirim" hanya jika action = notify
 ```
 
 Flutter (contoh widget):
@@ -490,8 +513,9 @@ Widget qualityBanner(Map<String, dynamic>? q) {
   if (q == null || q['action'] == 'log') return const SizedBox.shrink();
   final reasons = (q['reasons'] as List).where((r) => r['severity'] != 'info').toList();
   return Card(
-    color: q['action'] == 'reject' ? Colors.red.shade50 : Colors.orange.shade50,
+    color: q['retake_required'] == true ? Colors.red.shade50 : Colors.orange.shade50,
     child: Column(children: [
+      if (q['retake_required'] == true) ListTile(title: Text(q['retake_message'])),
       for (final r in reasons)
         ListTile(title: Text(r['message']), subtitle: Text(r['suggestion'])),
     ]),
@@ -500,6 +524,56 @@ Widget qualityBanner(Map<String, dynamic>? q) {
 ```
 
 Daftar semua kode alasan dan pesannya: `GET /v1/meta/reason-codes?lang=id` atau [api-reference.md](api-reference.md#kode-alasan).
+
+### 7.1 Perbaikan otomatis (tanpa AI)
+
+Foto yang **gelap, terlalu terang, pudar, atau silau** (kode `TOO_DARK`, `TOO_BRIGHT`, `LOW_CONTRAST`, `GLARE`)
+diperbaiki otomatis sebelum diputuskan. Aplikasi **tidak perlu melakukan apa-apa**: versi yang sudah diperbaiki
+ada di `urls.processed`, dan verdict/`retake_required` sudah dihitung dari hasil perbaikan.
+
+Metodenya sengaja dibuat aman untuk dokumen bukti penagihan:
+
+- **Tanpa AI / model generatif.** Tidak ada piksel yang "dikarang".
+- **Satu-satunya operasi** adalah satu tabel kurva pencahayaan (levels + gamma, seperti fitur *Levels/Curves* di
+  aplikasi foto) yang sama untuk **seluruh piksel dan ketiga kanal warna**. Nilai baru tiap piksel hanya bergantung
+  pada nilai piksel itu sendiri, bukan posisi atau tetangganya. Kurvanya selalu naik (monoton).
+- **Kenapa mustahil menambah/mengubah teks atau angka:** untuk menggambar huruf baru, piksel yang nilainya sama harus
+  diberi nilai berbeda di tempat yang berbeda. Kurva selalu memberi nilai yang sama untuk nilai yang sama, dan
+  karena naik terus, urutan terang-gelap (bentuk tulisan) tidak pernah terbalik.
+- **Verifikasi eksak setiap foto:** setelah koreksi, engine memeriksa bahwa setiap nilai masukan pada setiap kanal
+  menghasilkan tepat satu nilai keluaran dan urutannya tidak terbalik. Satu pelanggaran saja = hasil dibuang dan
+  foto dinilai apa adanya.
+- **Tanpa penajaman, tanpa resize/crop/rotasi** pada langkah perbaikan, dan **tanpa label/watermark** di foto hasil.
+- **Original tidak disentuh.** File asli tetap di SILO dan `sha256`/kode verifikasi selalu merujuk ke original.
+- Setelah perbaikan, hanya skor `exposure` dan `ocr` yang dihitung ulang. Skor ketajaman dan resolusi tetap dari
+  foto asli, jadi foto buram/pecah tidak bisa "lolos" karena perbaikan.
+- Hasil perbaikan hanya dipakai jika verdict **membaik** (misal `REJECT` → `WARN`/`PASS`).
+
+Foto **buram berat, pecah, atau terlalu kecil** tidak bisa diperbaiki secara jujur, sehingga engine langsung
+mengembalikan `retake_required: true`.
+
+Objek `enhancement` di detail foto (`GET /v1/photos/{id}`) dan di `POST /v1/analyze/preview`:
+
+```json
+"enhancement": {
+  "attempted": true,
+  "applied": true,
+  "operations": ["levels:12-140", "gamma:0.62"],
+  "verified": "global_monotonic_curve",
+  "before": { "verdict": "REJECT", "scores": { "exposure": 0.0 }, "codes": ["TOO_DARK"] }
+}
+```
+
+| Field | Arti |
+|---|---|
+| `attempted` | Perbaikan dicoba (hanya jika ada alasan `TOO_DARK`/`TOO_BRIGHT`/`LOW_CONTRAST`/`GLARE` dan profile mengizinkan) |
+| `applied` | Hasil perbaikan dipakai untuk versi processed dan verdict |
+| `operations` | Kurva yang dipakai: `levels:<min>-<max>` dan/atau `gamma:<nilai>` |
+| `before` | Verdict, skor, dan kode alasan **sebelum** perbaikan |
+| `reason` | Jika tidak dipakai: `nothing_to_fix` (kurva tidak perlu), `verification_failed` (verifikasi gagal, dibuang), `no_improvement` (verdict tidak membaik) |
+
+Admin bisa mematikan perbaikan per profile (`enhance.enabled: false`, lihat
+[configuration.md](configuration.md#25-profiles-aturan-per-jenis-foto)).
 
 ---
 
@@ -525,7 +599,7 @@ X-PQE-Delivery: 1234
 X-PQE-Timestamp: 1761151010
 X-PQE-Signature: sha256=5f2c...
 
-{"event":"analysis.completed","photo":{ ...objek foto, sama dengan respons API tanpa field urls... }}
+{"event":"analysis.completed","photo":{ ...objek foto, sama dengan respons API tanpa field urls (termasuk retake_required & retake_message)... }}
 ```
 
 | Event | Kapan |
@@ -587,8 +661,16 @@ def verify(secret: str, ts: str, raw_body: bytes, signature: str) -> bool:
 
 ## 9. Evidence untuk pelanggan (penagihan)
 
-Evidence hanya berisi foto yang **layak**: verdict `PASS`, atau `WARN`/`REJECT` yang sudah di-*approve* ops.
-Skor internal dan risiko keaslian **tidak** ikut ditampilkan ke pelanggan.
+Evidence hanya berisi foto yang **layak**. Aturannya tergantung setelan tenant `review_required`
+(lihat [configuration.md](configuration.md#21-field-tingkat-atas)):
+
+| `review_required` | Yang masuk evidence |
+|---|---|
+| `false` (**bawaan**) | `PASS` dan `WARN` langsung masuk tanpa menunggu ops. `REJECT` tidak pernah masuk kecuali di-*approve* ops |
+| `true` | Hanya `PASS`, atau `WARN`/`REJECT` yang sudah di-*approve* ops |
+
+Foto yang ditandai ops "minta foto ulang" atau "kecurangan" tidak pernah masuk. Field `evidence_eligible` di objek
+foto menunjukkan hasilnya. Skor internal dan risiko keaslian **tidak** ikut ditampilkan ke pelanggan.
 
 | Endpoint | Hasil |
 |---|---|
@@ -647,7 +729,8 @@ Untuk foto yang gagal diproses setelah diterima, `status` = `error` dan `error.c
 - [ ] API key hanya ada di server (env), tidak di aplikasi mobile/browser, tidak di git
 - [ ] Foto dikirim asli dari kamera (tanpa `imageQuality`/`maxWidth` kecil)
 - [ ] Metadata `awb`, `photo-type`, `courier-id`, `customer-id` terkirim (cek di Web UI → detail foto)
-- [ ] Teks ke kurir memakai `message`/`suggestion`, logika memakai `code`/`action`
+- [ ] Teks ke kurir memakai `retake_message`/`message`/`suggestion`, logika memakai `retake_required`/`code`/`action`
+- [ ] `retake_required: true` ditangani di aplikasi kurir (pesan + tombol **Foto ulang**, dengan jalur darurat)
 - [ ] Webhook (jika dipakai): tanda tangan diverifikasi, balas 2xx cepat, idempotent
 - [ ] Runtime Node/PHP sudah versi patch 21 Okt 2026 (lihat [clients/README.md](../clients/README.md))
 - [ ] Tenant berjalan di mode `shadow` minimal 1-2 minggu sebelum `warn`/`enforce`
@@ -672,6 +755,15 @@ Tidak. Engine idempotent per objek (bucket + key). Panggilan API mengembalikan h
 Engine mendeteksi perubahan ETag dan menganalisis ulang.
 
 **HEIC dari iPhone didukung?** Ya. JPEG, PNG, HEIC/HEIF, dan WebP didukung. Hasil kompres berupa JPEG.
+
+**Apakah foto yang diperbaiki otomatis masih sah sebagai bukti?**
+Ya. Perbaikan hanya mengubah pencahayaan dengan satu kurva global yang diverifikasi eksak, tanpa AI, sehingga tidak
+mungkin menambah/mengubah teks atau angka (lihat [§7.1](#71-perbaikan-otomatis-tanpa-ai)). File original tetap
+tersimpan utuh di SILO dan kode verifikasi (SHA-256) di PDF evidence merujuk ke original.
+
+**Foto `WARN` perlu menunggu persetujuan ops?**
+Tidak, dengan setelan bawaan (`review_required: false`) foto `WARN` langsung masuk evidence. Hanya tenant yang
+menyalakan `review_required: true` yang menunggu ops.
 
 **Kenapa ada `EXIF_MISSING` di hampir semua foto?**
 Banyak aplikasi/platform menghapus EXIF. Ini hanya `info` dan tidak memengaruhi verdict.

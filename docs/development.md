@@ -28,16 +28,17 @@ ocr-engine/
 │   │   └── __init__.py         # REGISTRY analyzer
 │   ├── imaging/
 │   │   ├── loader.py           # decode sekali (EXIF orientation, HEIC, grayscale cache)
+│   │   ├── enhance.py          # perbaikan pencahayaan aman: kurva global monoton + verifikasi eksak (tanpa AI)
 │   │   └── compressor.py       # kompresi dinamis + SSIM guard + thumbnail
 │   ├── api/
 │   │   ├── app.py              # FastAPI: router, error handler, /healthz /readyz /metrics, mount /ui
 │   │   ├── routes.py           # /v1: analyze, photos, review, evidence, verify, events, stats, meta
-│   │   ├── admin.py            # /v1/admin: tenant, API key, jobs, sources, audit
+│   │   ├── admin.py            # /v1/admin: tenant, API key, jobs, webhooks, sources, audit, settings/storage
 │   │   ├── auth.py             # API key + role
 │   │   └── common.py           # helper error & bahasa
 │   ├── defaults/profiles.yaml  # profile bawaan (threshold, params, kompresi)
 │   ├── locales/{id,en}.yaml    # pesan per kode alasan
-│   ├── webui/                  # Web UI vanilla JS (index.html, app.js, style.css), tanpa build step
+│   ├── webui/                  # Web UI vanilla JS (index.html, app.js, style.css) + guide.html (panduan publik), tanpa build step
 │   ├── pipeline.py             # pipeline MURNI: bytes + profile -> hasil (tanpa DB/S3)
 │   ├── verdict.py              # skor -> PASS/WARN/REJECT + alasan + aksi sesuai mode
 │   ├── processor.py            # proses satu job: SILO -> pipeline -> simpan varian & hasil -> webhook
@@ -50,7 +51,9 @@ ocr-engine/
 │   ├── serializers.py          # bentuk JSON foto untuk API/webhook/UI
 │   ├── evidence.py             # data & PDF bukti pengiriman
 │   ├── webhooks.py             # outbox webhook + HMAC + retry
-│   ├── storage.py              # adapter S3 (SILO)
+│   ├── storage.py              # adapter S3 (SILO); get_storage() memakai konfigurasi efektif
+│   ├── storage_config.py       # Pengaturan SILO dari Web UI (DB > env > bawaan), impor JSON mc
+│   ├── secretbox.py            # enkripsi rahasia di DB (Fernet, kunci dari PQE_SECRET_KEY)
 │   ├── db.py                   # model SQLAlchemy
 │   ├── settings.py             # env var (pydantic-settings, juga membaca .env)
 │   ├── i18n.py                 # pilih bahasa & terjemahkan alasan
@@ -98,6 +101,9 @@ Prinsip penting:
 
 - **`pipeline.analyze()` murni**: input bytes + `AnalysisContext` (profile, metadata, waktu terima, timezone, fungsi cek duplikat), output `PipelineResult`. Tidak menyentuh DB/S3. Dipakai worker, endpoint preview, CLI `pqe analyze`, dan test. Logika analisis baru ditaruh di sini (lewat analyzer), bukan di processor.
 - **Analyzer = plugin.** Setiap analyzer mengembalikan `CheckResult` (skor 0-100, makin tinggi makin baik, `issue_code`, metrik, `Finding` info/risk). `verdict.decide()` membandingkan skor dengan threshold profile, dan menghitung skor `authenticity` = 100 − total poin `Finding` bertipe `risk`.
+- **Perbaikan otomatis** (`pipeline._try_enhance` + `imaging/enhance.py`): hanya jika ada alasan `FIXABLE_CODES` dan `profile.enhance.enabled`. Satu-satunya operasi yang boleh ada di modul ini adalah LUT global monoton yang lolos `verify_tonal_only` (jangan menambah penajaman, filter lokal, inpainting, atau model ML: itu bisa mengubah isi dokumen). Hanya `RECHECK_AFTER_ENHANCE` (`exposure`, `ocr`) yang dinilai ulang; hasil dipakai hanya jika verdict membaik. `PipelineResult.image` tetap original (hash, EXIF), `output_image` dipakai untuk kompresi/thumbnail.
+- **`retake_required` / `evidence_eligible`** dihitung di `serializers.py` (bukan disimpan di DB), dari verdict, status review, dan `review_required` tenant.
+- **Pengaturan SILO** (`storage_config.py`): nilai di tabel `settings` (key `storage`) menimpa env per field; secret dienkripsi `secretbox` (Fernet dari `PQE_SECRET_KEY`). `get_storage()` membuat ulang client saat versi berubah (cek tiap `REFRESH_SEC` = 10 detik). Kode baru yang butuh nama bucket/endpoint harus memakai `get_storage().s`, **bukan** `get_settings()`, agar ikut perubahan dari Web UI.
 - **Antrean di database** (`jobs.py`): `claim_job` memakai `with_for_update(skip_locked=True)`. Retry: backoff `10 × 2^(attempt-1)` detik (maks 1 jam) sampai `PQE_JOB_MAX_ATTEMPTS`, lalu `dead`. Job `running` lebih lama dari `PQE_JOB_STALE_AFTER_SEC` dikembalikan ke antrean oleh worker. Lihat [ADR 0001](adr/0001-queue-di-postgres.md).
 - **Error permanen vs sementara** (`processor.execute_job`): `UnreadableImage`, `ObjectNotFound`, `TenantNotFound` langsung menandai foto `error` tanpa retry. Exception lain dianggap sementara dan di-retry.
 - **Ingestor** (`Ingestor.tick`): setiap source dijadwalkan sesuai `poll_interval_sec`. Source `s3_event` hanya di-poll saat reconciliation. Tick pertama setelah start selalu reconciliation (lookback minimal 7 hari) untuk mengejar foto saat engine mati.

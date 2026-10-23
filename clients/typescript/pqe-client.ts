@@ -46,6 +46,9 @@ export interface Photo {
   photo_type: string | null;
   scores: Record<string, number>;
   reasons: Reason[];
+  retake_required?: boolean; // true = kualitas tidak bisa dimaksimalkan: minta kurir foto ulang (gabungkan dengan action)
+  retake_message?: string | null; // pesan siap tampil (ID/EN), terisi jika retake_required
+  evidence_eligible?: boolean;
   urls?: { original: string | null; processed: string | null; thumbnail: string | null; expires_in: number };
   poll_url?: string;
   [k: string]: unknown;

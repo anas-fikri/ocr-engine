@@ -11,7 +11,7 @@ Dokumen ini disusun dari hasil diskusi/brainstorming dan mengikuti tahapan SDLC:
 
 ## Status implementasi
 
-Per 22 Oktober 2026 (versi engine 0.1.0):
+Per 23 Oktober 2026 (versi engine 0.1.0):
 
 | Fase | Item | Status |
 |---|---|---|
@@ -27,6 +27,11 @@ Per 22 Oktober 2026 (versi engine 0.1.0):
 | 2 | API evidence + PDF + verifikasi hash | ✅ |
 | 2 | Webhook bertanda tangan HMAC | ✅ |
 | 2 | Source DB aplikasi (read-only) + job migrasi foto lama | ✅ |
+| 2 | Perbaikan pencahayaan otomatis **tanpa AI** (kurva global + verifikasi eksak, original & hash tidak berubah) | ✅ |
+| 2 | `retake_required` + `retake_message` (wajib foto ulang jika kualitas tidak bisa dimaksimalkan) | ✅ |
+| 2 | Review ops opsional per tenant (`review_required`, bawaan `false`: PASS + WARN langsung masuk evidence) | ✅ |
+| 2 | Halaman Pengaturan SILO di Web UI (impor JSON `mc`, test koneksi, secret terenkripsi, tanpa restart) | ✅ |
+| 2 | Panduan integrasi developer di browser (`/ui/guide.html`, tanpa login) | ✅ |
 | 2 | Laporan export CSV/Excel | ⏳ belum |
 | 3 | Manifest Kubernetes + CI | ✅ (belum dideploy) |
 | 3 | Client library TypeScript & PHP | ✅ (Kotlin/Swift/Dart: contoh di panduan integrasi) |
@@ -40,6 +45,15 @@ Per 22 Oktober 2026 (versi engine 0.1.0):
    menyebut Redis dibaca sebagai "antrean di PostgreSQL".
 2. **Web UI memakai HTML + JavaScript tanpa build step, bukan React.** Disajikan langsung oleh engine di `/ui`,
    tidak butuh Node.js di server maupun pipeline build terpisah.
+3. **Perbaikan foto otomatis dibatasi ke kurva pencahayaan global, tanpa AI.** Foto adalah bukti penagihan
+   (nominal, nama, resi), jadi tidak boleh ada risiko teks/angka bertambah atau berubah. Kurva yang sama untuk semua
+   piksel tidak bisa menggambar huruf baru, dan setiap hasil diverifikasi eksak. Foto buram/pecah tidak "diperbaiki"
+   tetapi langsung dibalas wajib foto ulang (`retake_required`). Tidak ada label di foto hasil perbaikan; jejaknya ada
+   di field `enhancement` dan original tetap utuh.
+4. **Review ops opsional.** Bawaan `review_required: false` agar foto layak tidak tertahan menunggu ops: `PASS` dan
+   `WARN` langsung masuk evidence, `REJECT` dibalas foto ulang. Tenant yang butuh pengecekan manual bisa menyalakannya.
+5. **Koneksi SILO bisa diatur dari Web UI** (selain env), dengan secret terenkripsi `PQE_SECRET_KEY`, supaya
+   pergantian kredensial tidak butuh redeploy.
 
 ## Daftar Isi
 
@@ -672,16 +686,26 @@ flowchart TD
     G --> G6[OCR - jika profile dokumen]
     G1 & G2 & G3 & G4 & G5 & G6 --> H[Hitung skor 0-100 per dimensi]
     H --> I[Tentukan verdict + alasan + saran]
-    I --> J[Kompresi dinamis - lihat 4.4]
+    I --> I1{Gelap / terlalu terang /<br/>pudar / silau?}
+    I1 -- Ya --> I2[Kurva pencahayaan global<br/>+ verifikasi eksak<br/>nilai ulang exposure & OCR]
+    I2 --> I3{Verdict membaik?}
+    I3 -- Ya --> I4[Pakai hasil perbaikan<br/>untuk processed & verdict]
+    I3 -- Tidak --> I5[Pakai foto asli]
+    I1 -- Tidak --> I5
+    I4 & I5 --> I6[REJECT = retake_required]
+    I6 --> J[Kompresi dinamis - lihat 4.4]
     J --> K[Buat thumbnail]
     K --> L[Simpan processed & thumb ke SILO]
     L --> M[Simpan hasil ke Postgres]
     M --> N{Ada sink/webhook?}
     N -- Ya --> N1[Kirim webhook - dengan retry]
     N -- Tidak --> O
-    N1 --> O{Verdict bukan PASS?}
-    O -- Ya --> P[Masuk antrean Ops Review]
-    O -- Tidak --> Q[Siap untuk evidence pelanggan]
+    N1 --> O{Verdict}
+    O -- REJECT --> P[Wajib foto ulang<br/>tampil di antrean Ops Review]
+    O -- WARN --> O2{review_required?}
+    O2 -- Ya --> P2[Menunggu approve ops]
+    O2 -- Tidak, bawaan --> Q
+    O -- PASS --> Q[Siap untuk evidence pelanggan]
 ```
 
 ### 4.3 Flow penentuan verdict
@@ -773,7 +797,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[Foto WARN / REJECT / ERROR<br/>masuk antrean] --> B[Ops buka Web UI]
+    A[Foto WARN / REJECT / ERROR<br/>masuk antrean<br/>review opsional per tenant] --> B[Ops buka Web UI]
     B --> C[Lihat thumbnail, original,<br/>versi kompres, skor & alasan]
     C --> D{Keputusan ops}
     D -- Foto sebenarnya layak --> E[Approve manual<br/>dicatat sebagai false positive]
@@ -798,7 +822,7 @@ sequenceDiagram
     actor C as Pelanggan
 
     F->>API: POST /v1/evidence/batch (pelanggan, periode)
-    API->>DB: Ambil foto PASS / approved per resi
+    API->>DB: Ambil foto layak per resi (PASS + WARN, atau approved)
     API->>S: Buat presigned URL versi kompres
     API-->>F: PDF evidence (foto, resi, waktu, lokasi, hash)
     F->>C: Kirim invoice + lampiran evidence
@@ -809,7 +833,10 @@ sequenceDiagram
     API-->>C: Foto asli, tidak diubah sejak diterima
 ```
 
-Yang dilihat pelanggan **hanya** foto PASS/approved, tanpa skor internal atau risk score. Foto bermasalah diselesaikan di ops sebelum invoice keluar.
+Yang dilihat pelanggan **hanya** foto layak, tanpa skor internal atau risk score: dengan `review_required: false`
+(bawaan) foto `PASS` dan `WARN`; dengan `review_required: true` hanya `PASS` atau yang di-approve ops. Foto `REJECT`
+dibalas wajib foto ulang ke kurir dan tidak tampil kecuali di-approve ops. Foto yang pencahayaannya diperbaiki
+otomatis ditampilkan versi perbaikannya, sedangkan hash verifikasi merujuk ke original.
 
 ### 4.8 Flow rollout mode (shadow → warn → enforce)
 

@@ -141,8 +141,9 @@ curl -s -X POST "{{BASE}}/v1/analyze?sync=true" -H "X-API-Key: $PQE_API_KEY" \
 $pqe = new PhotoQualityClient('{{BASE}}', env('PQE_API_KEY'), 5000, 'id');
 $r = $pqe->analyzeObject($path, ['awb' => $awb, 'photo_type' => 'pod_recipient', 'courier_id' => $courierId], true, 3000);
 
-if ($r['ok'] && $r['data']['status'] === 'done' && $r['data']['retake_required']) {
-    // kirim $r['data']['retake_message'] + alasan ke aplikasi kurir: minta foto ulang
+if ($r['ok'] && $r['data']['status'] === 'done' && $r['data']['retake_required']
+    && $r['data']['action'] !== 'log') {   // action 'log' = mode shadow: jangan ganggu kurir
+    // kirim $r['data']['retake_message'] + alasan ke aplikasi kurir: minta foto ulang (lihat §7)
 }
 // $r['ok'] === false -> engine tidak tersedia: lanjutkan proses seperti biasa</pre></div>
         <div class="tabpane" data-pane="an:ts"><pre data-code>// Salin clients/typescript/pqe-client.ts dari repository (tanpa dependency, fail-open)
@@ -150,8 +151,8 @@ import { PhotoQualityClient } from "./pqe-client.ts";
 
 const pqe = new PhotoQualityClient({ baseUrl: "{{BASE}}", apiKey: process.env.PQE_API_KEY!, lang: "id" });
 const r = await pqe.analyzeObject(objectKey, { awb, photo_type: "pod_recipient" }, { sync: true, timeoutMs: 3000 });
-if (r.ok && r.photo.retake_required) {
-  // minta kurir foto ulang: r.photo.retake_message, r.photo.reasons
+if (r.ok && r.photo?.retake_required && r.photo.action !== "log") { // action "log" = mode shadow
+  // minta kurir foto ulang (lihat §7): r.photo.retake_message, r.photo.reasons
 }</pre></div>
         <div class="tabpane" data-pane="an:py"><pre data-code>import requests
 
@@ -189,7 +190,7 @@ val result = runCatching { client.newCall(req).execute().use { it.body?.string()
 }</pre>
         <table>
           <tr><th>Field</th><th>Arti</th></tr>
-          <tr><td><code>retake_required</code></td><td><b>Paling penting untuk aplikasi.</b> <code>true</code> = foto parah (buram berat, pecah, terlalu kecil, putih total) dan sudah dicoba diperbaiki tapi tidak bisa: minta kurir foto ulang.</td></tr>
+          <tr><td><code>retake_required</code></td><td><b>Paling penting untuk aplikasi.</b> <code>true</code> = foto parah (buram berat, pecah, terlalu kecil, putih total) dan sudah dicoba diperbaiki tapi tidak bisa: minta kurir foto ulang. Gabungkan dengan <code>action</code> (lihat <a href="#kurir">§7</a>).</td></tr>
           <tr><td><code>verdict</code></td><td><code>PASS</code> layak, <code>WARN</code> kurang ideal tapi masih terbaca (tetap disimpan &amp; masuk evidence), <code>REJECT</code> tidak layak.</td></tr>
           <tr><td><code>reasons[].code</code></td><td>Kode stabil untuk logika aplikasi. <code>message</code>/<code>suggestion</code> sudah diterjemahkan (header <code>Accept-Language: id|en</code>).</td></tr>
           <tr><td><code>reasons[].severity</code></td><td><code>info</code> hanya informasi (contoh <code>EXIF_MISSING</code>), jangan ditampilkan sebagai kesalahan.</td></tr>
@@ -200,11 +201,13 @@ val result = runCatching { client.newCall(req).execute().use { it.body?.string()
         <h2>7. Menampilkan ke kurir</h2>
         <table>
           <tr><th>Kondisi</th><th>Yang ditampilkan aplikasi</th></tr>
-          <tr><td><code>retake_required: true</code></td><td>Tampilkan <code>retake_message</code> + <code>suggestion</code> dari alasan pertama, tombol <b>Foto ulang</b>.</td></tr>
-          <tr><td><code>verdict: WARN</code></td><td>Opsional: tampilkan saran ringan. Foto tetap diterima.</td></tr>
-          <tr><td><code>verdict: PASS</code></td><td>Tidak menampilkan apa-apa.</td></tr>
+          <tr><td><code>retake_required: true</code> + <code>action: reject</code></td><td>Tampilkan <code>retake_message</code> + <code>suggestion</code> dari alasan pertama, tombol <b>Foto ulang</b>. Sediakan jalur darurat (misal "Lapor ke SPV") agar kurir tidak terjebak.</td></tr>
+          <tr><td><code>retake_required: true</code> + <code>action: notify</code></td><td>Tampilkan <code>retake_message</code> + saran, beri pilihan <b>Foto ulang</b> atau <b>Tetap kirim</b>.</td></tr>
+          <tr><td><code>verdict: WARN</code> + <code>action: notify</code></td><td>Opsional: tampilkan saran ringan. Foto tetap diterima.</td></tr>
+          <tr><td><code>action: log</code> (mode <code>shadow</code>, atau <code>PASS</code>)</td><td>Tidak menampilkan apa-apa.</td></tr>
           <tr><td>Engine tidak tersedia / timeout</td><td>Tidak menampilkan apa-apa. Lanjutkan proses.</td></tr>
         </table>
+        <p><code>action</code> mengikuti mode yang diatur admin (<code>shadow</code> → <code>warn</code> → <code>enforce</code>), jadi aplikasi tidak perlu diubah saat mode dinaikkan. Selalu gabungkan <code>retake_required</code> dengan <code>action</code>.</p>
         <pre data-code>⚠ Foto buram
 Kualitas foto tidak memenuhi syarat dan tidak bisa diperbaiki otomatis. Silakan ambil foto ulang.
 Saran: Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.
@@ -285,7 +288,7 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
           <li>☐ API key hanya di env server, tidak di aplikasi mobile/browser/git</li>
           <li>☐ Foto dikirim asli dari kamera (tanpa kompres di aplikasi)</li>
           <li>☐ Metadata <code>awb</code>, <code>photo-type</code>, <code>courier-id</code>, <code>customer-id</code> terkirim</li>
-          <li>☐ <code>retake_required</code> ditangani di aplikasi kurir (tampilkan pesan + tombol foto ulang)</li>
+          <li>☐ <code>retake_required</code> ditangani di aplikasi kurir bersama <code>action</code> (tampilkan pesan + tombol foto ulang; mode shadow tidak mengganggu kurir)</li>
           <li>☐ Webhook: tanda tangan diverifikasi, balas 2xx cepat, idempotent</li>
           <li>☐ Runtime Node.js/PHP versi patch 21 Okt 2026</li>
         </ul>

@@ -79,7 +79,9 @@ docker compose ps             # tunggu engine "healthy"
 | SILO console | http://localhost:9001 | sama |
 | PostgreSQL | hanya di jaringan compose | user `pqe`, password `POSTGRES_PASSWORD` (default `pqe-local-only`) |
 
-> **Semua nilai default di atas hanya untuk lokal.** Jika compose ini dipasang di mesin yang bisa diakses orang lain, ganti `PQE_BOOTSTRAP_ADMIN_KEY`, `SILO_ROOT_PASSWORD`, `POSTGRES_PASSWORD`, dan `PQE_S3_EVENT_TOKEN` di `.env` **sebelum** `up` pertama kali.
+> **Semua nilai default di atas hanya untuk lokal.** Jika compose ini dipasang di mesin yang bisa diakses orang lain, ganti `PQE_BOOTSTRAP_ADMIN_KEY`, `SILO_ROOT_PASSWORD`, `POSTGRES_PASSWORD`, `PQE_S3_EVENT_TOKEN`, dan `PQE_SECRET_KEY` di `.env` **sebelum** `up` pertama kali.
+>
+> Panduan integrasi untuk programmer aplikasi tersedia di http://localhost:8000/ui/guide.html (tanpa login).
 
 Image SILO yang dipakai: `docker.io/pgsty/silo:RELEASE.2026-10-18T00-00-00Z` (fork komunitas MinIO dari Pigsty, kompatibel S3). Engine otomatis membuat bucket `ekas-pcptransport`, `photos-processed`, `photos-thumb`, `photos-upload` (`ENGINE_CREATE_BUCKETS=true`). Folder `config/tenants` di-mount read-only ke container.
 
@@ -117,9 +119,15 @@ docker compose down -v         # HAPUS semua data lokal (database + foto). Janga
 ```bash
 cp .env.example .env
 # isi minimal: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (service account engine, lihat bagian 4),
-#              PQE_BOOTSTRAP_ADMIN_KEY (acak panjang), PUBLIC_BASE_URL
+#              PQE_BOOTSTRAP_ADMIN_KEY (acak panjang), PQE_SECRET_KEY (acak panjang), PUBLIC_BASE_URL
 docker compose -f docker-compose.remote-silo.yml up -d --build
 ```
+
+Alternatif tanpa mengedit `.env` untuk koneksi SILO: isi `PQE_BOOTSTRAP_ADMIN_KEY` dan `PQE_SECRET_KEY` saja, jalankan
+compose, lalu buka Web UI → **Pengaturan SILO** (admin), tempel JSON `mc` atau isi endpoint/access key/secret key/bucket,
+klik **Test koneksi**, lalu **Simpan**. Nilai di halaman itu menimpa env dan berlaku tanpa restart
+(detail: [configuration.md §1.6](configuration.md#16-pengaturan-silo-lewat-web-ui)). Endpoint harus alamat yang bisa
+dijangkau **dari container engine** (contoh `https://s3.pcpexpress.com`), **bukan** `127.0.0.1`.
 
 Catatan:
 
@@ -198,7 +206,7 @@ mcli admin policy create pcp pqe-engine pqe-engine-policy.json
 mcli admin policy attach pcp pqe-engine --user pqe-engine
 ```
 
-Isi `AWS_ACCESS_KEY_ID=pqe-engine` dan `AWS_SECRET_ACCESS_KEY=<secret>` di `.env` / K8s Secret. Jika foto aplikasi lain ada di bucket lain, tambahkan bucket itu ke dua statement pertama.
+Isi `AWS_ACCESS_KEY_ID=pqe-engine` dan `AWS_SECRET_ACCESS_KEY=<secret>` di `.env` / K8s Secret, **atau** masukkan lewat Web UI → **Pengaturan SILO** (secret disimpan terenkripsi dengan `PQE_SECRET_KEY`). Jika foto aplikasi lain ada di bucket lain, tambahkan bucket itu ke dua statement pertama. Halaman Pengaturan SILO juga menampilkan contoh policy ini sesuai nama bucket yang diisi.
 
 Engine tidak membuat bucket di produksi (`ENGINE_CREATE_BUCKETS=false`), jadi policy di atas tidak butuh `s3:CreateBucket`. `/readyz` memeriksa akses ke `photos-processed`.
 
@@ -280,7 +288,8 @@ kubectl -n photo-quality create secret generic pqe-secrets \
   --from-literal=AWS_ACCESS_KEY_ID='pqe-engine' \
   --from-literal=AWS_SECRET_ACCESS_KEY='***' \
   --from-literal=PQE_BOOTSTRAP_ADMIN_KEY='pqe_***' \
-  --from-literal=PQE_S3_EVENT_TOKEN='***'
+  --from-literal=PQE_S3_EVENT_TOKEN='***' \
+  --from-literal=PQE_SECRET_KEY="$(openssl rand -hex 32)"
 
 kubectl -n photo-quality create configmap pqe-tenants --from-file=config/tenants/ \
   --dry-run=client -o yaml | kubectl apply -f -
@@ -291,6 +300,7 @@ kubectl -n photo-quality get pods
 
 Catatan:
 
+- `PQE_SECRET_KEY` harus **sama** di semua pod (API, worker, ingestor) dan **tidak boleh hilang**: secret key SILO yang disimpan lewat Web UI dienkripsi dengan kunci ini. Simpan salinannya di password manager tim. Jika berubah, secret di Pengaturan SILO harus diisi ulang (engine kembali memakai `AWS_SECRET_ACCESS_KEY` dari env sampai diisi ulang).
 - ConfigMap `pqe-tenants` hanya **seed**. Tenant yang sudah ada di DB tidak ditimpa saat pod restart. Ubah tenant lewat Web UI atau `kubectl exec deploy/pqe-api -- pqe import-tenants --force`.
 - **Ingestor cukup 1 replika.** Lebih dari satu tetap aman (pencatatan idempotent dengan unique constraint `bucket + object_key`), tapi menggandakan request list ke SILO.
 - HPA worker berbasis CPU. Analisis foto CPU-bound, jadi antrean menumpuk = CPU tinggi = replika bertambah.
@@ -472,7 +482,9 @@ Pantau juga kapasitas SILO/NAS (alert > 80%) dan status `mcli mirror` di sisi in
 | Foto tidak muncul di engine | Prefix/bucket source salah, ekstensi tidak didukung, event tidak aktif | Web UI -> Sistem -> Source ingest (error, foto baru). Cek `sources[].prefix`/`suffixes` di config tenant. Jalankan `pqe reconcile --tenant KODE` |
 | API key bocor / karyawan keluar | - | Web UI -> API key -> Cabut (atau `DELETE /v1/admin/api-keys/{id}`). Buat key baru, bagikan lewat kanal aman |
 | Rotasi kunci bootstrap admin | Nilai `PQE_BOOTSTRAP_ADMIN_KEY` diketahui orang lain | Buat admin key baru (`pqe create-key --name admin-baru --role admin`), ganti `PQE_BOOTSTRAP_ADMIN_KEY` di secret, restart, lalu **cabut** key lama `bootstrap-admin` di Web UI. Bootstrap hanya *menambah* key, tidak pernah menghapus key lama |
-| Rotasi kredensial SILO | Rotasi berkala / kebocoran | `mcli admin user add pcp pqe-engine-2 SECRET_BARU` + `mcli admin policy attach pcp pqe-engine --user pqe-engine-2`, update secret K8s/`.env`, restart semua pod, verifikasi `/readyz`, lalu `mcli admin user remove pcp pqe-engine` |
+| Rotasi kredensial SILO | Rotasi berkala / kebocoran | `mcli admin user add pcp pqe-engine-2 SECRET_BARU` + `mcli admin policy attach pcp pqe-engine --user pqe-engine-2`. Lalu **salah satu**: (a) Web UI → **Pengaturan SILO** → isi access key & secret key baru → **Test koneksi** → **Simpan** (tanpa restart, berlaku ≤ 10 detik), atau (b) update secret K8s/`.env` dan restart semua pod. Verifikasi `/readyz`, lalu `mcli admin user remove pcp pqe-engine`. Catatan: nilai di Pengaturan SILO menimpa env, jadi jika pernah disimpan di sana, rotasi juga harus lewat sana (atau **kembalikan ke env**) |
+| Semua job gagal dengan `SignatureDoesNotMatch` / `AccessDenied` / `EndpointConnectionError` setelah ada yang mengubah Pengaturan SILO | Nilai salah tersimpan di Pengaturan SILO | Web UI → **Pengaturan SILO** → perbaiki atau klik **kembalikan ke env** pada field yang salah → **Test koneksi**. Siapa yang mengubah: audit log `settings.storage.update`. Setelah pulih: **Ulangi semua** job dead |
+| `PQE_SECRET_KEY` hilang / berubah | Secret K8s dibuat ulang tanpa nilai lama | Secret key SILO yang tersimpan tidak bisa dibuka; engine memakai `AWS_SECRET_ACCESS_KEY` env (jika ada). Isi ulang secret key di **Pengaturan SILO**, atau kembalikan nilai `PQE_SECRET_KEY` lama |
 | Config tenant rusak / salah | Edit YAML keliru | Web UI -> Tenant -> Riwayat versi, salin versi lama, simpan. Config yang gagal di-parse dilewati (tenant lain tetap jalan) dan tercatat di log |
 
 ---
@@ -496,6 +508,8 @@ Docker compose: `git pull && docker compose up -d --build`. Rollback: checkout v
 
 - [ ] `PQE_BOOTSTRAP_ADMIN_KEY` diganti nilai acak panjang (bukan `pqe_local_admin_change_me`). Setelah admin personal dibuat, pertimbangkan merotasi/mencabut key bootstrap.
 - [ ] `PQE_S3_EVENT_TOKEN` diisi (endpoint event menerima tanpa token jika kosong).
+- [ ] `PQE_SECRET_KEY` diisi nilai acak panjang (`openssl rand -hex 32`, bukan `local-secret-key-change-me` dari compose lokal), sama di semua pod, dan salinannya disimpan aman. Kunci ini mengenkripsi secret key SILO yang disimpan lewat Web UI.
+- [ ] Halaman **Pengaturan SILO** hanya bisa diakses role `admin`. Batasi jumlah admin key, dan cek audit log `settings.storage.update` secara berkala.
 - [ ] Engine memakai **service account khusus** dengan policy minimum (bagian 4.2), bukan admin/root SILO.
 - [ ] Semua bucket **private**. Foto hanya diakses lewat presigned URL: `ENGINE_PRESIGN_TTL_UI` (default 900 detik) dan `ENGINE_PRESIGN_TTL_CUSTOMER` (default 604800 = 7 hari, maksimum yang diizinkan S3 SigV4).
 - [ ] Engine diakses lewat **TLS** (ingress / reverse proxy). `AWS_PUBLIC_ENDPOINT` memakai https.

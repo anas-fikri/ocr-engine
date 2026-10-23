@@ -13,7 +13,9 @@ Daftar isi:
 - [Autentikasi & akses API](#autentikasi--akses-api)
 - [Foto tidak muncul / tidak diproses](#foto-tidak-muncul--tidak-diproses)
 - [Hasil analisis terasa salah](#hasil-analisis-terasa-salah)
+- [Perbaikan otomatis & foto ulang](#perbaikan-otomatis--foto-ulang)
 - [Gambar, webhook, dan integrasi](#gambar-webhook-dan-integrasi)
+- [Pengaturan SILO: test koneksi gagal](#pengaturan-silo-test-koneksi-gagal)
 - [Infrastruktur & deployment](#infrastruktur--deployment)
 - [Waktu & retensi](#waktu--retensi)
 - [Langkah diagnosis umum](#langkah-diagnosis-umum)
@@ -68,6 +70,19 @@ Daftar isi:
 | Threshold sudah diubah tapi foto lama tidak berubah | Perubahan config hanya berlaku untuk analisis berikutnya | Klik **Analisis ulang** di detail foto, atau `POST /v1/photos/<id>/reprocess` |
 | Perubahan config belum terasa | Cache config ≤ 5 detik | Tunggu beberapa detik. Pastikan **Simpan** sukses dan versi config naik |
 
+## Perbaikan otomatis & foto ulang
+
+| Gejala | Penyebab | Solusi |
+|---|---|---|
+| Foto gelap tidak diperbaiki (`enhancement.attempted: false`) | Tidak ada alasan `TOO_DARK`/`TOO_BRIGHT`/`LOW_CONTRAST`/`GLARE` (misal hanya `BLURRY`), check `exposure` tidak aktif di profile, atau `enhance.enabled: false` | Normal untuk buram/pecah: tidak bisa diperbaiki secara jujur. Cek `checks` dan `enhance` di profile ([configuration.md](configuration.md#perbaikan-pencahayaan-otomatis-enhance)) |
+| `enhancement.reason: no_improvement` | Kurva sudah diterapkan tapi verdict tidak membaik (misal foto juga buram, atau terlalu gelap sampai detailnya hilang) | Foto dinilai apa adanya. Jika tetap `REJECT`, kurir diminta foto ulang (`retake_required: true`) |
+| `enhancement.reason: verification_failed` | Verifikasi eksak menolak hasil (sangat jarang). Hasil dibuang demi keamanan dokumen | Tidak perlu tindakan; foto dinilai apa adanya |
+| `enhancement.reason: nothing_to_fix` | Statistik foto tidak butuh kurva (rentang dan kecerahan tengah sudah normal), misal hanya sebagian kecil area yang silau | Normal |
+| Ops ragu apakah foto hasil perbaikan "diedit" | — | Bandingkan dengan **Buka original** di detail foto. Perbaikan hanya kurva pencahayaan global yang diverifikasi eksak; `sha256` dan kode verifikasi merujuk ke original. Penjelasan untuk pelanggan/auditor: [integration-guide.md §7.1](integration-guide.md#71-perbaikan-otomatis-tanpa-ai) |
+| `retake_required: true` padahal mode `shadow` | `retake_required` menilai kualitas, tidak bergantung mode | Aplikasi sebaiknya tetap memakai `action` untuk menentukan seberapa tegas (`log` = jangan ganggu kurir). Lihat [integration-guide.md §7](integration-guide.md#7-menampilkan-hasil-ke-kurir) |
+| Foto `WARN` tidak muncul di evidence | Tenant memakai `review_required: true` | Ops **Setujui** foto tersebut, atau ubah tenant ke `review_required: false` (bawaan) |
+| Foto `REJECT` muncul di evidence | Ops pernah **Setujui** foto itu | Sesuai desain. **Reset** atau **Minta foto ulang** untuk mengeluarkannya |
+
 ## Gambar, webhook, dan integrasi
 
 | Gejala | Penyebab | Solusi |
@@ -84,13 +99,34 @@ Daftar isi:
 | Client TS/PHP selalu `unavailable: true` | Engine tidak bisa dijangkau dari aplikasi (DNS, firewall, URL salah) atau timeout terlalu kecil | Tes `curl <PQE_URL>/healthz` dari server aplikasi. Naikkan `timeoutMs`. Proses bisnis tetap jalan (fail-open) |
 | Test client gagal "sudah di-patch" | Runtime Node/PHP belum memuat security release 21 Okt 2026 | Upgrade ke Node 22.23.4 / 24.22.1 / 26.12.1 atau PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 (lihat [clients/README.md](../clients/README.md)) |
 
+## Pengaturan SILO: test koneksi gagal
+
+Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Pengaturan SILO) atau di kolom error job/`/readyz`.
+
+| Pesan / gejala | Penyebab | Solusi |
+|---|---|---|
+| `EndpointConnectionError: Could not connect to the endpoint URL: "http://127.0.0.1:9000/..."` | Endpoint `127.0.0.1`/`localhost` (misal dari JSON `mc` yang dibuat di laptop). Di dalam Docker/Kubernetes alamat itu adalah container engine sendiri | Ganti Endpoint dengan alamat SILO yang bisa dijangkau dari **server/container engine**: compose lokal `http://silo:9000`, SILO kantor `https://s3.pcpexpress.com`. Engine yang jalan langsung di PC (tanpa Docker) baru boleh memakai `127.0.0.1` |
+| `EndpointConnectionError` / `ConnectTimeoutError` ke host lain | Host salah, port salah, firewall, atau DNS | Dari server engine: `curl -I <endpoint>/minio/health/live`. Cek `http` vs `https` dan port |
+| `SSLError` / `CERTIFICATE_VERIFY_FAILED` | Endpoint `https` dengan sertifikat self-signed/CA internal | Pakai sertifikat valid di SILO, atau tambahkan CA internal ke image engine |
+| `SignatureDoesNotMatch` | **Secret key salah** (salah salin, spasi ikut), atau signature tidak cocok | Salin ulang secret key, simpan lagi. Pastikan Signature `s3v4` |
+| `InvalidAccessKeyId` | Access key salah / user service account dihapus | Cek user di SILO (`mcli admin user info <alias> <user>`) |
+| `AccessDenied` di cek "Baca bucket aplikasi" | Policy service account tidak punya `s3:ListBucket`/`s3:GetObject` di bucket aplikasi | Tambahkan bucket aplikasi ke policy (contoh policy ditampilkan di halaman Pengaturan SILO dan di [operations.md §4.2](operations.md#42-service-account-engine-least-privilege)) |
+| `AccessDenied` di cek "Tulis bucket hasil kompres" | Policy tidak punya `s3:PutObject`/`s3:DeleteObject` di bucket engine | Tambahkan izin tulis untuk bucket processed/thumb/upload |
+| `NoSuchBucket` / `404` di salah satu cek | Nama bucket salah atau bucket belum dibuat | Perbaiki nama bucket di form, atau minta tim infra membuat bucket (lokal: `ENGINE_CREATE_BUCKETS=true`) |
+| Error alamat/`NoSuchBucket` aneh padahal bucket ada | Gaya alamat salah: SILO/MinIO butuh `path` | Set **Gaya alamat** = `path` (JSON `mc`: `"path": "on"`) atau `auto` |
+| `409 SECRET_KEY_MISSING` saat **Simpan** | `PQE_SECRET_KEY` belum diisi di server, jadi secret key tidak bisa disimpan terenkripsi | Isi `PQE_SECRET_KEY` (`openssl rand -hex 32`) di `.env`/K8s Secret lalu restart, atau isi `AWS_SECRET_ACCESS_KEY` lewat env. Field selain secret key tetap bisa disimpan |
+| `422 INVALID_SETTINGS` | Endpoint tanpa `http://`/`https://`, gaya alamat bukan `auto/path/virtual`, atau signature bukan `s3v4/s3` | Perbaiki nilai sesuai pesan |
+| Test berhasil tapi job masih gagal | Belum lewat 10 detik sejak simpan, atau job sudah dead sebelum diperbaiki | Tunggu ≤ 10 detik, lalu Web UI → Sistem → **Ulangi semua** |
+| Secret key "hilang" setelah redeploy (job `SignatureDoesNotMatch`/`AccessDenied`) | `PQE_SECRET_KEY` berubah, secret lama tidak bisa dibuka sehingga engine memakai `AWS_SECRET_ACCESS_KEY` env | Kembalikan `PQE_SECRET_KEY` lama, atau isi ulang secret key di Pengaturan SILO |
+| Foto tampil rusak di browser setelah endpoint diganti | Endpoint internal tidak bisa dibuka browser | Isi **Endpoint publik** dengan host yang bisa dibuka browser/pelanggan |
+
 ## Infrastruktur & deployment
 
 | Gejala | Penyebab | Solusi |
 |---|---|---|
 | Job **gagal permanen (dead)** di Web UI → Sistem | Error sementara berulang sampai `PQE_JOB_MAX_ATTEMPTS` (default 5), biasanya SILO/DB tidak bisa diakses | Baca kolom error terakhir, perbaiki penyebabnya (kredensial, jaringan, bucket), lalu **Ulangi** / **Ulangi semua** (admin). Via API: `POST /v1/admin/jobs/retry-dead` |
 | Error `PROCESSING_FAILED` di foto | Foto yang job-nya dead | Sama seperti di atas. Setelah diulang dan sukses, status foto kembali `done` |
-| `GET /readyz` → `503`, `storage: error` | Engine tidak bisa mengakses SILO: endpoint salah, kredensial salah, atau bucket `ENGINE_BUCKET_PROCESSED` belum ada | Cek `AWS_ENDPOINT`, `AWS_ACCESS_KEY_ID/SECRET`. Minta tim infra membuat bucket engine, atau `ENGINE_CREATE_BUCKETS=true` (lokal) |
+| `GET /readyz` → `503`, `storage: error` | Engine tidak bisa mengakses SILO: endpoint salah, kredensial salah, atau bucket `ENGINE_BUCKET_PROCESSED` belum ada | Cek nilai efektif di Web UI → **Pengaturan SILO** (nilai di sana menimpa `AWS_ENDPOINT`, `AWS_ACCESS_KEY_ID/SECRET`, dst.) lalu **Test koneksi**. Minta tim infra membuat bucket engine, atau `ENGINE_CREATE_BUCKETS=true` (lokal). Lihat [Pengaturan SILO: test koneksi gagal](#pengaturan-silo-test-koneksi-gagal) |
 | `GET /readyz` → `database: error` | `DATABASE_URL` salah / Postgres mati | Cek koneksi. Format: `postgresql+psycopg://user:pass@host:5432/pqe` |
 | `sqlite3.OperationalError: database is locked` | SQLite dipakai beberapa proses sekaligus (misal `pqe api` + `pqe worker` terpisah, atau beberapa replika) | SQLite hanya untuk uji **satu proses** (`pqe run`). Untuk lainnya wajib PostgreSQL |
 | `docker compose up` / build gagal: `429 Too Many Requests` dari Docker Hub | Batas unduhan Docker Hub (IP bersama/kantor) | `docker login`, atau tarik dari mirror lalu beri tag lokal: `docker pull mirror.gcr.io/library/python:3.12-slim && docker tag mirror.gcr.io/library/python:3.12-slim python:3.12-slim` (sama untuk `postgres:16-alpine` dan `pgsty/silo:<tag>`) |
@@ -123,4 +159,4 @@ Daftar isi:
 4. **Metrik** (`/metrics` di port API; untuk `pqe worker`/`pqe ingestor` di port `PQE_METRICS_PORT`, default 9100): `pqe_queue_depth`, `pqe_queue_lag_seconds`, `pqe_dead_jobs`, `pqe_pending_webhooks`, `pqe_source_errors_total`, `pqe_photos_failed_total`.
 5. **Uji satu foto tanpa server:** `pqe analyze foto.jpg --profile pod_recipient` menunjukkan skor dan alasan persis seperti yang dihitung worker (tanpa cek duplikat).
 6. **Cek config:** `pqe validate-tenant config/tenants/*.yaml`, atau Web UI → Tenant → Validasi → "Profile hasil gabungan".
-7. **Audit log** (Web UI → Sistem, admin): siapa mengubah config/key/review terakhir kali.
+7. **Audit log** (Web UI → Sistem, admin): siapa mengubah config/key/review/Pengaturan SILO terakhir kali.

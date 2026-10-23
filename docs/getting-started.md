@@ -52,9 +52,15 @@ ke bucket `ekas-pcptransport` lengkap dengan metadata resi/kurir. Dalam beberapa
 
 1. Buka http://localhost:8000/ui dan masuk dengan API key admin.
 2. **Dashboard**: ringkasan PASS/WARN/REJECT, alasan terbanyak, kurir/cabang bermasalah.
-3. **Review**: antrean foto bermasalah. Klik satu foto untuk melihat skor, alasan, saran, EXIF, ukuran sebelum dan
-   sesudah kompres, lalu coba tombol **Setujui** / **Minta foto ulang**.
+3. **Review**: antrean foto WARN/REJECT (opsional: foto WARN sudah otomatis masuk evidence). Klik satu foto untuk
+   melihat skor, alasan, saran, EXIF, ukuran sebelum dan sesudah kompres. Foto gelap/terlalu terang yang berhasil diperbaiki
+   bertanda **Diperbaiki otomatis**, foto buram berat bertanda **Wajib foto ulang**. Coba juga tombol **Setujui** /
+   **Minta foto ulang**.
 4. **Uji foto**: upload foto dari HP Anda sendiri untuk melihat penilaian engine tanpa menyimpan apa pun.
+5. **Pengaturan SILO** (admin): koneksi ke SILO. Di compose lokal sudah terisi dari env; untuk mencoba SILO lain,
+   tempel JSON `mc` lalu **Test koneksi** (jangan pakai `127.0.0.1` dari dalam Docker, lihat
+   [configuration.md §1.6](configuration.md#16-pengaturan-silo-lewat-web-ui)).
+6. **Panduan Integrasi ↗**: http://localhost:8000/ui/guide.html, panduan untuk programmer aplikasi (tanpa login).
 
 Panduan Web UI lengkap: [web-ui-guide.md](web-ui-guide.md).
 
@@ -76,7 +82,7 @@ curl -s -X POST "$PQE_URL/v1/analyze?sync=true" -H "X-API-Key: $PQE_API_KEY" \
 # cari berdasarkan resi
 curl -s -H "X-API-Key: $PQE_API_KEY" "$PQE_URL/v1/photos?awb=AWB0001"
 
-# PDF bukti pengiriman (hanya foto layak / yang sudah di-approve)
+# PDF bukti pengiriman (hanya foto layak: PASS + WARN bawaan, atau yang sudah di-approve)
 curl -s -H "X-API-Key: $PQE_API_KEY" -o bukti.pdf "$PQE_URL/v1/evidence/AWB0001/pdf"
 ```
 
