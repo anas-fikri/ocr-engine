@@ -139,12 +139,13 @@ def process_photo(photo_id: str, storage: Storage | None = None) -> str:
             p = s.get(Photo, photo_id)
             pkey, tkey = _variant_key(p, "jpg"), _variant_key(p, "jpg")
         comp = result.compression
-        if comp is not None and not comp.passthrough and comp.data is not None:
+        accepted = result.verdict.action != "reject"  # ditolak: tidak dibuat versi foto pengiriman
+        if accepted and comp is not None and not comp.passthrough and comp.data is not None:
             ext = "webp" if comp.content_type == "image/webp" else "jpg"
             processed_key = pkey.rsplit(".", 1)[0] + f".{ext}"
             storage.put(st.engine_bucket_processed, processed_key, comp.data, comp.content_type,
                         {"photo-id": photo_id, "source-key": key, "sha256-original": result.image.sha256})
-        if processed_key is None and ingest_source == "upload" and result.verdict.action != "reject":
+        if accepted and processed_key is None and ingest_source == "upload":
             # "scan dulu": foto upload yang diterima selalu punya salinan di bucket hasil, supaya link `stored`
             # tidak pernah menunjuk ke bucket upload (arsip asli + karantina foto yang ditolak)
             ext = key.rsplit(".", 1)[-1] if "." in key else "jpg"

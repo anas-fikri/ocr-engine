@@ -276,7 +276,8 @@ function render(run) {
   const reasons = (r.reasons || []).map((x) => `<div class="reason ${esc(x.severity)}"><b>${esc(x.message || x.code)}</b> <span class="muted small">${esc(x.code)} · ${esc(x.severity)}${x.score != null ? ` · skor ${Math.round(x.score)}` : ""}</span>${x.suggestion ? `<div class="small">${esc(x.suggestion)}</div>` : ""}</div>`).join("") || `<p class="muted">Tidak ada catatan.</p>`;
   const outCaption = run.outUrl
     ? `Hasil engine (yang disimpan &amp; dipakai evidence): ${kb(c.output_bytes)}${c.width ? `, ${c.width}×${c.height}` : ""}${en.applied ? " · diperbaiki otomatis" : ""}`
-    : (c.passthrough ? "Foto sudah kecil, disimpan apa adanya tanpa kompresi." : "Versi hasil tidak tersedia.");
+    : run.mode === "sim" && !r.stored ? "Ditolak: tidak dibuat versi foto pengiriman, tidak disimpan sebagai foto pengiriman."
+      : (c.passthrough ? "Foto sudah kecil, disimpan apa adanya tanpa kompresi." : "Versi hasil tidak tersedia.");
   const evid = r.evidence_eligible == null ? null : r.evidence_eligible;
   $("#result").innerHTML = `<h2><span class="num">3</span> Hasil ${badge(r.verdict)}</h2>
     <h3>Yang dilihat kurir</h3>${courierScreen(run)}

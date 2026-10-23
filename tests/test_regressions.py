@@ -281,6 +281,27 @@ def test_reject_blocks_status_update_and_enhance_is_opt_in(client, admin_headers
     assert warn["action"] == "notify" and warn["allow_status_update"] is True
     assert warn["courier_message"] == "Foto buram. Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang."
 
+    # foto BESAR yang ditolak: tidak dibuatkan versi foto pengiriman di bucket hasil
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    from engine.storage import get_storage
+
+    px = np.asarray(Image.open(io.BytesIO(samples["pass_huge_camera"])).convert("RGB")).astype(np.float32)
+    noisy_dark = np.clip(px * 0.06 + np.random.default_rng(1).normal(0, 3, px.shape), 0, 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(noisy_dark).save(buf, "JPEG", quality=95)
+    r = client.post("/v1/analyze", params={"tenant": "test-app", "sync": True}, headers=admin_headers,
+                    files={"file": ("gelap-besar.jpg", buf.getvalue(), "image/jpeg")}, data={"awb": "AWB906"})
+    big_rej = r.json()
+    assert big_rej["verdict"] == "REJECT" and big_rej["stored"] is None and big_rej["allow_status_update"] is False
+    detail = client.get(f"/v1/photos/{big_rej['id']}", headers=admin_headers).json()
+    assert detail["compression"]["passthrough"] is False and detail["urls"]["processed"] is None
+    processed_keys = [o.key for o in get_storage().list("photos-processed")]
+    assert not any(big_rej["id"] in k for k in processed_keys) and all("AWB906" not in k for k in processed_keys)
+
     # file rusak = foto tidak layak: di mode enforce juga menahan status
     r = client.post("/v1/analyze", params={"tenant": "test-app", "sync": True}, headers=admin_headers,
                     files={"file": ("rusak.jpg", b"bukan gambar", "image/jpeg")}, data={"awb": "AWB905"})

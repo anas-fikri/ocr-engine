@@ -206,7 +206,9 @@ async function openPhoto(id, onChange) {
     <p class="muted">${esc(p.tenant)} · profile ${esc(p.profile || "-")} · aksi mode: <b>${esc(p.action || "-")}</b></p>
     <div class="grid cols-2">
       <div class="images">
-        ${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank"><img src="${esc(p.urls.processed)}" data-photo="${esc(p.id)}" data-variant="processed" onerror="viaEngine(this)" alt="foto"></a>` : `<div class="empty">Tidak ada pratinjau</div>`}
+        ${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank"><img src="${esc(p.urls.processed)}" data-photo="${esc(p.id)}" data-variant="processed" onerror="viaEngine(this)" alt="foto"></a>`
+          : p.urls.original ? `<a href="${esc(p.urls.original)}" target="_blank"><img src="${esc(p.urls.original)}" data-photo="${esc(p.id)}" data-variant="original" onerror="viaEngine(this)" alt="foto asli"></a><div class="small muted">Foto asli (tidak ada versi pengiriman${p.verdict === "REJECT" ? ", karena ditolak" : ""})</div>`
+          : `<div class="empty">Tidak ada pratinjau</div>`}
         <div class="small"><a href="${esc(p.urls.original)}" target="_blank">Buka original</a>${p.urls.processed ? ` · <a href="${esc(p.urls.processed)}" target="_blank">Buka versi kompres</a>` : ""}</div>
       </div>
       <div>
