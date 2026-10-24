@@ -3,6 +3,9 @@
 # PQE_TLS=admin@domain.com  -> sertifikat Let's Encrypt otomatis (domain publik, port 80/443 terbuka dari internet).
 {
 	admin off
+	# Browser tidak mengirim SNI saat dibuka lewat IP (https://10.3.3.243); tanpa ini handshake TLS gagal
+	# (ERR_SSL_PROTOCOL_ERROR).
+	default_sni {$PQE_DOMAIN}
 }
 
 {$PQE_DOMAIN} {

@@ -15,6 +15,8 @@ x-logging: &logging
 services:
   postgres:
     image: postgres:16-alpine
+    # 0 = pakai PostgreSQL di host server (scripts/host-postgres-setup.sh), container ini tidak dijalankan
+    scale: ${PQE_BUNDLED_POSTGRES:-1}
     environment:
       POSTGRES_DB: pqe
       POSTGRES_USER: pqe
@@ -36,14 +38,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+        required: false
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg://pqe:${POSTGRES_PASSWORD}@postgres:5432/pqe
+      # PQE_DATABASE_URL diisi scripts/host-postgres-setup.sh jika database di host server
+      DATABASE_URL: ${PQE_DATABASE_URL:-postgresql+psycopg://pqe:${POSTGRES_PASSWORD}@postgres:5432/pqe}
       PQE_ENV: production
     volumes:
       - ./config/tenants:/app/config/tenants:ro
       # share NAS yang di-mount di server (SMB/NFS); atur tujuan di Web UI -> Backup NAS
       - ${NAS_MOUNT:-./backup}:/backup
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # PostgreSQL di host server
     ports:
       - "127.0.0.1:8000:8000"   # hanya dari server ini (debug); akses lain lewat HTTPS
     restart: unless-stopped

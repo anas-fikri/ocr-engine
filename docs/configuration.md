@@ -112,6 +112,8 @@ oleh `scripts/prod-setup.sh`:
 | `PQE_TLS` | `internal` | `internal` = sertifikat dari CA internal Caddy (intranet; pasang root CA di perangkat). Isi alamat email untuk sertifikat Let's Encrypt otomatis (domain publik, port 80/443 terbuka dari internet) |
 | `POSTGRES_PASSWORD` | - (wajib) | Password Postgres production, acak. Harus diisi **sebelum** start pertama |
 | `NAS_MOUNT` | `./backup` | Folder share NAS di server, dipasang ke `/backup` |
+| `PQE_BUNDLED_POSTGRES` | `1` | `0` = container `postgres` tidak dijalankan; database di host server (diisi `scripts/host-postgres-setup.sh`) |
+| `PQE_DATABASE_URL` | - | `DATABASE_URL` engine jika database bukan container bawaan, misal `postgresql+psycopg://pqe:...@host.docker.internal:5432/pqe` |
 
 ### 1.6 Pengaturan SILO lewat Web UI
 

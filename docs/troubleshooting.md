@@ -158,6 +158,9 @@ Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Pengaturan SILO) ata
 | Container engine restart terus | Biasanya `DATABASE_URL` tidak bisa dijangkau saat start atau env wajib salah | `docker compose logs engine` / `kubectl logs`. Perbaiki env, lalu restart |
 | SILO lokal: bucket notification tidak jalan | Aturan event belum ditambahkan ke bucket | Jalankan `./scripts/silo-enable-events.sh` setelah bucket ada. Polling tetap jalan sebagai cadangan |
 | Antrean menumpuk (`pqe_queue_lag_seconds` tinggi) | Worker kurang, CPU penuh, atau SILO lambat | Tambah `PQE_WORKER_CONCURRENCY` / replika worker (K8s: HPA). Cek error di log worker |
+| `ERR_SSL_PROTOCOL_ERROR` / "sent an invalid response" saat membuka `https://<IP>` | Versi lama `Caddyfile.prod` tanpa `default_sni`: browser tidak mengirim nama server (SNI) saat dibuka lewat IP | `git pull`, lalu `docker compose -f docker-compose.prod.yml up -d --force-recreate https` |
+| Engine gagal start setelah `host-postgres-setup.sh`: `connection refused` / `timeout` ke `host.docker.internal:5432` | PostgreSQL host belum mendengarkan, atau firewall memblokir jaringan Docker | `sudo systemctl status postgresql`; jika `ufw` aktif: `sudo ufw allow from 172.16.0.0/12 to any port 5432` |
+| `no pg_hba.conf entry for host "172.x.x.x"` | Jaringan Docker di luar `172.16.0.0/12` (diatur khusus di `daemon.json`) | Tambahkan subnet itu di `/etc/postgresql/16/main/pg_hba.conf`, lalu `sudo systemctl reload postgresql` |
 
 ## Preflight (`pqe preflight` / Web UI → Sistem)
 

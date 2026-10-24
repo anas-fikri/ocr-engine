@@ -103,6 +103,25 @@ docker compose -f docker-compose.prod.yml ps
 
 Ketiga layanan (`postgres`, `engine`, `https`) harus `Up`, engine `healthy`. Build pertama butuh beberapa menit.
 
+### 6a. (Opsional) PostgreSQL di host server, bukan di container
+
+Bawaannya PostgreSQL berjalan sebagai container. Jika database ingin dikelola langsung di server (paket OS, backup
+dan monitoring yang sudah ada di tim infra):
+
+```bash
+sudo scripts/host-postgres-setup.sh
+```
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --remove-orphans
+```
+
+Script memasang PostgreSQL dari repo OS (Ubuntu 24.04: versi 16), membuat user/database `pqe` dengan
+`POSTGRES_PASSWORD` dari `.env`, hanya mengizinkan koneksi dari jaringan Docker (`172.16.0.0/12`), menyalin data dari
+container jika ada, lalu mengisi `PQE_BUNDLED_POSTGRES=0` dan `PQE_DATABASE_URL` di `.env`. Container `postgres` tidak
+dijalankan lagi; volume lamanya tidak dihapus. Backup database di Web UI → Backup NAS tetap jalan (`pg_dump` ke host).
+Jika server memakai `ufw`, izinkan port 5432 dari jaringan Docker: `sudo ufw allow from 172.16.0.0/12 to any port 5432`.
+
 ## 7. Konfigurasi lewat Web UI
 
 Buka `https://photo-quality.pcpexpress.com/ui`, masuk dengan API key admin dari langkah 5.
@@ -127,7 +146,8 @@ Peringatan (⚠️) boleh untuk uji coba, tetapi baca saran perbaikannya.
 
 ## 9. Sertifikat internal di perangkat uji
 
-Dengan `PQE_TLS=internal`, browser dan HP akan memberi peringatan sampai root CA Caddy dipasang:
+Engine bisa dibuka lewat nama domain atau langsung lewat IP (`scripts/prod-setup.sh 10.3.3.243`). Dengan
+`PQE_TLS=internal`, browser dan HP akan memberi peringatan sampai root CA Caddy dipasang:
 
 ```bash
 docker compose -f docker-compose.prod.yml cp https:/data/caddy/pki/authorities/local/root.crt ./pqe-root.crt
