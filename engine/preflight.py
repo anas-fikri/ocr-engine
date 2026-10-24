@@ -148,9 +148,9 @@ def run(check_silo: bool = True) -> dict[str, Any]:
         from engine.analyzers.ocr import _tesseract
 
         engine_ocr, lang = _tesseract()
-        out.append(_item("Worker", "OCR (Tesseract)", "ok" if engine_ocr else "warn",
-                         f"bahasa {lang}" if engine_ocr else "tidak tersedia",
-                         "Pakai image engine dengan WITH_OCR=true."))
+        out.append(_item("Worker", "OCR (Tesseract)", "ok" if engine_ocr else "fail",
+                         f"bahasa {lang}" if engine_ocr else "tidak tersedia: keterbacaan teks tidak bisa diperiksa",
+                         "Pakai image engine dengan WITH_OCR=true (bawaan Dockerfile)."))
     except Exception as e:  # OCR opsional
         out.append(_item("Worker", "OCR (Tesseract)", "warn", str(e)[:200]))
 

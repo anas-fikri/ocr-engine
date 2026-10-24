@@ -79,6 +79,9 @@ Isi kolom **Hasil** dengan ✅ / ❌ dan catatan. Skenario bertanda ★ wajib lu
 | O-7 | Foto pecah | Zoom digital berlebihan / screenshot | WARN atau REJECT dengan alasan pecah/resolusi | |
 | O-8 | Duplikat | Kirim foto yang sama dua kali | Terdeteksi duplikat | |
 | O-9 | Mode | "Tampilkan sebagai mode" shadow/warn/enforce | Pesan ke kurir berbeda sesuai mode | |
+| O-10 ★ | Teks resi terbaca | Foto resi/label dari dekat, jelas | Diterima; di detail foto "Teks terbaca: N kata", isi No. resi = nomor di foto → "nomor resi terbaca" | |
+| O-11 ★ | Teks tidak terbaca | Foto resi dari jauh / miring / sebagian tertutup | Ditolak dengan alasan teks tidak terbaca (`TEXT_UNREADABLE`/`NO_TEXT_DETECTED`) + saran mendekatkan kamera | |
+| O-12 ★ | Teks tetap terbaca setelah kompres | Foto resi besar (> 1 MB) yang jelas | Detail foto: "Teks setelah kompres" skor tidak turun berarti; buka foto di arsip `ocr`, teks terbaca oleh mata | |
 
 ### Finance
 
@@ -117,6 +120,7 @@ naik ke `warn`/`enforce`:
 |---|---|---|
 | Salah tolak (foto layak dinilai REJECT) | < 5% | Foto REJECT yang di-Setujui ops ÷ semua REJECT yang direview |
 | Foto buruk lolos (foto tidak layak dinilai PASS) | < 5% | Sampel 100 foto PASS acak, dicek ops |
+| Salah tolak karena teks (teks terbaca oleh mata, engine bilang tidak) | < 5% | Foto REJECT dengan alasan `TEXT_UNREADABLE`/`NO_TEXT_DETECTED` yang di-Setujui ops ÷ semua yang direview |
 | Waktu proses | p95 ≤ 3 detik | Web UI → Uji Coba Kamera (waktu tunggu) / metrik `pqe_analysis_seconds` |
 
 Jika target belum tercapai, sesuaikan threshold di Web UI → Tenant (lihat [configuration.md bagian 6](configuration.md#6-kalibrasi-threshold)),

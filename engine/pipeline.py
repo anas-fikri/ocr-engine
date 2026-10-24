@@ -120,12 +120,65 @@ def analyze(
             c.data, c.passthrough, c.content_type = out.data, False, "image/jpeg"
             c.width, c.height = out.width, out.height
         timings["compress"] = int((time.perf_counter() - t1) * 1000)
+        t3 = time.perf_counter()
+        if _guard_text(result, out, ctx):
+            timings["text_guard"] = int((time.perf_counter() - t3) * 1000)
     if do_thumbnail:
         t2 = time.perf_counter()
         result.thumbnail = thumbnail(out, ctx.profile.thumbnail)
         timings["thumbnail"] = int((time.perf_counter() - t2) * 1000)
     timings["total"] = int((time.perf_counter() - t0) * 1000)
     return result
+
+
+TEXT_DROP_TOLERANCE = 8  # skor keterbacaan teks hasil kompres boleh turun maksimal sekian poin
+
+
+def _guard_text(result: PipelineResult, src: LoadedImage, ctx: AnalysisContext) -> bool:
+    """Foto hasil kompres wajib tetap terbaca teksnya. Jika keterbacaan turun, naikkan kualitas lalu resolusi;
+    langkah terakhir memakai foto asli walau di atas target ukuran (keterbacaan mengalahkan ukuran).
+
+    Hanya untuk foto yang teksnya terbaca di foto asli (skor OCR >= warn). Return True jika penjaga dijalankan.
+    """
+    from engine.analyzers.ocr import readability
+    from engine.imaging.compressor import encode_at, passthrough_of
+
+    comp = result.compression
+    ocr = next((c for c in result.checks if c.check == "ocr" and c.score is not None), None)
+    th = ctx.profile.thresholds.get("ocr")
+    if comp is None or comp.passthrough or comp.data is None or ocr is None or th is None:
+        return False
+    before = ocr.score
+    if th.warn is not None and before < th.warn:
+        return False  # teks memang belum terbaca di foto asli: sudah dinilai oleh check ocr
+    m = ocr.metrics
+    floor = max(th.warn or 0, before - TEXT_DROP_TOLERANCE)
+
+    def measure(c) -> dict:
+        if c.passthrough:
+            return {"score": before, "awb_found": m.get("awb_found", False)}
+        return readability(load_image(c.data), (ctx.meta or {}).get("awb"), m.get("regions") or [],
+                           full_image=m.get("method") == "full")
+
+    def ok(r: dict) -> bool:
+        return r["score"] >= floor and (r["awb_found"] or not m.get("awb_found"))
+
+    cfg, long_side = ctx.profile.compression, max(src.width, src.height)
+    ladder = [
+        lambda: encode_at(src, cfg, max(comp.width, comp.height), min(95, (comp.quality or 80) + 10)),
+        lambda: encode_at(src, cfg, long_side, 92),
+        lambda: passthrough_of(src, cfg),
+    ]
+    current, r, steps = comp, measure(comp), []
+    while not ok(r) and ladder:
+        steps.append({"quality": current.quality, "long_side": max(current.width, current.height),
+                      "score": r["score"]})
+        current = ladder.pop(0)()
+        r = measure(current)
+    current.text_guard = {"before": before, "after": r["score"], "awb_found": r.get("awb_found", False),
+                          "raised": bool(steps), "steps": steps}
+    result.compression = current
+    return True
 
 
 def _try_enhance(result: PipelineResult, ctx: AnalysisContext) -> None:

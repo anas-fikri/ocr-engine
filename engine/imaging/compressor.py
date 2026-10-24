@@ -34,6 +34,7 @@ class CompressionResult:
     target_met: bool
     passthrough: bool
     original_bytes: int
+    text_guard: dict | None = None  # penjaga keterbacaan teks (pipeline): skor sebelum/sesudah, langkah
 
     @property
     def size_bytes(self) -> int:
@@ -50,6 +51,7 @@ class CompressionResult:
             "quality": self.quality,
             "ssim": self.ssim,
             "target_met": self.target_met,
+            "text_guard": self.text_guard,
         }
 
 
@@ -141,6 +143,24 @@ def compress(src: LoadedImage, cfg: Compression) -> CompressionResult:
         return CompressionResult(None, f"image/{src.format.lower()}", src.width, src.height, None, None,
                                  False, True, src.size_bytes)
     return CompressionResult(data, content_type, img.width, img.height, q, round(s, 4),
+                             len(data) <= cfg.target_max_bytes, False, src.size_bytes)
+
+
+def passthrough_of(src: LoadedImage, cfg: Compression) -> CompressionResult:
+    """Pakai foto asli apa adanya (format yang bisa dibuka browser), walau di atas target ukuran."""
+    if src.format in ("JPEG", "PNG", "WEBP"):
+        return CompressionResult(None, f"image/{src.format.lower()}", src.width, src.height, None, None,
+                                 src.size_bytes <= cfg.target_max_bytes, True, src.size_bytes)
+    return encode_at(src, cfg, max(src.width, src.height), 95)
+
+
+def encode_at(src: LoadedImage, cfg: Compression, long_side: int, quality: int) -> CompressionResult:
+    """Encode dengan ukuran & quality tertentu (dipakai penjaga keterbacaan teks untuk menaikkan kualitas)."""
+    content_type = "image/webp" if cfg.format == "webp" else "image/jpeg"
+    img = _resize(src.pil, long_side)
+    data = _encode(img, cfg.format, quality)
+    s = ssim(_gray_for_ssim(src.pil), _gray_for_ssim(img_from(data)))
+    return CompressionResult(data, content_type, img.width, img.height, quality, round(s, 4),
                              len(data) <= cfg.target_max_bytes, False, src.size_bytes)
 
 

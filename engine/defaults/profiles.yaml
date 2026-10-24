@@ -4,7 +4,7 @@
 
 default:
   mode: shadow
-  checks: [sharpness, resolution, exposure, exif, duplicate]
+  checks: [sharpness, resolution, exposure, exif, duplicate, ocr]   # teks (resi/label/dokumen) wajib terbaca di semua jenis foto
   thresholds:
     sharpness:    { reject: 25, warn: 50 }
     resolution:   { reject: 30, warn: 55 }

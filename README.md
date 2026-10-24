@@ -15,7 +15,8 @@ Engine bisa dipakai oleh aplikasi apa pun (Android, iOS, Flutter, web, Laravel, 
 
 | Fitur | Keterangan |
 |---|---|
-| Deteksi kualitas | Ketajaman (per tile), resolusi, blocking JPEG, foto kecil yang diperbesar, exposure, glare, kontras, OCR resi |
+| Teks harus terbaca | Target utama: teks di foto (resi, label, dokumen) terbaca di semua jenis foto. OCR (Tesseract) per area teks + cocokkan nomor resi; foto hasil kompres dijaga tetap terbaca (boleh di atas 1 MB bila perlu) |
+| Deteksi kualitas | Ketajaman (per tile), resolusi, blocking JPEG, foto kecil yang diperbesar, exposure, glare, kontras |
 | Verdict + alasan + saran | `PASS` / `WARN` / `REJECT` dengan pesan ID/EN yang bisa langsung ditampilkan ke kurir |
 | Keputusan siap pakai | `allow_status_update` (false = foto ditolak: aplikasi pengiriman **jangan** update status, minta foto ulang) + `courier_message` (kalimat siap tampil). Status pengiriman tetap milik aplikasi pengiriman; engine mati/lambat = fail-open |
 | Wajib foto ulang | Jika kualitas tidak memenuhi syarat (buram/pecah/terlalu kecil/terlalu gelap), respons langsung berisi `retake_required: true` + pesan untuk kurir |

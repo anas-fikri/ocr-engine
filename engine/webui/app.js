@@ -281,6 +281,8 @@ async function openPhoto(id, onChange) {
       ["Lokasi di aplikasi", p.object ? `<code>${esc(p.object.bucket)}/${esc(p.object.key)}</code>` : "tidak dilaporkan aplikasi"]])}
     <h3>Gambar & kompresi</h3>${kv([["Format", esc((p.image || {}).format)], ["Dimensi", p.image && p.image.width ? `${p.image.width} × ${p.image.height}` : "-"],
       ["Ukuran", c.original_bytes ? `${kb(c.original_bytes)} → ${kb(c.output_bytes)} ${c.passthrough ? "(tidak perlu dikompres)" : `(quality ${c.quality}, SSIM ${c.ssim})`}` : "-"],
+      ["Teks setelah kompres", c.text_guard ? `skor ${c.text_guard.before} → ${c.text_guard.after}${c.text_guard.raised ? " (kualitas dinaikkan agar teks tetap terbaca)" : " (tetap terbaca)"}` : "-"],
+      ["Teks terbaca", p.metrics && p.metrics.ocr && p.metrics.ocr.words != null ? `${p.metrics.ocr.words} kata, confidence ${p.metrics.ocr.confidence}${p.metrics.ocr.awb_found ? " · nomor resi terbaca" : ""}` : "-"],
       ["SHA-256", `<code class="small">${esc(p.sha256)}</code>`]])}
     <h3>EXIF</h3>${Object.keys(p.exif || {}).length ? kv(Object.entries(p.exif).map(([k, v]) => [k, esc(v)])) : `<p class="muted">Tidak ada EXIF.</p>`}
     <h3>Riwayat review</h3><div id="rv-history" class="muted">Memuat...</div>

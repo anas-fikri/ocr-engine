@@ -5,7 +5,7 @@ test:
   stage: test
   image: python:3.12-slim
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 libgomp1
+    - apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 libgomp1 tesseract-ocr tesseract-ocr-ind
     - pip install -r requirements.lock && pip install -e ".[dev]"
   script:
     - ruff check engine tests

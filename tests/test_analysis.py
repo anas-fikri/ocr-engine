@@ -28,7 +28,11 @@ def ctx(profile="pod_recipient", enhance=False, **kw):
     "reject_overexposed", "reject_low_contrast",
 ])
 def test_synthetic_verdicts(samples, name):
+    from engine.analyzers.ocr import ocr_available
+
     expected = name.split("_")[0].upper()
+    if name == "warn_pixelated_upscaled" and ocr_available():
+        expected = "REJECT"  # teks wajib terbaca: foto pecah yang teksnya tidak terbaca ditolak
     r = analyze(samples[name], ctx(), do_compress=False, do_thumbnail=False)
     assert r.verdict.verdict == expected, (name, r.verdict.scores, [x.code for x in r.verdict.reasons])
 
@@ -246,3 +250,58 @@ def test_curve_verification_detects_any_content_change(samples):
     one[100, 100] = 255 - one[100, 100]
     assert not verify_tonal_only(src, one)  # satu piksel diubah -> ditolak
     assert not verify_tonal_only(src, out[:, ::-1].copy())  # geometri berubah -> ditolak
+
+
+ocr_only = pytest.mark.skipif("not __import__('engine.analyzers.ocr', fromlist=['x']).ocr_available()",
+                              reason="Tesseract tidak terpasang")
+
+
+@ocr_only
+@pytest.mark.parametrize("profile", ["pod_recipient", "pod_document", "package", "goods", "location", "default"])
+def test_text_must_be_readable_in_every_profile(samples, profile):
+    """Target engine: teks di foto harus terbaca, di semua jenis foto."""
+    assert "ocr" in build_profile(profile).checks
+    good = analyze(samples["pass_sharp_large"], ctx(profile), do_compress=False, do_thumbnail=False)
+    ocr = next(c for c in good.checks if c.check == "ocr")
+    assert ocr.score >= 65 and ocr.metrics["words"] >= 3
+    bad = analyze(samples["reject_blur_severe"], ctx(profile), do_compress=False, do_thumbnail=False)
+    assert any(r.code in ("NO_TEXT_DETECTED", "TEXT_UNREADABLE") for r in bad.verdict.reasons)
+
+
+@ocr_only
+def test_awb_on_photo_counts_as_readable(samples):
+    """Nomor resi yang dikirim aplikasi dan terbaca di foto = teks terbaca."""
+    r = analyze(samples["pass_small_ok"], ctx(meta={"awb": "AWB 1234 5678 9012"}), do_compress=False,
+                do_thumbnail=False)
+    m = next(c for c in r.checks if c.check == "ocr").metrics
+    assert m["awb_found"] is True
+    r = analyze(samples["pass_small_ok"], ctx(meta={"awb": "XYZ999888777"}), do_compress=False, do_thumbnail=False)
+    assert next(c for c in r.checks if c.check == "ocr").metrics["awb_found"] is False
+
+
+@ocr_only
+def test_compression_keeps_text_readable(samples, monkeypatch):
+    """Foto hasil kompres wajib tetap terbaca; jika turun, kualitas dinaikkan (boleh di atas 1 MB)."""
+    from engine.analyzers import ocr as ocr_mod
+
+    r = analyze(samples["pass_huge_camera"], ctx())
+    tg = r.compression.text_guard
+    assert tg and tg["after"] >= tg["before"] - 8 and tg["raised"] is False
+
+    # paksa hasil kompres pertama "tidak terbaca": penjaga harus menaikkan kualitas/resolusi
+    real = ocr_mod.readability
+    calls = {"n": 0}
+
+    def fake(img, awb=None, regions=None, full_image=None):
+        if regions is not None:  # pemeriksaan ulang foto hasil kompres
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {**real(img, awb, regions, full_image), "score": 10.0}
+        return real(img, awb, regions, full_image)
+
+    monkeypatch.setattr(ocr_mod, "readability", fake)
+    r = analyze(samples["pass_huge_camera"], ctx())
+    tg = r.compression.text_guard
+    assert tg["raised"] is True and tg["steps"][0]["score"] == 10.0 and tg["after"] >= tg["before"] - 8
+    assert r.compression.quality is None or r.compression.quality > tg["steps"][0]["quality"] \
+        or max(r.compression.width, r.compression.height) > tg["steps"][0]["long_side"]

@@ -20,7 +20,10 @@ Rilis pertama untuk live uji coba dan UAT.
 - Arsip engine di bucket `ocr`, per aplikasi, masa simpan 520 hari ([ADR 0007](docs/adr/0007-arsip-engine-di-bucket-ocr.md)):
   foto diterima = foto hasil, foto ditolak = foto asli untuk review & kalibrasi. Ditulis di belakang layar; bucket
   aplikasi tetap hanya dibaca.
-- Optimasi tanpa manipulasi: hanya diperkecil proporsional + kompresi dinamis dengan pengaman SSIM.
+- **Teks harus terbaca** di semua jenis foto: OCR per area teks, pencocokan nomor resi, foto tidak terbaca ditolak
+  (`NO_TEXT_DETECTED`/`TEXT_UNREADABLE`).
+- Optimasi tanpa manipulasi: hanya diperkecil proporsional + kompresi dinamis dengan pengaman SSIM dan penjaga
+  keterbacaan teks (hasil kompres dibaca ulang; kualitas/resolusi dinaikkan bila teks memburuk).
 - Lokasi SILO foto di aplikasi bisa dilaporkan (`object_key` atau `POST /v1/photos/{id}/stored`), opsional.
 - Evidence PDF per resi / per invoice dengan kode verifikasi keaslian.
 - Backup NAS terjadwal (folder SMB/NFS atau S3-compatible) untuk database dan arsip foto.
