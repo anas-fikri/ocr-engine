@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photo Quality Engine</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%23c8102e%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form id="login-form" class="card login-card">
+      <div class="login-brand"><span class="logo"></span><div><b>Photo Quality Engine</b><div class="muted small" data-version></div></div></div>
+      <p class="muted">Masuk dengan API key (role admin, ops, atau viewer).</p>
+      <label>API key<input id="login-key" type="password" placeholder="pqe_..." autocomplete="off" required autofocus></label>
+      <button type="submit">Masuk</button>
+      <p id="login-error" class="error" role="alert"></p>
+      <div class="login-links">
+        <p class="muted small">Belum punya key? Minta admin, atau di server:
+          <code>docker compose -f docker-compose.prod.yml exec engine pqe create-key --name nama --role ops</code></p>
+        <p class="small"><a href="guide.html">Panduan Integrasi untuk developer</a> (tanpa login) · <a href="coba.html">Uji coba dari HP</a></p>
+      </div>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside id="side" class="sidenav">
+      <div class="brand"><span class="logo"></span><div><b>Photo Quality</b><div class="small" data-version></div></div></div>
+      <nav id="nav">
+        <div class="nav-group">Pantau</div>
+        <a href="#/dashboard" data-page="dashboard">Dashboard</a>
+        <a href="#/review" data-page="review">Review</a>
+        <a href="#/photos" data-page="photos">Cari foto</a>
+        <a href="#/evidence" data-page="evidence">Evidence</a>
+        <div class="nav-group">Uji</div>
+        <a href="#/test" data-page="test">Uji foto</a>
+        <a href="coba.html" target="_blank">Uji Coba Kamera ↗</a>
+        <div class="nav-group" data-role="admin">Pengaturan</div>
+        <a href="#/tenants" data-page="tenants" data-role="admin">Tenant</a>
+        <a href="#/keys" data-page="keys" data-role="admin">API key</a>
+        <a href="#/silo" data-page="silo" data-role="admin">Koneksi SILO</a>
+        <a href="#/nas" data-page="nas" data-role="admin">Backup NAS</a>
+        <div class="nav-group">Lainnya</div>
+        <a href="#/system" data-page="system">Sistem</a>
+        <a href="guide.html" target="_blank">Panduan Integrasi ↗</a>
+      </nav>
+      <div class="side-foot"><div id="who" class="small"></div><button id="logout" class="link small">Keluar</button></div>
+    </aside>
+    <div class="content">
+      <header class="topbar">
+        <button id="menu" class="icon" aria-label="Menu">☰</button>
+        <div id="crumb" class="crumb"></div>
+        <span class="ver-pill" data-version title="Versi engine"></span>
+      </header>
+      <main id="main"></main>
+    </div>
+    <div id="side-backdrop" class="side-backdrop hidden"></div>
+  </div>
+
+  <div id="drawer" class="drawer hidden" role="dialog" aria-modal="true">
+    <div class="drawer-panel">
+      <button id="drawer-close" class="close" aria-label="Tutup">&times;</button>
+      <div id="drawer-body"></div>
+    </div>
+  </div>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>

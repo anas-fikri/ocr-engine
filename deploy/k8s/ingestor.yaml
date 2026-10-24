@@ -1,0 +1,33 @@
+# Ingestor cukup 1 replika (aman jika lebih karena idempotent, tapi boros list request).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pqe-ingestor
+  labels: {app: photo-quality-engine, component: ingestor}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: photo-quality-engine, component: ingestor}
+  template:
+    metadata:
+      labels: {app: photo-quality-engine, component: ingestor}
+      annotations: {prometheus.io/scrape: "true", prometheus.io/port: "9100", prometheus.io/path: /metrics}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: ingestor
+          image: photo-quality-engine
+          args: ["pqe", "ingestor"]
+          envFrom:
+            - configMapRef: {name: pqe-config}
+            - secretRef: {name: pqe-secrets}
+          volumeMounts:
+            - {name: tenants, mountPath: /app/config/tenants, readOnly: true}
+          ports: [{containerPort: 9100, name: metrics}]
+          livenessProbe: {httpGet: {path: /metrics, port: metrics}, periodSeconds: 30, failureThreshold: 3}
+          resources:
+            requests: {cpu: 50m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - name: tenants
+          configMap: {name: pqe-tenants}

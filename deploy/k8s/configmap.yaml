@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pqe-config
+data:
+  AWS_ENDPOINT: "https://s3.pcpexpress.com"
+  AWS_DEFAULT_REGION: "us-east-1"
+  AWS_USE_PATH_STYLE_ENDPOINT: "true"
+  AWS_BUCKET: "ekas-pcptransport"
+  ENGINE_BUCKET_ARCHIVE: "ocr"   # arsip engine (baca+tulis+hapus); bucket aplikasi hanya dibaca
+  # bucket versi lama (data sebelum arsip ocr)
+  ENGINE_BUCKET_PROCESSED: "photos-processed"
+  ENGINE_BUCKET_THUMB: "photos-thumb"
+  ENGINE_BUCKET_UPLOAD: "photos-upload"
+  ENGINE_CREATE_BUCKETS: "false"
+  PUBLIC_BASE_URL: "https://photo-quality.pcpexpress.com"
+  PQE_TENANTS_DIR: "/app/config/tenants"
+  PQE_WORKER_CONCURRENCY: "2"
+  PQE_LOG_LEVEL: "INFO"

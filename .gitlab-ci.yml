@@ -1,0 +1,37 @@
+# Pipeline untuk mirror di gitlab.pcpexpress.com (setara .github/workflows/ci.yml)
+stages: [test, build]
+
+test:
+  stage: test
+  image: python:3.12-slim
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 libgomp1 tesseract-ocr tesseract-ocr-ind
+    - pip install -r requirements.lock && pip install -e ".[dev]"
+  script:
+    - ruff check engine tests
+    - pytest -q -p no:warnings
+
+# Runtime dikunci ke versi security release 21 Okt 2026 (lihat clients/README.md)
+client-node:
+  stage: test
+  image: node:24.22.1-alpine
+  script:
+    - cd clients && node --experimental-strip-types --no-warnings typescript/test.ts
+
+client-php:
+  stage: test
+  image: php:8.4.27-cli
+  script:
+    - cd clients && php php/test.php
+
+build:
+  stage: build
+  image: docker:27
+  services: [docker:27-dind]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - docker build -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" -t "$CI_REGISTRY_IMAGE:latest" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE:latest"

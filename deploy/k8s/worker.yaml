@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pqe-worker
+  labels: {app: photo-quality-engine, component: worker}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: photo-quality-engine, component: worker}
+  template:
+    metadata:
+      labels: {app: photo-quality-engine, component: worker}
+      annotations: {prometheus.io/scrape: "true", prometheus.io/port: "9100", prometheus.io/path: /metrics}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: worker
+          image: photo-quality-engine
+          args: ["pqe", "worker"]
+          envFrom:
+            - configMapRef: {name: pqe-config}
+            - secretRef: {name: pqe-secrets}
+          volumeMounts:
+            - {name: tenants, mountPath: /app/config/tenants, readOnly: true}
+            # Backup NAS: pasang volume NAS (NFS/PVC) di /backup pada API (tombol Test NAS) DAN worker (yang menyalin)
+            # - {name: nas, mountPath: /backup}
+          ports: [{containerPort: 9100, name: metrics}]
+          livenessProbe: {httpGet: {path: /metrics, port: metrics}, periodSeconds: 30, failureThreshold: 3}
+          resources:
+            requests: {cpu: 500m, memory: 768Mi}
+            limits: {cpu: "2", memory: 2Gi}
+      volumes:
+        - name: tenants
+          configMap: {name: pqe-tenants}
+        # - name: nas
+        #   nfs: {server: 192.168.1.20, path: /volume1/pqe-backup}   # atau persistentVolumeClaim: {claimName: pqe-nas}
+---
+# Tambah worker otomatis saat CPU tinggi (antrean menumpuk).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: pqe-worker
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: pqe-worker}
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 70}}

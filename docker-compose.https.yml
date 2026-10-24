@@ -1,0 +1,24 @@
+# Tambahan HTTPS untuk uji coba dari HP (halaman /ui/coba.html, kamera langsung di browser).
+#
+#   PQE_HTTPS_HOST=192.168.1.10 docker compose -f docker-compose.yml -f docker-compose.https.yml up -d
+#   lalu buka di HP: https://192.168.1.10:8443/ui/coba.html
+#
+# PQE_HTTPS_HOST = IP/hostname PC ini di jaringan kantor (lihat `ip addr` / `ipconfig`).
+# Tanpa HTTPS pun tombol "Ambil foto" (kamera bawaan HP) tetap bisa dipakai lewat http://<ip>:8000/ui/coba.html.
+
+services:
+  https:
+    image: docker.io/library/caddy:2.10.2-alpine
+    depends_on:
+      - engine
+    environment:
+      PQE_HTTPS_HOST: ${PQE_HTTPS_HOST:-localhost}
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./deploy/https/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
