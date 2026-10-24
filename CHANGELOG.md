@@ -3,12 +3,31 @@
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/); nomor versi mengikuti
 [Semantic Versioning](https://semver.org/lang/id/). Versi yang sedang berjalan tampil di Web UI (sidebar & login),
 `GET /healthz`, `GET /v1/me`, header `X-PQE-Version` di setiap respons, dan `pqe --version`, lengkap dengan **kode
-build** (commit git, contoh `v0.1.0 · b58baf9`, header `X-PQE-Build`) jika di-deploy dengan `scripts/deploy.sh`.
+build** (commit git, contoh `v0.2.0 · 118e3a2`, header `X-PQE-Build`) jika di-deploy dengan `scripts/deploy.sh`.
+Tanpa `scripts/deploy.sh` (misalnya `docker compose up --build` langsung), kode build tertulis `build ?` di Web UI.
+
+Aturan naik versi: setiap perubahan yang dipasang ke server menaikkan nomor versi dan menambah catatan di sini.
+Perbaikan saja → angka terakhir (0.2.0 → 0.2.1); fitur atau perubahan penilaian → angka tengah (0.2.x → 0.3.0).
+Kode build berubah di setiap deploy, nomor versi berubah di setiap rilis.
 
 Rilis dibuat dengan tag git `vX.Y.Z`; server production memakai tag, bukan cabang
 ([deploy-production.md](docs/deploy-production.md#11-operasional)).
 
-## [0.1.0] - belum dirilis (UAT)
+## [0.2.0] - 24 Okt 2026 (UAT)
+
+### Engine
+- Nomor resi dibaca dari **barcode/QR** label (zxing-cpp, bukan AI) sebelum OCR: label terbaca dalam puluhan ms
+  (skor 95), tanpa menunggu Tesseract; hasil kompres dijaga agar barcode tetap terbaca.
+- Lebih cepat: Tesseract sebagai library (model dimuat sekali, bukan per panggilan), area teks dibaca paralel, kompresi
+  & thumbnail dikerjakan bersamaan dengan pemeriksaan. Foto kamera 12 MP ±1,8 → ±0,8 detik; foto buram ±1,3 → ±0,4 detik.
+- Latar kertas/layar putih: cukup skor `ocr` ≥ 70 (sebelumnya 80) agar putih tidak dinilai silau. Screenshot dan
+  struk yang jelas sering berskor 74-80 dan sebelumnya masih kena `GLARE`.
+
+### Web UI
+- Detail foto menampilkan nomor resi yang terbaca dari barcode.
+- Label versi menampilkan `build ?` bila engine tidak di-deploy dengan `scripts/deploy.sh`.
+
+## [0.1.0] - 24 Okt 2026 (UAT)
 
 Rilis pertama untuk live uji coba dan UAT.
 
@@ -23,10 +42,6 @@ Rilis pertama untuk live uji coba dan UAT.
   aplikasi tetap hanya dibaca.
 - **Teks harus terbaca** di semua jenis foto: foto miring diluruskan dulu, OCR per area teks, pencocokan nomor resi,
   foto tidak terbaca ditolak (`NO_TEXT_DETECTED`/`TEXT_UNREADABLE`); waktu habis tidak menghukum (`OCR_TIMEOUT`).
-- Nomor resi dibaca dari **barcode/QR** label (zxing-cpp, bukan AI) sebelum OCR: label terbaca dalam puluhan ms
-  (skor 95), tanpa menunggu Tesseract; hasil kompres dijaga agar barcode tetap terbaca.
-- Lebih cepat: Tesseract sebagai library (model dimuat sekali, bukan per panggilan), area teks dibaca paralel, kompresi
-  & thumbnail dikerjakan bersamaan dengan pemeriksaan. Foto kamera 12 MP ±1,8 → ±0,8 detik; foto buram ±1,3 → ±0,4 detik.
 - `text_first`: teks terbaca → gelap/terang/pudar/pecah/buram ringan cukup WARN (target berikutnya: paket jelas).
 - Dokumen/struk/layar berlatar putih tidak lagi dinilai silau: putih dianggap kertas bila teks jelas terbaca.
 - Halaman penuh teks dibaca per kelompok baris (awal/tengah/akhir) supaya tidak kehabisan waktu.

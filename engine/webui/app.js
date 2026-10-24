@@ -63,8 +63,10 @@ function focusPage(root = $("#main")) {
 async function loadVersion() {
   try {
     const h = await (await fetch("/healthz")).json();
-    const label = `v${h.version}${h.build && h.build !== "dev" ? ` · ${h.build}` : ""}`;
-    document.querySelectorAll("[data-version]").forEach((el) => { el.textContent = label; el.title = `build ${h.build}`; });
+    const known = h.build && !["dev", "unknown"].includes(h.build);
+    const label = `v${h.version} · ${known ? h.build : "build ?"}`;
+    const title = known ? `build ${h.build}` : "Kode build tidak diketahui: deploy dengan scripts/deploy.sh";
+    document.querySelectorAll("[data-version]").forEach((el) => { el.textContent = label; el.title = title; });
   } catch { /* abaikan */ }
 }
 
