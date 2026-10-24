@@ -9,8 +9,8 @@ dinaikkan dari `shadow` ke `warn` dan `enforce`.
 | Termasuk | Tidak termasuk |
 |---|---|
 | Penilaian kualitas foto asli (buram, pecah, gelap, resolusi, duplikat, OCR) | Perubahan aplikasi kurir versi lama |
-| Web UI: dashboard, review, cari foto, evidence, Pengaturan SILO, Backup NAS, preflight | Penagihan otomatis ke pelanggan |
-| Integrasi `checkFile` di aplikasi pengiriman versi baru (lingkungan pengembangan/pilot) | Deploy Kubernetes |
+| Web UI: dashboard, review, cari foto, evidence, Koneksi SILO, Backup NAS, preflight | Penagihan otomatis ke pelanggan |
+| Integrasi `checkFile` di aplikasi pengiriman versi baru (lingkungan pengembangan/pilot), termasuk aplikasi menyimpan foto hasil engine ke SILO | Deploy Kubernetes |
 | Halaman Uji Coba Kamera dari HP | |
 | Backup NAS dan uji restore | |
 
@@ -63,6 +63,8 @@ Isi kolom **Hasil** dengan ✅ / ❌ dan catatan. Skenario bertanda ★ wajib lu
 | I-6 | Engine mati | `docker compose -f docker-compose.prod.yml stop engine` selama 10 menit, lalu start | Aplikasi pengiriman tetap jalan; foto selama mati diproses setelah engine hidup (polling/reconcile) | |
 | I-7 | Restart server | Reboot server | Semua layanan naik sendiri, NAS ter-mount, preflight tetap hijau | |
 | I-8 | Metrik | Buka `/metrics` | Ada `pqe_queue_depth`, `pqe_backup_pending`, dll. | |
+| I-9 ★ | Engine hanya membaca SILO | Preflight (Web UI → Sistem) dan Web UI → Koneksi SILO → Test koneksi; cek policy service account | Preflight "Engine hanya membaca SILO" ✅; Test koneksi hanya 2 cek baca; key engine tanpa izin `PutObject`/`DeleteObject`; tidak ada bucket engine baru di SILO | |
+| I-10 ★ | Versi terlihat | Buka Web UI (sidebar & pojok kanan atas), `curl -I https://<domain>/healthz`, `docker compose -f docker-compose.prod.yml exec engine pqe --version` | Ketiganya menunjukkan versi yang sama dengan tag yang di-deploy (header `X-PQE-Version`) | |
 
 ### Ops / SPV
 
@@ -71,8 +73,8 @@ Isi kolom **Hasil** dengan ✅ / ❌ dan catatan. Skenario bertanda ★ wajib lu
 | O-1 ★ | Dashboard | Web UI → Dashboard | Jumlah PASS/WARN/REJECT, alasan terbanyak, kurir/cabang bermasalah tampil | |
 | O-2 ★ | Review foto | Web UI → Review, buka 20 foto | Penilaian masuk akal; foto bisa dibuka; tombol Setujui / Minta foto ulang berfungsi | |
 | O-3 ★ | Cari resi | Cari dengan nomor resi asli | Semua foto resi itu tampil dengan verdict dan alasan | |
-| O-4 ★ | Foto jelas | Uji Coba Kamera (HP), mode Simulasi, foto resi yang jelas | Diterima, status "diupdate", ada link SILO | |
-| O-5 ★ | Foto buram | Foto sambil bergerak | Ditolak, pesan "Wajib foto ulang. Foto buram…", status "TIDAK diupdate", tanpa link | |
+| O-4 ★ | Foto jelas | Uji Coba Kamera (HP), mode Simulasi, foto resi yang jelas | Diterima, status "diupdate", **Foto untuk disimpan aplikasi** terisi (ukuran < 1 MB) | |
+| O-5 ★ | Foto buram | Foto sambil bergerak | Ditolak, pesan "Wajib foto ulang. Foto buram…", status "TIDAK diupdate", Foto untuk disimpan aplikasi "tidak ada (ditolak)" | |
 | O-6 ★ | Foto gelap | Foto di tempat gelap | Ditolak dengan saran cahaya; foto tidak diubah/dicerahkan | |
 | O-7 | Foto pecah | Zoom digital berlebihan / screenshot | WARN atau REJECT dengan alasan pecah/resolusi | |
 | O-8 | Duplikat | Kirim foto yang sama dua kali | Terdeteksi duplikat | |
@@ -82,7 +84,7 @@ Isi kolom **Hasil** dengan ✅ / ❌ dan catatan. Skenario bertanda ★ wajib lu
 
 | ID | Skenario | Langkah | Hasil yang diharapkan | Hasil |
 |---|---|---|---|---|
-| F-1 ★ | Evidence per resi | Web UI → Evidence, isi satu resi → Buat PDF (atau dari detail foto: "Evidence PDF resi ini") | PDF hanya berisi foto PASS/WARN, tanpa skor internal | |
+| F-1 ★ | Evidence per resi | Web UI → Evidence, isi satu resi → Buat PDF (atau dari detail foto: "Evidence PDF resi ini") | PDF hanya berisi foto PASS/WARN yang disimpan aplikasi di SILO, tanpa skor internal | |
 | F-2 | Evidence per invoice | Web UI → Evidence, isi banyak resi (satu per baris) → Buat PDF | Satu PDF berisi foto layak dari semua resi | |
 | F-3 | Verifikasi keaslian | `GET /v1/verify/<sha256>` dari PDF | Foto asli ditemukan dan cocok | |
 
@@ -90,12 +92,13 @@ Isi kolom **Hasil** dengan ✅ / ❌ dan catatan. Skenario bertanda ★ wajib lu
 
 | ID | Skenario | Langkah | Hasil yang diharapkan | Hasil |
 |---|---|---|---|---|
-| D-1 ★ | Foto diterima | `checkFile` dengan foto jelas | `allow_status_update: true`, `stored.url` terisi; aplikasi menyimpan link dan update status | |
-| D-2 ★ | Foto ditolak | Mode `enforce` (tenant `uji-coba` atau tenant pilot), foto buram | `allow_status_update: false`, `stored: null`, `courier_message` tampil di HP, status tidak diupdate | |
-| D-3 ★ | Engine mati | Matikan engine / arahkan ke URL salah | `decided: false`; aplikasi menyimpan ke SILO sendiri dan update status, kurir tidak tertahan | |
+| D-1 ★ | Foto diterima | `checkFile` dengan foto jelas dan `objectKey` | `allow_status_update: true`, `image` (API: `output_image`) terisi; aplikasi menyimpan foto itu ke SILO di `objectKey` dan update status; di Web UI foto tampil dengan **Lokasi di SILO** = key itu | |
+| D-2 ★ | Foto ditolak | Mode `enforce` (tenant `uji-coba` atau tenant pilot), foto buram | `allow_status_update: false`, `image: null` (API `output_image: null`), `courier_message` tampil di HP, aplikasi **tidak** menyimpan foto, status tidak diupdate | |
+| D-3 ★ | Engine mati | Matikan engine / arahkan ke URL salah | `decided: false`, `image: null`; aplikasi menyimpan **foto asli** ke SILO dan update status, kurir tidak tertahan | |
 | D-4 ★ | Waktu tunggu | 50 foto berturut-turut | p95 waktu tunggu ≤ 3 detik; jika lewat, aplikasi tetap lanjut (fail-open) | |
 | D-5 | Webhook | Daftarkan URL webhook di tenant | Event `analysis.completed` diterima, tanda tangan valid | |
 | D-6 | Bahasa | `lang: "en"` | `courier_message` berbahasa Inggris | |
+| D-7 | Lapor lokasi belakangan | `checkFile` tanpa `objectKey`, simpan foto, lalu `reportStored(photoId, key)` | Di Web UI foto berubah dari "tidak disimpan" menjadi tampil, dan masuk evidence/backup | |
 
 ### Kurir pilot (fase 3)
 

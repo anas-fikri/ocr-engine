@@ -15,7 +15,7 @@ Daftar isi:
 - [Hasil analisis terasa salah](#hasil-analisis-terasa-salah)
 - [Foto ulang, status pengiriman & koreksi opsional](#foto-ulang-status-pengiriman--koreksi-opsional)
 - [Gambar, webhook, dan integrasi](#gambar-webhook-dan-integrasi)
-- [Pengaturan SILO: test koneksi gagal](#pengaturan-silo-test-koneksi-gagal)
+- [Koneksi SILO: test koneksi gagal](#koneksi-silo-test-koneksi-gagal)
 - [Infrastruktur & deployment](#infrastruktur--deployment)
 - [Backup NAS](#backup-nas)
 - [Waktu & retensi](#waktu--retensi)
@@ -78,12 +78,14 @@ Daftar isi:
 | Foto gelap tidak diperbaiki (`enhancement.attempted: false`) | Sesuai desain: engine tidak memanipulasi gambar, koreksi pencahayaan nonaktif secara bawaan | Kurir foto ulang di tempat terang. Jika admin memang ingin koreksi untuk profile tertentu: `enhance.enabled: true` ([configuration.md](configuration.md#perbaikan-pencahayaan-otomatis-enhance)) |
 | `allow_status_update: false` | Foto `REJECT` di mode `enforce`, atau ops memilih "Minta foto ulang"/"Tandai kecurangan" | Benar: aplikasi pengiriman jangan update status, tampilkan `courier_message`, minta foto ulang. Ops bisa **Setujui** jika foto sebenarnya layak |
 | Status pengiriman tertahan padahal engine mati | Aplikasi tidak fail-open (menganggap tidak ada jawaban = ditolak) | Hanya `allow_status_update: false` yang menahan status. Error/timeout/`202` = simpan foto ke SILO sendiri (kode lama) dan update status seperti biasa. Pakai `checkFile`/`checkObject` di [clients/](../clients/README.md) yang sudah fail-open |
-| `stored` bernilai `null` | Foto ditolak (`allow_status_update: false`), atau engine tidak menjawab dalam batas waktu (`decided: false` di client) | Ditolak: benar, foto tidak disimpan sebagai foto pengiriman; kirim balik `courier_message` ke kurir. Engine tidak menjawab: aplikasi menyimpan foto ke SILO sendiri (kode lama) lalu update status; engine memeriksa foto itu belakangan lewat bucket notification/polling |
-| Link `stored.url` tidak bisa dibuka langsung di browser | Bucket SILO private; `url` adalah lokasi permanen tanpa tanda tangan | Simpan `url` (atau `bucket` + `key`) di database aplikasi, lalu buat presigned URL saat menampilkan, atau ambil lewat engine (`GET /v1/photos/{id}/file`) / evidence |
+| `output_image` bernilai `null` (client: `image: null`) | Foto ditolak (`allow_status_update: false`), atau engine tidak menjawab dalam batas waktu (respons `202`, `decided: false` di client) | Ditolak: benar, aplikasi **tidak** menyimpan foto itu; kirim balik `courier_message` ke kurir. Engine tidak menjawab: aplikasi menyimpan **foto asli** ke SILO (fail-open) lalu update status |
+| Respons lama punya field `stored`, sekarang tidak ada | Versi awal engine menyimpan foto ke SILO sendiri; sekarang engine hanya memproses gambar ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)) | Simpan `output_image` (base64) ke SILO dengan kode aplikasi, lalu kirim `object_key`-nya ke engine (di request, atau `POST /v1/photos/{id}/stored`) |
+| Foto tampil "tidak disimpan" / "Foto tidak disimpan di SILO" di Web UI, tidak masuk evidence/backup, "Analisis ulang" gagal `409 NOT_STORED` | Foto ditolak (benar), atau aplikasi tidak mengirim `object_key` dan tidak memanggil `POST /v1/photos/{id}/stored` | Minta aplikasi mengirim `object_key` di `checkFile`. Foto yang sudah lewat: laporkan lokasinya dengan `POST /v1/photos/{id}/stored` |
+| Foto yang sama tercatat dua kali (upload + polling) | Polling `s3_poll` masih aktif untuk prefix yang sama dan aplikasi tidak mengirim `object_key` | Kirim `object_key` (catatan polling digabung otomatis), atau matikan source polling untuk prefix itu |
 | `retake_required: true` tapi `allow_status_update: true` | Mode `shadow`/`warn`: kualitas dinilai `REJECT`, tapi kurir belum ditahan | Sesuai desain. Kurir hanya ditahan di mode `enforce`. Lihat [integration-guide.md §7](integration-guide.md#7-menampilkan-hasil-ke-kurir) |
 | `courier_message` `null` padahal foto `REJECT` | Mode `shadow` (`action: log`): kurir tidak perlu melihat apa pun | Sesuai desain. Naikkan mode ke `warn`/`enforce` setelah kalibrasi |
 | `enhancement.reason: no_improvement` / `verification_failed` / `nothing_to_fix` | Hanya jika koreksi opsional diaktifkan: kurva tidak membuat verdict membaik, verifikasi eksak menolak hasil, atau foto tidak butuh kurva | Foto dinilai apa adanya. Jika `REJECT`, kurir diminta foto ulang |
-| Ops ragu apakah foto "diedit" | — | Bandingkan dengan **Buka original** di detail foto. Secara bawaan versi kompres hanya diperkecil/dikompres; `sha256` dan kode verifikasi merujuk ke original. Penjelasan untuk pelanggan/auditor: [integration-guide.md §7.1](integration-guide.md#71-optimasi-tanpa-manipulasi) |
+| Ops ragu apakah foto "diedit" | — | Secara bawaan foto hasil engine hanya diperkecil/dikompres; `sha256` dan kode verifikasi merujuk ke file yang dikirim kurir. Penjelasan untuk pelanggan/auditor: [integration-guide.md §7.1](integration-guide.md#71-optimasi-tanpa-manipulasi) |
 | Foto `WARN` tidak muncul di evidence | Tenant memakai `review_required: true` | Ops **Setujui** foto tersebut, atau ubah tenant ke `review_required: false` (bawaan) |
 | Foto `REJECT` muncul di evidence | Ops pernah **Setujui** foto itu | Sesuai desain. **Reset** atau **Minta foto ulang** untuk mengeluarkannya |
 
@@ -91,10 +93,9 @@ Daftar isi:
 
 | Gejala | Penyebab | Solusi |
 |---|---|---|
-| Thumbnail/foto tidak tampil di Web UI (gambar rusak) | Presigned URL memakai host internal yang tidak bisa dibuka browser (contoh `http://silo:9000`) | Web UI otomatis mencoba lagi lewat engine (`GET /v1/photos/{id}/file`), jadi biasanya tetap tampil. Agar link **Buka original** juga jalan, isi `AWS_PUBLIC_ENDPOINT` dengan host yang bisa dibuka browser (compose lokal: `http://localhost:9000`; dari HP: `http://<IP-PC>:9000`), lalu restart engine |
+| Thumbnail/foto tidak tampil di Web UI (gambar rusak) | Presigned URL memakai host internal yang tidak bisa dibuka browser (contoh `http://silo:9000`) | Thumbnail selalu diambil lewat engine; foto di detail dicoba lagi lewat engine (`GET /v1/photos/{id}/file`), jadi biasanya tetap tampil. Agar link **Buka foto** juga jalan, isi `AWS_PUBLIC_ENDPOINT` dengan host yang bisa dibuka browser (compose lokal: `http://localhost:9000`; dari HP: `http://<IP-PC>:9000`), lalu restart engine |
 | Link foto "Request has expired" / `AccessDenied` | Presigned URL kedaluwarsa (UI 15 menit, pelanggan 7 hari) | Muat ulang halaman/detail untuk link baru. Ubah `ENGINE_PRESIGN_TTL_UI` jika perlu |
-| Detail foto: "Tidak ada pratinjau" | Tenant `store_mode: none` (tanpa versi kompres) | Pakai link **Buka original**, atau ubah ke `store_mode: processed` |
-| `POST /v1/analyze?sync=true` menjawab `202` dengan `poll_url` | Analisis belum selesai dalam `timeout_ms` (default 3000). Ini **fail-open** yang disengaja | Lanjutkan proses bisnis. Ambil hasil dari `GET /v1/photos/<id>` (poll), atau pakai webhook. Naikkan `timeout_ms` (maks 30000) jika memang perlu menunggu |
+| `POST /v1/analyze` menjawab `202` dengan `poll_url` (dan `output_image: null`) | Analisis belum selesai dalam `timeout_ms` (default 3000). Ini **fail-open** yang disengaja | Lanjutkan proses bisnis (aplikasi menyimpan foto asli). Ambil hasil dari `GET /v1/photos/<id>` (poll), atau pakai webhook. Naikkan `timeout_ms` (maks 30000) jika memang perlu menunggu |
 | `413 FILE_TOO_LARGE` | File lebih besar dari `PQE_MAX_UPLOAD_MB` (default 25 MB) | Naikkan env tersebut, atau kirim via referensi objek (upload ke SILO dulu) |
 | `422 NO_INPUT` / `EMPTY_FILE` / `INVALID_BODY` | Body salah: tidak ada `file` (multipart) maupun JSON `object_key`, file kosong, atau JSON tidak valid | Lihat contoh di [integration-guide.md](integration-guide.md). Untuk JSON wajib header `Content-Type: application/json` |
 | Webhook tidak diterima aplikasi | Tenant tidak punya `sinks`, event tidak ada di `events`, URL tidak bisa dijangkau dari server engine, atau tidak ada proses worker (webhook dikirim oleh worker) | Cek `sinks` di config tenant. Dari server engine, tes `curl -X POST <url>`. Pastikan `pqe worker`/`pqe run` berjalan. Lihat error terakhir di Web UI → Sistem → "Webhook gagal permanen" (atau `GET /v1/admin/webhooks?status=pending`). Pantau metrik `pqe_pending_webhooks` dan `pqe_webhooks_total{result="error"}` |
@@ -116,11 +117,15 @@ Daftar isi:
 | Tenant `uji-coba` tidak ada di daftar | Database dibuat sebelum file `config/tenants/uji-coba.yaml` ada dan import otomatis belum jalan | Restart engine (tenant baru di folder config di-import saat start) atau `pqe import-tenants` |
 | Hasil "Engine belum selesai dalam 3 dtk" | Analisis lebih lama dari batas sync (foto besar, OCR, PC sibuk) | Ini perilaku fail-open yang benar; hasil menyusul di halaman yang sama. Jika sering, tambah `PQE_WORKER_CONCURRENCY` atau CPU |
 | Foto dari **Kamera langsung** selalu "Metadata kamera tidak tersedia" | Foto dari browser tidak membawa EXIF | Wajar dan hanya informasi (tidak memengaruhi verdict). Pakai **📷 Ambil foto** untuk menguji EXIF |
+| Foto uji di Web UI tampil "tidak disimpan" / tanpa gambar | Halaman uji coba tidak menyimpan foto ke SILO (di aplikasi asli, aplikasi yang menyimpan `output_image`) | Sesuai desain. Hasil analisis tetap tercatat; foto hasil engine terlihat di halaman uji coba itu sendiri |
 | Foto uji ditandai `DUPLICATE_EXACT` / `DUPLICATE_SIMILAR` | File yang sama (atau versi gelap/terang dari foto yang sama) sudah pernah dikirim | Benar secara logika: pengiriman berbeda tidak boleh memakai foto yang sama. Ambil foto baru |
 
-## Pengaturan SILO: test koneksi gagal
+<a id="pengaturan-silo-test-koneksi-gagal"></a>
 
-Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Pengaturan SILO) atau di kolom error job/`/readyz`.
+## Koneksi SILO: test koneksi gagal
+
+Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Koneksi SILO; dua cek baca: "Baca bucket aplikasi" dan
+"Baca isi foto") atau di kolom error job/`/readyz`. Engine hanya butuh izin baca.
 
 | Pesan / gejala | Penyebab | Solusi |
 |---|---|---|
@@ -129,14 +134,14 @@ Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Pengaturan SILO) ata
 | `SSLError` / `CERTIFICATE_VERIFY_FAILED` | Endpoint `https` dengan sertifikat self-signed/CA internal | Pakai sertifikat valid di SILO, atau tambahkan CA internal ke image engine |
 | `SignatureDoesNotMatch` | **Secret key salah** (salah salin, spasi ikut), atau signature tidak cocok | Salin ulang secret key, simpan lagi. Pastikan Signature `s3v4` |
 | `InvalidAccessKeyId` | Access key salah / user service account dihapus | Cek user di SILO (`mcli admin user info <alias> <user>`) |
-| `AccessDenied` di cek "Baca bucket aplikasi" | Policy service account tidak punya `s3:ListBucket`/`s3:GetObject` di bucket aplikasi | Tambahkan bucket aplikasi ke policy (contoh policy ditampilkan di halaman Pengaturan SILO dan di [operations.md §4.2](operations.md#42-service-account-engine-least-privilege)) |
-| `AccessDenied` di cek "Tulis bucket hasil kompres" | Policy tidak punya `s3:PutObject`/`s3:DeleteObject` di bucket engine | Tambahkan izin tulis untuk bucket processed/thumb/upload |
-| `NoSuchBucket` / `404` di salah satu cek | Nama bucket salah atau bucket belum dibuat | Perbaiki nama bucket di form, atau minta tim infra membuat bucket (lokal: `ENGINE_CREATE_BUCKETS=true`) |
+| `AccessDenied` di cek "Baca bucket aplikasi" | Policy service account tidak punya `s3:ListBucket`/`s3:GetObject` di bucket aplikasi | Tambahkan bucket aplikasi ke policy (contoh policy ditampilkan di halaman Koneksi SILO dan di [operations.md §4.2](operations.md#42-service-account-engine-least-privilege)) |
+| `AccessDenied` di cek "Baca isi foto" | Policy punya `s3:ListBucket` tapi tidak `s3:GetObject` | Tambahkan `s3:GetObject` untuk `arn:aws:s3:::<bucket>/*` |
+| `NoSuchBucket` / `404` di salah satu cek | Nama bucket aplikasi salah | Perbaiki nama bucket di form (lokal: `ENGINE_CREATE_BUCKETS=true` membuat bucket aplikasi demo). Engine tidak butuh bucket sendiri |
 | Error alamat/`NoSuchBucket` aneh padahal bucket ada | Gaya alamat salah: SILO/MinIO butuh `path` | Set **Gaya alamat** = `path` (JSON `mc`: `"path": "on"`) atau `auto` |
 | `409 SECRET_KEY_MISSING` saat **Simpan** | `PQE_SECRET_KEY` belum diisi di server, jadi secret key tidak bisa disimpan terenkripsi | Isi `PQE_SECRET_KEY` (`openssl rand -hex 32`) di `.env`/K8s Secret lalu restart, atau isi `AWS_SECRET_ACCESS_KEY` lewat env. Field selain secret key tetap bisa disimpan |
 | `422 INVALID_SETTINGS` | Endpoint tanpa `http://`/`https://`, gaya alamat bukan `auto/path/virtual`, atau signature bukan `s3v4/s3` | Perbaiki nilai sesuai pesan |
 | Test berhasil tapi job masih gagal | Belum lewat 10 detik sejak simpan, atau job sudah dead sebelum diperbaiki | Tunggu ≤ 10 detik, lalu Web UI → Sistem → **Ulangi semua** |
-| Secret key "hilang" setelah redeploy (job `SignatureDoesNotMatch`/`AccessDenied`) | `PQE_SECRET_KEY` berubah, secret lama tidak bisa dibuka sehingga engine memakai `AWS_SECRET_ACCESS_KEY` env | Kembalikan `PQE_SECRET_KEY` lama, atau isi ulang secret key di Pengaturan SILO |
+| Secret key "hilang" setelah redeploy (job `SignatureDoesNotMatch`/`AccessDenied`) | `PQE_SECRET_KEY` berubah, secret lama tidak bisa dibuka sehingga engine memakai `AWS_SECRET_ACCESS_KEY` env | Kembalikan `PQE_SECRET_KEY` lama, atau isi ulang secret key di Koneksi SILO |
 | Foto tampil rusak di browser setelah endpoint diganti | Endpoint internal tidak bisa dibuka browser | Isi **Endpoint publik** dengan host yang bisa dibuka browser/pelanggan |
 
 ## Infrastruktur & deployment
@@ -145,18 +150,19 @@ Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Pengaturan SILO) ata
 |---|---|---|
 | `no such service: #` atau `zsh: unknown file attribute` saat paste perintah di Mac | zsh tidak menganggap `#` sebagai komentar saat di-paste, dan membaca `( ... )` sebagai pola file | Paste perintah tanpa komentar/kurung, atau jalankan `setopt interactivecomments` dulu |
 | `pqe demo-upload` gagal: "Ditolak: PQE_ENV=production. demo-upload menulis 12 foto sintetis ke bucket ..." | Pagar pengaman: di server (`PQE_ENV=production`, bawaan) perintah demo ditolak agar foto sintetis tidak masuk bucket produksi | Benar dan disengaja. Untuk uji lokal pakai `docker-compose.yml` (sudah `PQE_ENV=development`). Untuk smoke test di staging: `pqe demo-upload --bucket <bucket-staging> --force`. Jangan ke bucket produksi |
-| `ForeignBucketWrite: engine tidak boleh menulis/menghapus di bucket '...' (bukan bucket engine)` | Pagar pengaman: engine hanya boleh menulis/menghapus di `ENGINE_BUCKET_PROCESSED`, `ENGINE_BUCKET_THUMB`, `ENGINE_BUCKET_UPLOAD`, dan `upload_bucket` di config tenant. Bucket aplikasi selalu read-only bagi engine, apa pun hak akses key-nya | Disengaja. Jika memang perlu memindahkan foto lama ke bucket aplikasi, pakai `pqe migrate-legacy --bucket ...` (tujuan dipilih eksplisit). Jika engine harus menyimpan upload ke bucket lain, isi `upload_bucket` di config tenant |
+| `ForeignBucketWrite: engine tidak boleh menulis/menghapus di bucket '...' (bukan bucket engine)` | Pagar pengaman: bucket aplikasi selalu read-only bagi engine, apa pun hak akses key-nya. Alur normal engine tidak menulis ke SILO sama sekali | Disengaja. Jika memang perlu memindahkan foto lama ke bucket aplikasi, pakai `pqe migrate-legacy --bucket ...` (tujuan dipilih eksplisit) |
 | `Cannot connect to the Docker daemon` | Docker Desktop belum berjalan | Buka Docker Desktop, tunggu sampai statusnya "running", ulangi perintah |
 | Folder `ocr-engine/ocr-engine` (clone dobel) | `git clone` dijalankan lagi dari dalam folder hasil clone | `cd ..` ke folder induk, hapus folder dalam yang dobel, lanjut di folder `ocr-engine` pertama |
 | Job **gagal permanen (dead)** di Web UI → Sistem | Error sementara berulang sampai `PQE_JOB_MAX_ATTEMPTS` (default 5), biasanya SILO/DB tidak bisa diakses | Baca kolom error terakhir, perbaiki penyebabnya (kredensial, jaringan, bucket), lalu **Ulangi** / **Ulangi semua** (admin). Via API: `POST /v1/admin/jobs/retry-dead` |
 | Error `PROCESSING_FAILED` di foto | Foto yang job-nya dead | Sama seperti di atas. Setelah diulang dan sukses, status foto kembali `done` |
-| `GET /readyz` → `503`, `storage: error` | Engine tidak bisa mengakses SILO: endpoint salah, kredensial salah, atau bucket `ENGINE_BUCKET_PROCESSED` belum ada | Cek nilai efektif di Web UI → **Pengaturan SILO** (nilai di sana menimpa `AWS_ENDPOINT`, `AWS_ACCESS_KEY_ID/SECRET`, dst.) lalu **Test koneksi**. Minta tim infra membuat bucket engine, atau `ENGINE_CREATE_BUCKETS=true` (lokal). Lihat [Pengaturan SILO: test koneksi gagal](#pengaturan-silo-test-koneksi-gagal) |
+| `GET /readyz` → `503`, `storage: error` | Engine tidak bisa membaca SILO: endpoint salah, kredensial salah, atau bucket aplikasi (`AWS_BUCKET`) salah | Cek nilai efektif di Web UI → **Koneksi SILO** (nilai di sana menimpa `AWS_ENDPOINT`, `AWS_ACCESS_KEY_ID/SECRET`, dst.) lalu **Test koneksi**. Lihat [Koneksi SILO: test koneksi gagal](#koneksi-silo-test-koneksi-gagal) |
 | `GET /readyz` → `database: error` | `DATABASE_URL` salah / Postgres mati | Cek koneksi. Format: `postgresql+psycopg://user:pass@host:5432/pqe` |
 | `sqlite3.OperationalError: database is locked` | SQLite dipakai beberapa proses sekaligus (misal `pqe api` + `pqe worker` terpisah, atau beberapa replika) | SQLite hanya untuk uji **satu proses** (`pqe run`). Untuk lainnya wajib PostgreSQL |
 | `docker compose up` / build gagal: `429 Too Many Requests` dari Docker Hub | Batas unduhan Docker Hub (IP bersama/kantor) | `docker login`, atau tarik dari mirror lalu beri tag lokal: `docker pull mirror.gcr.io/library/python:3.12-slim && docker tag mirror.gcr.io/library/python:3.12-slim python:3.12-slim` (sama untuk `postgres:16-alpine` dan `pgsty/silo:<tag>`) |
 | Build gagal di `pip install`: `CERTIFICATE_VERIFY_FAILED` / `self-signed certificate in certificate chain` | Proxy/firewall kantor memakai CA sendiri | Buat Dockerfile turunan **lokal** (jangan commit CA): tambahkan `COPY corp-ca.crt /tmp/ca.crt` dan `ENV PIP_CERT=/tmp/ca.crt` sebelum baris `RUN pip install -r requirements.lock`, lalu `docker build -f Dockerfile.local .`. Alternatif: pakai PyPI mirror internal |
 | Container engine restart terus | Biasanya `DATABASE_URL` tidak bisa dijangkau saat start atau env wajib salah | `docker compose logs engine` / `kubectl logs`. Perbaiki env, lalu restart |
 | SILO lokal: bucket notification tidak jalan | Aturan event belum ditambahkan ke bucket | Jalankan `./scripts/silo-enable-events.sh` setelah bucket ada. Polling tetap jalan sebagai cadangan |
+| Setelah update, Web UI / API masih versi lama | Container belum dibangun ulang, tag salah, atau browser memakai cache | Cek versi: Web UI (sidebar), `GET /healthz`, header `X-PQE-Version`, `docker compose -f docker-compose.prod.yml exec engine pqe --version`. Jika masih lama: `git checkout <tag>` lalu `up -d --build`; muat ulang browser (Ctrl+Shift+R) |
 | Antrean menumpuk (`pqe_queue_lag_seconds` tinggi) | Worker kurang, CPU penuh, atau SILO lambat | Tambah `PQE_WORKER_CONCURRENCY` / replika worker (K8s: HPA). Cek error di log worker |
 | `ERR_SSL_PROTOCOL_ERROR` / "sent an invalid response" saat membuka `https://<IP>` | Versi lama `Caddyfile.prod` tanpa `default_sni`: browser tidak mengirim nama server (SNI) saat dibuka lewat IP | `git pull`, lalu `docker compose -f docker-compose.prod.yml up -d --force-recreate https` |
 | Engine gagal start setelah `host-postgres-setup.sh`: `connection refused` / `timeout` ke `host.docker.internal:5432` | PostgreSQL host belum mendengarkan, atau firewall memblokir jaringan Docker | `sudo systemctl status postgresql`; jika `ufw` aktif: `sudo ufw allow from 172.16.0.0/12 to any port 5432` |
@@ -169,8 +175,8 @@ Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Pengaturan SILO) ata
 |---|---|---|
 | ❌ `PQE_BOOTSTRAP_ADMIN_KEY` / `PQE_SECRET_KEY`: masih nilai bawaan/terlalu pendek | `.env` masih berisi nilai contoh | `scripts/prod-setup.sh <domain>` (hanya mengisi yang kosong/bawaan), lalu `docker compose -f docker-compose.prod.yml up -d`. Mengganti `PQE_SECRET_KEY` membuat secret SILO yang tersimpan tidak bisa dibuka: isi ulang key SILO di Web UI |
 | ❌ Password PostgreSQL: masih password bawaan | Database dibuat dengan `pqe-local-only` | Isi `POSTGRES_PASSWORD` sebelum start pertama. Jika sudah telanjur: `ALTER USER pqe PASSWORD '...'` di container postgres, samakan `.env`, restart engine |
-| ❌ SILO: Kredensial belum diisi | Key SILO belum dimasukkan | Web UI → Pengaturan SILO → isi, Test koneksi, Simpan |
-| ❌ Tulis bucket engine `photos-...` | Bucket belum dibuat atau key tidak punya izin tulis | Buat bucket (`mcli mb`), beri izin tulis ([operations.md 4.2](operations.md#42-service-account-engine-least-privilege)) |
+| ❌ SILO: Kredensial belum diisi | Key SILO belum dimasukkan | Web UI → Koneksi SILO → isi, Test koneksi, Simpan |
+| ❌ SILO: Baca bucket aplikasi `...` | Endpoint/key salah, atau key tidak punya izin baca bucket aplikasi | Perbaiki di Web UI → Koneksi SILO, beri izin `s3:GetObject` + `s3:ListBucket` ([operations.md 4.2](operations.md#42-service-account-engine-least-privilege)). Engine tidak butuh izin tulis |
 | ❌ Backup NAS: belum aktif | Backup belum disimpan aktif | Web UI → Backup NAS → Test NAS → centang aktif → Simpan |
 | ⚠️ Folder NAS: `/backup` belum ter-mount | `NAS_MOUNT` kosong atau share belum di-mount | Mount share NAS ([deploy-production.md langkah 3](deploy-production.md#3-mount-nas-di-server)), isi `NAS_MOUNT`, `up -d` |
 | ⚠️ Tenant `courier-app`: mode enforce | Production dimulai langsung di enforce | Turunkan ke `shadow` dulu (Web UI → Tenant), naikkan setelah kalibrasi ([uat-plan.md](uat-plan.md)) |
@@ -186,7 +192,7 @@ restore: [operations.md bagian 6](operations.md#6-postgresql--backup).
 | "folder /backup tidak ada di dalam container" | Tujuan folder tetapi tidak ada folder yang dipasang ke `/backup` (compose lama, atau pod K8s tanpa volume) | Pakai compose terbaru (memasang `NAS_MOUNT` ke `/backup`), isi `NAS_MOUNT` di `.env`, `docker compose up -d`. K8s: tambahkan volume PVC/NFS di `/backup` pada pod worker dan API |
 | "folder /backup tidak bisa ditulis engine (user uid 10001)" | Folder NAS milik user lain (contoh root atau user NAS) | Mount SMB dengan `uid=10001,gid=10001`, atau `sudo chown -R 10001 <folder NAS_MOUNT>`. Untuk NFS, izinkan uid 10001 menulis di export |
 | Test NAS ✅ tetapi file tidak muncul di NAS | `NAS_MOUNT` masih bawaan `./backup` (folder lokal di server), bukan share NAS | Mount share NAS di server, arahkan `NAS_MOUNT` ke sana, `docker compose up -d`. File lama di `./backup` bisa disalin manual ke NAS |
-| "Ruang kosong NAS" ❌ (< 1 GB) | NAS hampir penuh | Kosongkan/perbesar share. Backup tidak pernah menghapus foto di NAS, jadi kapasitas harus direncanakan (± ukuran bucket `photos-upload` + `photos-processed`) |
+| "Ruang kosong NAS" ❌ (< 1 GB) | NAS hampir penuh | Kosongkan/perbesar share. Backup tidak pernah menghapus foto di NAS, jadi kapasitas harus direncanakan (± ukuran foto yang disimpan aplikasi di bucket aplikasi, jika `include_photos` aktif) |
 | "pg_dump tidak ada di image engine" | Image engine lama (sebelum `postgresql-client` ditambahkan) | Build ulang image (`docker compose up -d --build`) |
 | "pg_dump gagal: ... server version mismatch" | Server PostgreSQL lebih baru dari pg_dump di image (pg_dump 17 mendukung server sampai 17) | Pakai Postgres 14–17, atau build image dengan `postgresql-client` yang lebih baru |
 | NAS S3: `EndpointConnectionError`, `404`/`NoSuchBucket`, `SignatureDoesNotMatch`, `AccessDenied` | Endpoint tidak terjangkau dari container, bucket belum dibuat di NAS, secret salah, atau akun NAS tanpa izin tulis | Cek endpoint dari server (`curl <endpoint>`), buat bucket di NAS, isi ulang secret key (kosong = tidak diubah), beri akun izin tulis ke bucket. Jangan pakai `127.0.0.1` (itu container engine) |
@@ -219,4 +225,4 @@ restore: [operations.md bagian 6](operations.md#6-postgresql--backup).
 4. **Metrik** (`/metrics` di port API; untuk `pqe worker`/`pqe ingestor` di port `PQE_METRICS_PORT`, default 9100): `pqe_queue_depth`, `pqe_queue_lag_seconds`, `pqe_dead_jobs`, `pqe_pending_webhooks`, `pqe_source_errors_total`, `pqe_photos_failed_total`.
 5. **Uji satu foto tanpa server:** `pqe analyze foto.jpg --profile pod_recipient` menunjukkan skor dan alasan persis seperti yang dihitung worker (tanpa cek duplikat).
 6. **Cek config:** `pqe validate-tenant config/tenants/*.yaml`, atau Web UI → Tenant → Validasi → "Profile hasil gabungan".
-7. **Audit log** (Web UI → Sistem, admin): siapa mengubah config/key/review/Pengaturan SILO terakhir kali.
+7. **Audit log** (Web UI → Sistem, admin): siapa mengubah config/key/review/Koneksi SILO terakhir kali.

@@ -55,7 +55,7 @@ ocr-engine/
 │   ├── storage.py              # adapter S3 (SILO); get_storage() memakai konfigurasi efektif;
 │   │                           # pagar pengaman: put/delete hanya ke bucket engine (owned_buckets, ForeignBucketWrite)
 │   ├── backup.py               # Backup NAS: tujuan folder/S3, salin foto + dump DB, jadwal & lease (dipanggil worker)
-│   ├── storage_config.py       # Pengaturan SILO dari Web UI (DB > env > bawaan), impor JSON mc
+│   ├── storage_config.py       # Koneksi SILO dari Web UI (DB > env > bawaan), impor JSON mc
 │   ├── secretbox.py            # enkripsi rahasia di DB (Fernet, kunci dari PQE_SECRET_KEY)
 │   ├── db.py                   # model SQLAlchemy
 │   ├── settings.py             # env var (pydantic-settings, juga membaca .env)
@@ -84,19 +84,23 @@ flowchart LR
     subgraph Masuk
         EV[POST /v1/events/s3] --> ING
         POLL[Ingestor: s3_poll / db_poll] --> ING
-        API[POST /v1/analyze] --> ING
+        API[POST /v1/analyze<br/>JSON object_key] --> ING
+        UP[POST /v1/analyze<br/>file multipart] --> REC[jobs.record_upload<br/>tanpa job]
     end
     ING[jobs.enqueue_object<br/>idempotent: unique bucket+key] --> Q[(tabel jobs)]
     Q -->|claim SKIP LOCKED| P[processor.process_photo]
-    P --> S3R[storage.get original]
-    P --> MAP[mapping.map_metadata]
+    P --> S3R[storage.get<br/>hanya baca SILO aplikasi]
+    S3R --> AR[processor.analyze_and_record]
+    REC --> PU[processor.process_upload<br/>langsung di request] --> AR
+    AR --> MAP[mapping.map_metadata]
+    AR --> PIPE
     P --> PIPE[pipeline.analyze<br/>MURNI]
     PIPE --> AN[analyzers.REGISTRY]
     PIPE --> V[verdict.decide]
-    PIPE --> C[compressor]
-    P --> S3W[storage.put processed/thumb]
-    P --> DB[(photos)]
-    P --> WH[(webhook_deliveries)]
+    PIPE --> C[compressor<br/>hanya untuk upload]
+    PU -->|output_image base64| RESP[respons ke aplikasi]
+    AR --> DB[(photos: metadata saja)]
+    AR --> WH[(webhook_deliveries)]
     WH --> WK[worker maintenance: webhooks.deliver_pending]
 ```
 
@@ -105,10 +109,10 @@ Prinsip penting:
 - **`pipeline.analyze()` murni**: input bytes + `AnalysisContext` (profile, metadata, waktu terima, timezone, fungsi cek duplikat), output `PipelineResult`. Tidak menyentuh DB/S3. Dipakai worker, endpoint preview, CLI `pqe analyze`, dan test. Logika analisis baru ditaruh di sini (lewat analyzer), bukan di processor.
 - **Analyzer = plugin.** Setiap analyzer mengembalikan `CheckResult` (skor 0-100, makin tinggi makin baik, `issue_code`, metrik, `Finding` info/risk). `verdict.decide()` membandingkan skor dengan threshold profile, dan menghitung skor `authenticity` = 100 − total poin `Finding` bertipe `risk`.
 - **Tanpa manipulasi gambar secara bawaan.** Pemrosesan gambar bawaan hanya `compressor.py` (resize proporsional + encode ulang) dan orientasi EXIF di `loader.py`. Jangan menambah filter, penajaman, atau koreksi lain di jalur bawaan.
-- **Koreksi pencahayaan opsional** (`pipeline._try_enhance` + `imaging/enhance.py`): hanya jika `profile.enhance.enabled` (bawaan `false`) dan ada alasan `FIXABLE_CODES`. Satu-satunya operasi yang boleh ada di modul ini adalah LUT global monoton yang lolos `verify_tonal_only` (jangan menambah penajaman, filter lokal, inpainting, atau model ML: itu bisa mengubah isi dokumen). Hanya `RECHECK_AFTER_ENHANCE` (`exposure`, `ocr`) yang dinilai ulang; hasil dipakai hanya jika verdict membaik. `PipelineResult.image` tetap original (hash, EXIF), `output_image` dipakai untuk kompresi/thumbnail.
+- **Koreksi pencahayaan opsional** (`pipeline._try_enhance` + `imaging/enhance.py`): hanya jika `profile.enhance.enabled` (bawaan `false`) dan ada alasan `FIXABLE_CODES`. Satu-satunya operasi yang boleh ada di modul ini adalah LUT global monoton yang lolos `verify_tonal_only` (jangan menambah penajaman, filter lokal, inpainting, atau model ML: itu bisa mengubah isi dokumen). Hanya `RECHECK_AFTER_ENHANCE` (`exposure`, `ocr`) yang dinilai ulang; hasil dipakai hanya jika verdict membaik. `PipelineResult.image` tetap original (hash, EXIF), `output_image` dipakai untuk kompresi (foto yang dikembalikan ke aplikasi).
 - **`retake_required` / `evidence_eligible` / `allow_status_update` / `courier_message`** dihitung di `serializers.py` (bukan disimpan di DB), dari verdict, `action`, status review, dan `review_required` tenant. Aturan teks `courier_message` ada di `i18n.courier_message()` (dipakai juga oleh endpoint preview). Engine tidak pernah menyimpan atau mengubah status pengiriman; itu milik aplikasi pengiriman.
-- **`stored`** (link permanen foto pengiriman) dihitung di `serializers.stored_location()`: hanya jika `allow_status_update`, menunjuk ke versi hasil (`processed_*`) atau foto asli. Untuk foto `ingest_source == "upload"` yang diterima, `processor.py` selalu menulis salinan ke `ENGINE_BUCKET_PROCESSED` (juga saat kompresi passthrough), supaya `stored` tidak pernah menunjuk ke bucket upload (arsip asli + karantina).
-- **Pengaturan SILO** (`storage_config.py`): nilai di tabel `settings` (key `storage`) menimpa env per field; secret dienkripsi `secretbox` (Fernet dari `PQE_SECRET_KEY`). `get_storage()` membuat ulang client saat versi berubah (cek tiap `REFRESH_SEC` = 10 detik). Kode baru yang butuh nama bucket/endpoint harus memakai `get_storage().s`, **bukan** `get_settings()`, agar ikut perubahan dari Web UI.
+- **Engine tidak menulis ke SILO** ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Jangan menambah `storage.put` di jalur analisis. Upload file dicatat `jobs.record_upload` dengan lokasi sementara `bucket=""`, `object_key="unstored/<id>"` (`UNSTORED_BUCKET`), dianalisis `processor.process_upload` di request itu juga, dan hasil kompresi dikembalikan sebagai `OutputImage` (`output_image` di respons) hanya jika `allow_status_update`. Lokasi asli diikat oleh `processor.bind_location` dari field `object_key` (hanya untuk foto diterima) atau `POST /v1/photos/{id}/stored`; catatan polling dengan file yang sama digabung. Foto `bucket == ""` tidak punya file: dilewati evidence (`eligible_photos`), backup (`_pending_query`), dan `reprocess` (`409 NOT_STORED`). Thumbnail dibuat saat diminta di `GET /v1/photos/{id}/file?variant=thumbnail`. Kolom `processed_*`/`thumb_*` hanya terisi pada data versi lama.
+- **Koneksi SILO** (`storage_config.py`): nilai di tabel `settings` (key `storage`) menimpa env per field; secret dienkripsi `secretbox` (Fernet dari `PQE_SECRET_KEY`). `get_storage()` membuat ulang client saat versi berubah (cek tiap `REFRESH_SEC` = 10 detik). Kode baru yang butuh nama bucket/endpoint harus memakai `get_storage().s`, **bukan** `get_settings()`, agar ikut perubahan dari Web UI.
 - **Antrean di database** (`jobs.py`): `claim_job` memakai `with_for_update(skip_locked=True)`. Retry: backoff `10 × 2^(attempt-1)` detik (maks 1 jam) sampai `PQE_JOB_MAX_ATTEMPTS`, lalu `dead`. Job `running` lebih lama dari `PQE_JOB_STALE_AFTER_SEC` dikembalikan ke antrean oleh worker. Lihat [ADR 0001](adr/0001-queue-di-postgres.md).
 - **Error permanen vs sementara** (`processor.execute_job`): `UnreadableImage`, `ObjectNotFound`, `TenantNotFound` langsung menandai foto `error` tanpa retry. Exception lain dianggap sementara dan di-retry.
 - **Ingestor** (`Ingestor.tick`): setiap source dijadwalkan sesuai `poll_interval_sec`. Source `s3_event` hanya di-poll saat reconciliation. Tick pertama setelah start selalu reconciliation (lookback minimal 7 hari) untuk mengejar foto saat engine mati.
@@ -148,7 +152,7 @@ AWS_ENDPOINT=http://127.0.0.1:5055
 AWS_ACCESS_KEY_ID=test
 AWS_SECRET_ACCESS_KEY=test
 AWS_BUCKET=ekas-pcptransport
-ENGINE_CREATE_BUCKETS=true
+ENGINE_CREATE_BUCKETS=true   # membuat bucket aplikasi demo di moto; engine sendiri tidak menulis ke SILO
 PQE_BOOTSTRAP_ADMIN_KEY=pqe_dev_admin
 PQE_TENANTS_DIR=config/tenants
 ```
@@ -362,7 +366,9 @@ Metrik mentah setiap check (`metrics` di detail foto) membantu memahami alasan s
 
 ## Proses rilis
 
-1. Naikkan versi di **dua tempat**: `pyproject.toml` (`version`) dan `engine/__init__.py` (`__version__`).
+1. Naikkan versi di **dua tempat**: `pyproject.toml` (`version`) dan `engine/__init__.py` (`__version__`). Nilai `__version__`
+   inilah yang tampil di Web UI (sidebar, topbar, login, halaman uji coba & panduan), `GET /healthz`, `GET /v1/me`,
+   header `X-PQE-Version` di setiap respons, dan `pqe --version` (dicek `tests/test_regressions.py::test_version_is_visible`).
 2. Jika dependency berubah, regenerasi lockfile di environment bersih:
 
    ```bash
@@ -374,7 +380,7 @@ Metrik mentah setiap check (`metrics` di detail foto) membantu memahami alasan s
 
 3. Merge request → CI hijau (lint, pytest, test client, build image + smoke test).
 4. Tag `vX.Y.Z` di default branch. Pipeline GitLab mem-push image `$CI_REGISTRY_IMAGE:<sha>`. Tag image versi untuk produksi (`registry.pcpexpress.com/photo-quality-engine:X.Y.Z`) dan update `deploy/k8s/kustomization.yaml`.
-5. Deploy sesuai [operations.md](operations.md#10-upgrade--rollback).
+5. Deploy sesuai [operations.md](operations.md#10-upgrade--rollback), lalu pastikan versi yang tampil di Web UI sama dengan tag.
 
 ### Menjaga versi runtime client tetap aman
 

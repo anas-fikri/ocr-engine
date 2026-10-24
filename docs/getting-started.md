@@ -63,16 +63,17 @@ menulis atau menghapus di bucket aplikasi dalam operasi normal; `demo-upload` ad
 
 ## 4. Lihat hasilnya
 
-1. Buka http://localhost:8000/ui dan masuk dengan API key admin.
+1. Buka http://localhost:8000/ui dan masuk dengan API key admin. Menu ada di sidebar kiri (di HP: tombol ☰), versi
+   engine tampil di sidebar dan pojok kanan atas. Setiap halaman langsung menaruh kursor di field utamanya.
 2. **Dashboard**: ringkasan PASS/WARN/REJECT, alasan terbanyak, kurir/cabang bermasalah.
 3. **Review**: antrean foto WARN/REJECT (opsional: foto WARN sudah otomatis masuk evidence). Klik satu foto untuk
    melihat skor, alasan, saran, EXIF, ukuran sebelum dan sesudah kompres. Foto yang kualitasnya tidak memenuhi syarat
    (buram berat, pecah, terlalu gelap) bertanda **Wajib foto ulang**; engine tidak memperbaiki/memanipulasi gambar,
    hanya mengoptimasi ukuran. Coba juga tombol **Setujui** / **Minta foto ulang**.
 4. **Uji foto**: upload foto dari HP Anda sendiri untuk melihat penilaian engine tanpa menyimpan apa pun.
-5. **Pengaturan SILO** (admin): koneksi ke SILO. Di compose lokal sudah terisi dari env; untuk mencoba SILO lain,
-   tempel JSON `mc` lalu **Test koneksi** (jangan pakai `127.0.0.1` dari dalam Docker, lihat
-   [configuration.md §1.6](configuration.md#16-pengaturan-silo-lewat-web-ui)).
+5. **Koneksi SILO** (admin): koneksi **baca** ke SILO (engine tidak pernah menyimpan foto; aplikasi yang menyimpan).
+   Di compose lokal sudah terisi dari env; untuk mencoba SILO lain, tempel JSON `mc` lalu **Test koneksi** (jangan
+   pakai `127.0.0.1` dari dalam Docker, lihat [configuration.md §1.6](configuration.md#16-koneksi-silo-lewat-web-ui)).
 6. **Backup NAS** (admin): di compose lokal tujuan folder `/backup` = folder `./backup` di repo. Klik **Test NAS**, centang
    **Aktifkan backup terjadwal**, **Simpan**, lalu **Backup database sekarang**; file muncul di `./backup` dalam ±10 detik.
    Di server, mount share NAS lalu isi `NAS_MOUNT` ([operations.md 6.3](operations.md#63-mount-nas-untuk-tujuan-folder)).
@@ -90,15 +91,16 @@ engine, lalu lihat pesan yang akan tampil di layar kurir beserta detail analisis
    HP harus di jaringan (Wi-Fi) yang sama, dan port 8000 tidak diblokir firewall PC.
 2. Di HP buka `http://192.168.1.10:8000/ui/coba.html`, masuk dengan API key admin (`pqe_local_admin_change_me` di lokal).
 3. Pilih mode:
-   - **Simulasi aplikasi kurir** (bawaan): sama dengan integrasi level 2B "scan dulu, baru simpan"
-     (`POST /v1/analyze?sync=true&timeout_ms=3000` dengan file): foto diperiksa dulu, hanya yang diterima disimpan ke
-     SILO (link di `stored`). Foto masuk tenant **`uji-coba`** (dibuat otomatis dari `config/tenants/uji-coba.yaml`, mode `enforce`,
-     retensi 30 hari), jadi tidak tercampur dengan data aplikasi kurir. Foto muncul di Web UI dan evidence resi uji.
+   - **Simulasi aplikasi kurir** (bawaan): sama dengan integrasi aplikasi (`POST /v1/analyze?timeout_ms=3000` dengan
+     file): engine memeriksa dan mengoptimasi foto, lalu mengembalikan keputusan + foto hasil (`output_image`). Di
+     aplikasi asli, aplikasi yang menyimpan foto itu ke SILO; halaman uji coba **tidak menyimpan** foto ke mana pun.
+     Hasil analisis masuk tenant **`uji-coba`** (dibuat otomatis dari `config/tenants/uji-coba.yaml`, mode `enforce`,
+     retensi 30 hari), jadi tidak tercampur dengan data aplikasi kurir, dan tampil di Web UI (tanpa gambar).
    - **Uji cepat**: hanya dianalisis, tidak disimpan.
 4. Tekan **📷 Ambil foto** (membuka kamera bawaan HP, EXIF ikut terkirim) atau **Pilih dari galeri**.
 5. Hasil: tampilan **layar kurir** (pesan `courier_message`, tombol Foto ulang / Tetap kirim / Lanjut, dan baris
-   **Status pengiriman: diupdate / TIDAK diupdate** sesuai `allow_status_update`, plus apakah foto disimpan ke SILO),
-   **Link SILO (stored)** untuk foto yang diterima, waktu tunggu kurir, perbandingan foto
+   **Status pengiriman: diupdate / TIDAK diupdate** sesuai `allow_status_update`, plus apakah aplikasi akan menyimpan
+   foto), **Foto untuk disimpan aplikasi** (ukuran, dioptimasi atau asli; "tidak ada" jika ditolak), waktu tunggu kurir, perbandingan foto
    asli vs hasil engine (hanya dioptimasi/dikompres), skor, alasan, kompresi, dan EXIF. **Tampilkan sebagai mode** memperlihatkan pengalaman kurir di `shadow`/`warn`/`enforce` tanpa
    mengubah config. Tombol **Buka di Web UI** langsung membuka detail foto tersebut.
 
@@ -173,8 +175,8 @@ cp .env.example .env
 docker compose -f docker-compose.remote-silo.yml up -d --build
 ```
 
-Bucket engine (`photos-processed`, `photos-thumb`, `photos-upload`) harus sudah dibuat tim infra. Engine hanya
-**membaca** bucket aplikasi. Detail permission dan setup SILO produksi: [operations.md](operations.md).
+Engine tidak butuh bucket sendiri: engine hanya **membaca** bucket aplikasi dan tidak pernah menyimpan foto
+([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Key cukup izin baca. Detail permission dan setup SILO produksi: [operations.md](operations.md).
 
 ## Menjalankan tanpa Docker
 

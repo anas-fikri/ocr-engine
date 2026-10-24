@@ -11,7 +11,8 @@ flowchart LR
     U[Aplikasi pengiriman / Ops / HP uji coba] -->|HTTPS 443| C[Caddy]
     C --> E[Engine]
     E --> P[(PostgreSQL)]
-    E <-->|baca bucket aplikasi, tulis bucket engine| S[(SILO s3.pcpexpress.com)]
+    E -->|hanya baca bucket aplikasi| S[(SILO s3.pcpexpress.com)]
+    U -->|aplikasi menyimpan foto| S
     E -->|backup foto + database| N[(NAS)]
 ```
 
@@ -28,24 +29,24 @@ Semua komponen di atas (Caddy, engine, PostgreSQL) berjalan di **satu server** l
 | 3 | Nama domain internal | Contoh `photo-quality.pcpexpress.com`, diarahkan ke IP server (DNS kantor atau `/etc/hosts`) |
 | 4 | Port 443 (dan 80) terbuka | Dari jaringan aplikasi pengiriman, ops, dan HP uji coba ke server |
 | 5 | Server bisa menjangkau SILO | `curl -I https://s3.pcpexpress.com` dari server |
-| 6 | Key SILO | Disarankan service account khusus engine (baca bucket aplikasi, tulis bucket engine). Key admin tetap aman karena pagar pengaman di engine, tetapi sebaiknya tidak dipakai |
-| 7 | Bucket engine di SILO | `photos-upload`, `photos-processed`, `photos-thumb` (langkah 2) |
-| 8 | Share NAS | Folder SMB/NFS khusus backup + akun yang bisa menulis (langkah 3) |
+| 6 | Key SILO | Disarankan service account khusus engine dengan izin **baca saja** di bucket aplikasi (langkah 2). Engine tidak pernah menulis ke SILO, jadi key yang sudah ada pun aman, tetapi sebaiknya tidak memakai key admin |
+| 7 | Share NAS | Folder SMB/NFS khusus backup + akun yang bisa menulis (langkah 3) |
 
 ## 2. Siapkan SILO (sekali, oleh tim infra)
 
-Dengan `mcli` (client MinIO/SILO):
+**Tidak perlu membuat bucket.** Engine hanya memproses gambar dan **tidak menyimpan apa pun ke SILO**; aplikasi
+pengiriman yang menyimpan foto ke bucket-nya sendiri ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Engine
+hanya **membaca** bucket aplikasi untuk Web UI, evidence, backup NAS, dan polling.
+
+Cukup buat service account engine dengan izin baca (`s3:GetObject`, `s3:ListBucket`) di bucket aplikasi:
 
 ```bash
 mcli alias set pcp https://s3.pcpexpress.com <ACCESS_KEY_ADMIN> <SECRET_KEY_ADMIN>
-mcli mb pcp/photos-upload
-mcli mb pcp/photos-processed
-mcli mb pcp/photos-thumb
 ```
 
-Buat service account engine dengan izin minimal (contoh policy ada di Web UI → **Pengaturan SILO**, dan
-[operations.md bagian 4](operations.md#4-setup-silo-produksi-untuk-tim-infra)). Kalau memakai key yang sudah ada,
-engine tetap **tidak bisa** menulis atau menghapus di bucket aplikasi (dijaga di kode).
+Policy dan perintahnya: [operations.md bagian 4.2](operations.md#42-service-account-engine-least-privilege) (contoh
+policy juga tampil di Web UI → **Koneksi SILO**). Kalau memakai key yang sudah ada, engine tetap **tidak bisa** menulis
+atau menghapus di bucket aplikasi (dijaga di kode).
 
 ## 3. Mount NAS di server
 
@@ -126,8 +127,8 @@ Jika server memakai `ufw`, izinkan port 5432 dari jaringan Docker: `sudo ufw all
 
 Buka `https://photo-quality.pcpexpress.com/ui`, masuk dengan API key admin dari langkah 5.
 
-1. **Pengaturan SILO**: endpoint `https://s3.pcpexpress.com`, access key, secret key, bucket. Klik **Test koneksi**
-   (semua ✅), lalu **Simpan**.
+1. **Koneksi SILO**: endpoint `https://s3.pcpexpress.com`, access key, secret key, bucket aplikasi. Klik **Test koneksi**
+   (dua cek baca ✅), lalu **Simpan**.
 2. **Backup NAS**: tujuan Folder `/backup`, klik **Test NAS** (semua ✅), centang **Aktifkan backup terjadwal**,
    **Simpan**, lalu **Backup database sekarang**.
 3. **Tenant** → `courier-app`: sesuaikan `bucket`/`prefix` dengan folder foto POD di SILO. Biarkan `mode: shadow`.
@@ -140,8 +141,8 @@ Buka `https://photo-quality.pcpexpress.com/ui`, masuk dengan API key admin dari 
 docker compose -f docker-compose.prod.yml exec engine pqe preflight
 ```
 
-atau Web UI → **Sistem** → **Jalankan preflight**. Preflight memeriksa secret, database, koneksi dan izin SILO,
-pagar pengaman bucket aplikasi, mode tenant, backup NAS, worker, dan OCR. Hasil akhir harus **"SIAP production"**.
+atau Web UI → **Sistem** → **Jalankan preflight**. Preflight memeriksa secret, database, koneksi baca SILO
+("Baca bucket aplikasi", "Engine hanya membaca SILO"), mode tenant, backup NAS, worker, dan OCR. Hasil akhir harus **"SIAP production"**.
 Peringatan (⚠️) boleh untuk uji coba, tetapi baca saran perbaikannya.
 
 ## 9. Sertifikat internal di perangkat uji
@@ -161,7 +162,8 @@ Let's Encrypt.
 ## 10. Uji coba langsung
 
 - HP uji coba: `https://photo-quality.pcpexpress.com/ui/coba.html` (kamera langsung berfungsi karena sudah HTTPS).
-  Foto masuk tenant `uji-coba`, tidak tercampur data kurir.
+  Hasil analisis masuk tenant `uji-coba`, tidak tercampur data kurir. Halaman ini tidak menyimpan foto ke SILO (di
+  aplikasi asli, aplikasi yang menyimpan), jadi di Web UI foto uji tampil tanpa gambar.
 - Developer aplikasi: `https://photo-quality.pcpexpress.com/ui/guide.html`.
 - Ops: Web UI → Dashboard / Review untuk foto asli yang dinilai di mode shadow.
 
@@ -176,16 +178,18 @@ Lanjutkan dengan [Rencana UAT](uat-plan.md).
 | Update ke versi baru | `git fetch --tags && git checkout v0.1.1 && docker compose -f docker-compose.prod.yml up -d --build` |
 | Rollback | `git checkout v0.1.0 && docker compose -f docker-compose.prod.yml up -d --build` |
 | Restart | `docker compose -f docker-compose.prod.yml restart engine` |
+| Cek versi yang berjalan | `docker compose -f docker-compose.prod.yml exec engine pqe --version`, atau lihat Web UI (sidebar / pojok kanan atas), `GET /healthz`, header `X-PQE-Version` |
 | Restore dari NAS | [operations.md bagian 6.4](operations.md) |
 
-Sebelum update, pastikan backup database terakhir berhasil (Web UI → Backup NAS). Saat start, engine membuat tabel
+Sebelum update, pastikan backup database terakhir berhasil (Web UI → Backup NAS). Setelah update atau rollback, cek
+versi yang tampil di Web UI sama dengan tag yang di-checkout. Saat start, engine membuat tabel
 baru yang belum ada; versi 0.1.x tidak mengubah tabel lama, jadi rollback cukup dengan kembali ke tag sebelumnya.
 Jika suatu rilis mengubah skema, catatan rilisnya akan menyebutkan langkah tambahan.
 
 ## 12. Checklist keamanan production
 
 - `.env` hanya bisa dibaca root/admin server (`chmod 600`, sudah diatur script).
-- Key SILO admin yang pernah dibagikan di chat/email sudah diganti (rotate).
+- Key SILO admin yang pernah dibagikan di chat/email sudah diganti (rotate). Engine cukup memakai key **baca saja**.
 - Key admin engine hanya dipegang 1–2 orang; tim lain memakai key `ops`/`viewer`/`app`.
 - Port 8000 hanya terbuka di `127.0.0.1` server (sudah diatur compose); akses dari luar hanya lewat HTTPS.
 - Backup NAS aktif dan uji restore dilakukan minimal sebulan sekali.

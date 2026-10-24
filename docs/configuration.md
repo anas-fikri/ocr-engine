@@ -3,13 +3,13 @@
 Semua yang bisa diatur di Photo Quality Engine ada di tiga tempat:
 
 1. **Environment variable**: koneksi (SILO, database), keamanan, dan perilaku worker. Berlaku untuk seluruh engine, diubah lewat `.env` / K8s ConfigMap+Secret, dan butuh restart.
-2. **Pengaturan SILO dan Backup NAS (Web UI, admin)**: koneksi ke SILO (endpoint, access/secret key, bucket) yang menimpa environment variable SILO, serta tujuan dan jadwal backup NAS. Berlaku **tanpa restart**. Lihat [1.6](#16-pengaturan-silo-lewat-web-ui) dan [1.7](#17-backup-nas-lewat-web-ui).
+2. **Koneksi SILO dan Backup NAS (Web UI, admin)**: koneksi baca ke SILO (endpoint, access/secret key, bucket aplikasi) yang menimpa environment variable SILO, serta tujuan dan jadwal backup NAS. Berlaku **tanpa restart**. Lihat [1.6](#16-koneksi-silo-lewat-web-ui) dan [1.7](#17-backup-nas-lewat-web-ui).
 3. **Config tenant (YAML)**: aturan per aplikasi, yaitu sumber foto, mapping metadata, profile per jenis foto, threshold, koreksi pencahayaan opsional, kompresi, review, webhook, dan retensi. Diubah lewat Web UI atau API **tanpa restart**.
 
 Daftar isi:
 
 - [1. Environment variable](#1-environment-variable)
-  - [1.6 Pengaturan SILO lewat Web UI](#16-pengaturan-silo-lewat-web-ui)
+  - [1.6 Koneksi SILO lewat Web UI](#16-koneksi-silo-lewat-web-ui)
   - [1.7 Backup NAS lewat Web UI](#17-backup-nas-lewat-web-ui)
 - [2. Config tenant (YAML)](#2-config-tenant-yaml)
   - [2.1 Field tingkat atas](#21-field-tingkat-atas)
@@ -32,7 +32,10 @@ Engine membaca environment variable, plus file `.env` di folder kerja kalau ada.
 ### 1.1 SILO / S3
 
 Nama variabel sengaja disamakan dengan aplikasi Laravel yang sudah ada. Semua variabel bertanda ⚙ bisa ditimpa
-admin lewat Web UI → **Pengaturan SILO** tanpa restart (lihat [1.6](#16-pengaturan-silo-lewat-web-ui)).
+admin lewat Web UI → **Koneksi SILO** tanpa restart (lihat [1.6](#16-koneksi-silo-lewat-web-ui)).
+
+Engine **hanya membaca** SILO dan tidak pernah menyimpan foto ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md));
+penyimpanan dikerjakan aplikasi. Jadi yang wajib diisi hanya endpoint, key (izin baca), dan bucket aplikasi.
 
 | Variabel | Default | Arti | Kapan diubah |
 |---|---|---|---|
@@ -44,12 +47,10 @@ admin lewat Web UI → **Pengaturan SILO** tanpa restart (lihat [1.6](#16-pengat
 | `AWS_SIGNATURE_VERSION` ⚙ | `s3v4` | Versi tanda tangan request: `s3v4` (disarankan) atau `s3` (v2, server lama). Sama dengan `api` di konfigurasi `mc` | Hanya untuk server S3 lama yang belum mendukung v4 |
 | `AWS_ACCESS_KEY_ID` ⚙ | kosong | Access key **service account engine** | Selalu diisi. Jangan pakai akun admin/root SILO |
 | `AWS_SECRET_ACCESS_KEY` ⚙ | kosong | Secret key pasangannya | Selalu diisi |
-| `AWS_BUCKET` ⚙ | `ekas-pcptransport` | Bucket foto original milik aplikasi (engine hanya **membaca**). Dipakai sebagai default jika source/API tidak menyebut bucket | Sesuaikan dengan bucket aplikasi |
+| `AWS_BUCKET` ⚙ | `ekas-pcptransport` | Bucket foto milik aplikasi (engine hanya **membaca**: Web UI, evidence, backup NAS, polling). Default untuk `object_key` dari API/source yang tidak menyebut bucket | Sesuaikan dengan bucket aplikasi |
 | `AWS_URL` | — | **Tidak dibaca engine.** Ada di `.env.example` hanya agar sama dengan config aplikasi Laravel | — |
-| `ENGINE_BUCKET_PROCESSED` ⚙ | `photos-processed` | Bucket hasil optimasi (milik engine). Untuk integrasi "scan dulu, baru simpan" ini adalah **penyimpanan foto pengiriman yang diterima**: link `stored.url` yang disimpan aplikasi menunjuk ke sini (foto upload yang diterima selalu disalin ke sini, walau tidak perlu dikompres) | Sesuai nama bucket dari tim infra |
-| `ENGINE_BUCKET_THUMB` ⚙ | `photos-thumb` | Bucket thumbnail (milik engine) | Sesuai nama bucket dari tim infra |
-| `ENGINE_BUCKET_UPLOAD` ⚙ | `photos-upload` | Bucket internal untuk foto asli yang diupload **langsung ke engine** lewat `POST /v1/analyze` (multipart): arsip asli (verifikasi keaslian, hash/EXIF) + karantina foto yang ditolak untuk review ops. Tidak pernah diberikan sebagai link `stored`. Bisa ditimpa per tenant dengan `upload_bucket` | Sesuai nama bucket dari tim infra |
-| `ENGINE_CREATE_BUCKETS` | `false` | `true` = saat start, engine membuat bucket processed/thumb/upload **dan** `AWS_BUCKET` jika belum ada | `true` hanya untuk lokal/uji coba. Di produksi bucket dibuat tim infra |
+| `ENGINE_BUCKET_PROCESSED` / `ENGINE_BUCKET_THUMB` / `ENGINE_BUCKET_UPLOAD` | `photos-processed` / `photos-thumb` / `photos-upload` | **Data versi lama saja.** Versi awal menyimpan salinan foto di bucket ini; versi sekarang tidak menulis apa pun ke SILO. Hanya dibaca untuk membuka/backup foto lama | Biarkan bawaan. Instalasi baru tidak perlu membuat bucket ini |
+| `ENGINE_CREATE_BUCKETS` | `false` | `true` = saat start, engine membuat `AWS_BUCKET` (dan bucket versi lama) jika belum ada | `true` hanya untuk SILO lokal/uji coba (`docker-compose.yml`). Di produksi selalu `false` |
 | `ENGINE_PRESIGN_TTL_UI` | `900` | Masa berlaku link foto (detik) untuk Web UI dan API `/v1/photos` | Perpanjang jika ops sering membuka tab lama |
 | `ENGINE_PRESIGN_TTL_CUSTOMER` | `604800` (7 hari) | Masa berlaku link foto di `/v1/evidence/...` (untuk pelanggan) | Maksimal 7 hari (batas presigned S3 v4) |
 
@@ -70,10 +71,10 @@ Skema tabel dibuat otomatis saat start (`pqe init` / `pqe run` / `pqe api` / `pq
 | `PQE_S3_EVENT_TOKEN` | kosong | Token yang wajib dikirim SILO di header `Authorization` saat bucket notification ke `/v1/events/s3`. Format `Bearer <token>` maupun `<token>` diterima | **Selalu isi di produksi.** Jika kosong, endpoint event menerima request tanpa token |
 | `PQE_DEFAULT_LANG` | `id` | Bahasa pesan API jika request tidak mengirim `Accept-Language` atau `?lang=` | Jarang |
 | `PQE_MAX_UPLOAD_MB` | `25` | Batas ukuran file di `POST /v1/analyze` (multipart). Lebih besar → `413 FILE_TOO_LARGE` | Jika ada kamera yang menghasilkan file sangat besar |
-| `PQE_SYNC_TIMEOUT_MS` | `3000` | Batas tunggu default `?sync=true`. Lewat batas → respons `202` (fail-open), hasil menyusul | Turunkan jika aplikasi butuh respons lebih cepat |
-| `PQE_SECRET_KEY` | kosong | Kunci untuk mengenkripsi rahasia yang disimpan di database lewat Web UI (secret key SILO di halaman **Pengaturan SILO**). Isi dengan nilai acak panjang, contoh `openssl rand -hex 32` | **Selalu isi di produksi** dan simpan di K8s Secret. Jika kosong, secret key SILO tidak bisa disimpan lewat Web UI (`409 SECRET_KEY_MISSING`). Jika **diganti**, secret yang sudah tersimpan tidak bisa dibaca lagi dan harus diisi ulang di Pengaturan SILO |
+| `PQE_SYNC_TIMEOUT_MS` | `3000` | Batas tunggu default `POST /v1/analyze` dengan file (selalu dianalisis langsung) dan `?sync=true` untuk `object_key`. Lewat batas → respons `202`, `allow_status_update: true`, `output_image: null` (fail-open; aplikasi menyimpan foto asli), hasil tetap tercatat | Turunkan jika aplikasi butuh respons lebih cepat |
+| `PQE_SECRET_KEY` | kosong | Kunci untuk mengenkripsi rahasia yang disimpan di database lewat Web UI (secret key SILO di halaman **Koneksi SILO**). Isi dengan nilai acak panjang, contoh `openssl rand -hex 32` | **Selalu isi di produksi** dan simpan di K8s Secret. Jika kosong, secret key SILO tidak bisa disimpan lewat Web UI (`409 SECRET_KEY_MISSING`). Jika **diganti**, secret yang sudah tersimpan tidak bisa dibaca lagi dan harus diisi ulang di Koneksi SILO |
 | `PQE_CORS_ORIGINS` | kosong | Origin web (dipisah koma) yang boleh memanggil API langsung dari browser. Kosong = CORS mati | Isi hanya jika aplikasi web memanggil engine dari browser |
-| `PQE_ENV` | `production` | `production` = pagar pengaman perintah: `pqe demo-upload` ditolak kecuali dengan `--force`. `development` = perintah demo diizinkan. Apa pun nilainya, engine **tidak pernah** menulis/menghapus di bucket selain bucket engine (`ENGINE_BUCKET_*`) dan `upload_bucket` tenant, jadi bucket aplikasi tetap read-only walau key punya akses penuh | `development` hanya untuk lokal (`docker-compose.yml` sudah mengaturnya). Biarkan `production` di server |
+| `PQE_ENV` | `production` | `production` = pagar pengaman perintah: `pqe demo-upload` ditolak kecuali dengan `--force`. `development` = perintah demo diizinkan. Apa pun nilainya, engine **tidak pernah** menulis/menghapus di bucket aplikasi (read-only walau key punya akses penuh); foto pun tidak disimpan engine sama sekali | `development` hanya untuk lokal (`docker-compose.yml` sudah mengaturnya). Biarkan `production` di server |
 
 ### 1.4 Worker & ingestor
 
@@ -115,9 +116,11 @@ oleh `scripts/prod-setup.sh`:
 | `PQE_BUNDLED_POSTGRES` | `1` | `0` = container `postgres` tidak dijalankan; database di host server (diisi `scripts/host-postgres-setup.sh`) |
 | `PQE_DATABASE_URL` | - | `DATABASE_URL` engine jika database bukan container bawaan, misal `postgresql+psycopg://pqe:...@host.docker.internal:5432/pqe` |
 
-### 1.6 Pengaturan SILO lewat Web UI
+<a id="16-pengaturan-silo-lewat-web-ui"></a>
 
-Admin bisa mengatur koneksi SILO dari Web UI → **Pengaturan SILO** (atau API `GET/PUT /v1/admin/settings/storage`,
+### 1.6 Koneksi SILO lewat Web UI
+
+Admin bisa mengatur koneksi SILO dari Web UI → **Koneksi SILO** (dulu bernama "Pengaturan SILO"; atau API `GET/PUT /v1/admin/settings/storage`,
 lihat [api-reference.md](api-reference.md#pengaturan-silo)), tanpa mengedit `.env` dan tanpa restart.
 
 **Urutan prioritas per field:** nilai yang disimpan di halaman ini (database) > environment variable > bawaan.
@@ -134,7 +137,7 @@ Field yang tidak diisi di halaman ini tetap memakai env. Setiap field menampilka
 | Gaya alamat (`addressing_style`) | `AWS_ADDRESSING_STYLE` |
 | Signature (`signature_version`) | `AWS_SIGNATURE_VERSION` |
 | Bucket foto aplikasi (`app_bucket`) | `AWS_BUCKET` |
-| Bucket hasil kompres / thumbnail / upload (`processed_bucket`, `thumb_bucket`, `upload_bucket`) | `ENGINE_BUCKET_PROCESSED` / `ENGINE_BUCKET_THUMB` / `ENGINE_BUCKET_UPLOAD` |
+| Bucket versi lama (`processed_bucket`, `thumb_bucket`, `upload_bucket`, hanya lewat API, tidak tampil di form) | `ENGINE_BUCKET_PROCESSED` / `ENGINE_BUCKET_THUMB` / `ENGINE_BUCKET_UPLOAD` |
 
 **Impor dari konfigurasi `mc` / MinIO client.** Tempel JSON seperti di bawah ke kotak "Impor dari konfigurasi mc",
 klik **Isi form dari JSON**, lalu **Test koneksi** dan **Simpan**:
@@ -157,9 +160,9 @@ klik **Isi form dari JSON**, lalu **Test koneksi** dan **Simpan**:
 > host lain untuk membuka foto, isi **Endpoint publik**.
 
 **Test koneksi** memakai nilai di form (sebelum disimpan; field kosong memakai nilai efektif saat ini) dan menjalankan
-empat cek: (1) list bucket foto aplikasi, (2) tulis lalu hapus objek uji `_pqe_connection_test/...` di bucket hasil
-kompres, (3) akses bucket thumbnail, (4) akses bucket upload. Setiap cek menampilkan ✅/❌ beserta pesan error asli
-dari SILO (lihat [troubleshooting](troubleshooting.md#pengaturan-silo-test-koneksi-gagal)).
+dua cek **baca saja**: (1) "Baca bucket aplikasi" (list), (2) "Baca isi foto" (membaca metadata satu foto contoh).
+Tidak ada yang ditulis ke SILO. Setiap cek menampilkan ✅/❌ beserta pesan error asli dari SILO (lihat
+[troubleshooting](troubleshooting.md#koneksi-silo-test-koneksi-gagal)).
 
 Aturan penyimpanan:
 
@@ -171,13 +174,13 @@ Aturan penyimpanan:
 - Perubahan berlaku di **semua proses** (API, worker, ingestor) **paling lambat 10 detik**, tanpa restart.
 - Setiap simpan menaikkan versi dan tercatat di audit log (`settings.storage.update`, berisi nama field yang diubah,
   **tanpa** nilai rahasia).
-- Tetap pakai **service account khusus engine** dengan permission minimal (halaman ini menampilkan contoh policy-nya),
-  bukan akun admin/root SILO. Lihat [operations.md](operations.md). Sebagai lapisan tambahan, engine sendiri menolak
-  menulis/menghapus di bucket aplikasi (lihat `PQE_ENV` di 1.3).
+- Tetap pakai **service account khusus engine** dengan izin baca saja (`s3:GetObject`, `s3:ListBucket`; halaman ini
+  menampilkan contoh policy-nya), bukan akun admin/root SILO. Lihat [operations.md](operations.md#42-service-account-engine-least-privilege).
+  Sebagai lapisan tambahan, engine sendiri menolak menulis/menghapus di bucket aplikasi (lihat `PQE_ENV` di 1.3).
 
 ### 1.7 Backup NAS lewat Web UI
 
-Menu **Backup NAS** (role `admin`) mengatur salinan terjadwal foto dan database ke NAS. Nilainya tersimpan di database
+Menu **Backup NAS** (role `admin`) mengatur salinan terjadwal database dan foto (yang disimpan aplikasi di SILO) ke NAS. Nilainya tersimpan di database
 (bukan env) dan dibaca worker setiap putaran (±10 detik), jadi berlaku tanpa restart.
 
 | Field | Bawaan | Arti |
@@ -186,11 +189,9 @@ Menu **Backup NAS** (role `admin`) mengatur salinan terjadwal foto dan database 
 | `target` | `folder` | `folder` (NAS di-mount ke container) atau `s3` (NAS S3-compatible) |
 | `folder_path` | `/backup` | Path absolut di dalam container (= `NAS_MOUNT` di compose) |
 | `s3_endpoint`, `s3_bucket`, `s3_prefix`, `s3_region`, `s3_access_key`, `s3_secret_key`, `s3_addressing_style` | `us-east-1`, `path` | Tujuan NAS S3. Secret disimpan terenkripsi dengan `PQE_SECRET_KEY` (tanpa itu: `409 SECRET_KEY_MISSING`) |
-| `include_upload_originals` | `true` | Foto asli kurir di `ENGINE_BUCKET_UPLOAD` |
-| `include_processed` | `true` | Foto pengiriman yang diterima (`ENGINE_BUCKET_PROCESSED`) |
 | `include_database` | `true` | Dump database engine |
-| `include_app_originals` | `false` | Foto asli di bucket aplikasi |
-| `include_thumbs` | `false` | Thumbnail |
+| `include_photos` | `true` | Foto pengiriman yang disimpan aplikasi di SILO (dibaca dari lokasi `object_key` / `POST /v1/photos/{id}/stored` / polling). Matikan jika tim infra sudah mem-backup bucket aplikasi. Foto yang tidak disimpan aplikasi (ditolak) tidak ikut |
+| `include_upload_originals` / `include_processed` / `include_thumbs` | `true` / `true` / `false` | **Data versi lama**: salinan di bucket engine dari versi awal. Di Web UI ada di bagian "Data versi lama" |
 | `photo_interval_minutes` | `15` | Jeda backup foto (1–1440) |
 | `db_interval_hours` | `24` | Jeda dump database (1–720) |
 | `db_keep` | `14` | Jumlah dump database terakhir yang disimpan di NAS (1–365) |
@@ -217,8 +218,7 @@ Field yang tidak dikenal akan **ditolak** saat validasi, supaya salah ketik lang
 | `default_lang` | | `id` | `id` / `en`. Bahasa pesan di **payload webhook** tenant ini. (Respons API mengikuti `Accept-Language` / `?lang=` / `PQE_DEFAULT_LANG`, bukan field ini) |
 | `timezone` | | `Asia/Jakarta` | Zona waktu untuk: waktu EXIF dan `captured_at` tanpa offset, tanggal pada `date_prefix_format`, checkpoint `db_poll`, dan tampilan waktu di PDF evidence |
 | `retention_days` | | `1095` (3 tahun) | Lihat [Retensi](#retensi) |
-| `store_mode` | | `processed` | `processed` = simpan versi kompres + thumbnail ke SILO. `none` = hanya analisis (tanpa kompres & thumbnail; Web UI tidak menampilkan pratinjau, hanya link original) |
-| `upload_bucket` | | `ENGINE_BUCKET_UPLOAD` | Bucket arsip asli (+ karantina foto ditolak) untuk file yang diupload langsung ke `POST /v1/analyze` (multipart) |
+| `store_mode`, `upload_bucket` | | — | **Tidak dipakai lagi** (engine tidak menyimpan foto ke SILO, [ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Masih diterima agar config lama tetap valid |
 | `default_profile` | | `default` | Profile yang dipakai jika `photo_type` foto kosong atau tidak dikenal |
 | `review_required` | | `false` | Apakah foto `WARN` harus di-*approve* ops dulu sebelum masuk evidence pelanggan. `false` = `PASS` dan `WARN` langsung masuk evidence, review ops **opsional** (antrean Review tetap bisa dipakai untuk memantau). `true` = hanya `PASS` atau foto yang di-*approve* ops. `REJECT` tidak pernah masuk tanpa approve. Lihat [bagian 5](#5-mode-verdict-dan-action) |
 | `sources` | | `[]` | Dari mana foto diambil. Kosong = tenant hanya menerima foto lewat API |
@@ -229,8 +229,8 @@ Field yang tidak dikenal akan **ditolak** saat validasi, supaya salah ketik lang
 #### Retensi
 
 - Saat foto pertama kali tercatat, engine mengisi `expires_at = waktu tercatat + retention_days`. Saat `retention_days` diubah (Web UI / API / `pqe import-tenants --force`), `expires_at` **semua foto tenant itu dihitung ulang** dari waktu tercatatnya.
-- Setelah lewat `expires_at`, worker menghapus **milik engine saja**: objek varian (processed + thumbnail), baris foto, job, dan riwayat review terkait. Penghapusan dicatat di audit log (`retention.purge`). Catatan pengiriman webhook yang sudah selesai/dead dihapus otomatis setelah 30 hari.
-- **Foto original di bucket aplikasi tidak pernah dihapus engine.** Atur lifecycle di SILO, contoh 3 tahun:
+- Setelah lewat `expires_at`, worker menghapus **milik engine saja**: baris foto (metadata hasil analisis), job, riwayat review terkait, dan objek di bucket engine versi lama jika ada. Penghapusan dicatat di audit log (`retention.purge`). Catatan pengiriman webhook yang sudah selesai/dead dihapus otomatis setelah 30 hari.
+- **Foto di bucket aplikasi tidak pernah dihapus engine.** Atur lifecycle di SILO, contoh 3 tahun:
   ```bash
   mcli ilm rule add --expire-days 1095 <alias>/ekas-pcptransport
   ```
@@ -238,6 +238,11 @@ Field yang tidak dikenal akan **ditolak** saat validasi, supaya salah ketik lang
 ### 2.2 sources: dari mana foto diambil
 
 Satu tenant boleh punya beberapa source. Semua jalur berujung ke antrean yang **idempotent** (foto yang sama tidak diproses dua kali), jadi polling, event, dan reconcile boleh tumpang tindih.
+Semua source hanya **membaca** SILO/database aplikasi; engine tidak menulis salinan apa pun.
+
+> Jika aplikasi sudah memanggil `POST /v1/analyze` (`checkFile`) untuk foto di prefix yang sama, kirim `object_key` di
+> request itu supaya catatan dari polling digabung ke catatan upload. Tanpa `object_key`, satu foto bisa tercatat dua
+> kali (upload + polling); matikan source polling untuk prefix itu setelah integrasi berjalan.
 
 Field umum:
 
@@ -535,8 +540,8 @@ engine mencoba mengoreksi pencahayaan **sebelum** verdict final diputuskan:
 4. Nilai ulang **hanya** `exposure` dan `ocr` pada hasil perbaikan. Skor `sharpness`, `resolution`, `authenticity`
    tetap dari foto asli.
 5. Hasil dipakai hanya jika verdict **membaik** (`REJECT` → `WARN`/`PASS`, atau `WARN` → `PASS`); jika tidak,
-   `reason: no_improvement`. Jika dipakai, versi processed dan thumbnail dibuat dari hasil perbaikan (JPEG
-   quality 95 sebelum kompresi, selalu disimpan sebagai file baru meskipun kecil).
+   `reason: no_improvement`. Jika dipakai, `output_image` dibuat dari hasil perbaikan (JPEG
+   quality 95 sebelum kompresi, selalu file baru meskipun kecil).
 
 Karena kurva memberi nilai yang sama untuk nilai piksel yang sama di mana pun posisinya, perbaikan ini **tidak bisa
 menambah atau mengubah huruf/angka**. Foto original dan `sha256` tidak pernah berubah. Detail hasil tersimpan di
@@ -628,8 +633,8 @@ Catatan:
 ## 4. Kompresi & thumbnail
 
 Ini satu-satunya pemrosesan gambar bawaan engine: **optimasi tanpa manipulasi**. Foto hanya diperkecil proporsional
-(bila perlu) dan di-encode ulang; tidak ada filter, penajaman, crop, atau koreksi warna/cahaya. Original selalu
-disimpan utuh.
+(bila perlu) dan di-encode ulang; tidak ada filter, penajaman, crop, atau koreksi warna/cahaya. Hasilnya dikembalikan
+ke aplikasi sebagai `output_image` di respons `POST /v1/analyze` (upload file); aplikasi yang menyimpannya ke SILO.
 
 | Field `compression` | Default `default` | `pod_document` | Arti |
 |---|---|---|---|
@@ -645,19 +650,20 @@ disimpan utuh.
 
 **Algoritma:**
 
-1. **Lewati (passthrough)** jika `enabled: false`, **atau** ukuran ≤ `skip_if_below_bytes` **dan** format JPEG/PNG/WebP **dan** sisi terpanjang ≤ 1.5 × `max_long_side_px`. Versi "processed" = original (tidak ada file baru). HEIC/HEIF selalu dikonversi ke JPEG karena tidak semua browser bisa membukanya.
+1. **Lewati (passthrough)** jika `enabled: false`, **atau** ukuran ≤ `skip_if_below_bytes` **dan** format JPEG/PNG/WebP **dan** sisi terpanjang ≤ 1.5 × `max_long_side_px`. `output_image` = file asli apa adanya (`optimized: false`). HEIC/HEIF selalu dikonversi ke JPEG karena tidak semua browser bisa membukanya.
 2. Perkecil ke `max_long_side_px` (jika lebih besar).
 3. Untuk skala 100%, 85%, 72%, 60%, 50% (tidak di bawah `min_long_side_px`): cari **quality tertinggi** antara `min_quality`-`max_quality` yang ukurannya ≤ target (binary search).
 4. Hitung SSIM hasil terhadap original (grayscale, 1024 px). Jika ≥ `guard.min_ssim`, hasil diterima.
 5. Jika target **dan** guard tidak bisa dipenuhi bersamaan, **keterbacaan menang**: dipilih kandidat terkecil yang lolos guard (meski di atas target), atau `max_quality` di `max_long_side_px`. Hasilnya ditandai info `COMPRESSION_TARGET_NOT_MET`.
 6. Jika hasil malah lebih besar dari original (dan formatnya bisa dibuka browser), original yang dipakai.
 
-**Thumbnail:** sisi terpanjang `thumbnail.long_side_px` (320), JPEG `thumbnail.quality` (70). Selalu JPEG.
+**Thumbnail:** sisi terpanjang `thumbnail.long_side_px` (320), JPEG `thumbnail.quality` (70). Selalu JPEG. Dibuat engine
+saat diminta Web UI (`GET /v1/photos/{id}/file?variant=thumbnail`, dibaca dari SILO aplikasi), tidak disimpan.
 
-Lokasi file (jika `store_mode: processed`): `<ENGINE_BUCKET_PROCESSED>/<tenant>/<yyyy>/<mm>/<dd>/<photo_id>.jpg` dan `<ENGINE_BUCKET_THUMB>/<tenant>/<yyyy>/<mm>/<dd>/<photo_id>.jpg`.
-Foto yang diupload langsung ke engine dan **diterima** (aksi bukan `reject`) selalu punya file di `ENGINE_BUCKET_PROCESSED`:
-jika tidak perlu dikompres, file asli disalin apa adanya (ekstensi asli). Lokasinya dikembalikan di field `stored`
-(hanya untuk foto yang `allow_status_update: true`). Foto upload yang ditolak tidak diberi versi hasil maupun link.
+**Tidak ada file yang disimpan engine.** Foto yang **diterima** (`allow_status_update: true`) dikembalikan di
+`output_image` (base64; hasil kompresi, atau file asli jika tidak perlu dikompres); aplikasi menyimpannya ke SILO dan
+boleh memberi tahu lokasinya (`object_key` atau `POST /v1/photos/{id}/stored`). Foto yang ditolak: `output_image: null`.
+Untuk foto yang dibaca dari SILO (polling, `object_key`), engine hanya menganalisis; tidak ada kompresi yang disimpan.
 
 ---
 
@@ -750,7 +756,7 @@ Verdict dihitung dari foto apa adanya (atau setelah koreksi pencahayaan jika pro
   - `PUT /v1/admin/tenants` dengan body YAML (`Content-Type: application/x-yaml`), atau
   - edit file YAML lalu `pqe import-tenants --force` (menimpa dari file).
 - Setiap simpan yang mengubah isi menaikkan **versi** (`v1`, `v2`, ...). Riwayat lengkap tersimpan (Web UI → Riwayat versi, atau `GET /v1/admin/tenants/<code>/history`) dan tercatat di audit log.
-- Engine membaca ulang config dari DB **paling lambat 5 detik**, tanpa restart, di semua proses (API, worker, ingestor). (Pengaturan SILO: paling lambat 10 detik.)
+- Engine membaca ulang config dari DB **paling lambat 5 detik**, tanpa restart, di semua proses (API, worker, ingestor). (Koneksi SILO: paling lambat 10 detik.)
 - Config yang tidak valid **tidak bisa disimpan**. Pesan errornya menyebut field yang salah.
 - Perubahan berlaku untuk foto yang dianalisis **setelahnya**. Setiap foto menyimpan `config_version` (versi config tenant saat dianalisis), jadi hasil lama tetap bisa dijelaskan. Gunakan **Analisis ulang** untuk menerapkan aturan baru ke foto lama.
 - Validasi file tanpa menyimpan: `pqe validate-tenant config/tenants/*.yaml`.

@@ -7,6 +7,13 @@
 | **Pemilik** | Anas Fikri |
 | **Status** | Fase 1 selesai diimplementasikan, sebagian fase 2 selesai. Lihat [Status implementasi](#status-implementasi) |
 
+> **Pembaruan 24 Okt 2026 (desain penyimpanan berubah):** engine kini **hanya memproses gambar** dan tidak menyimpan
+> apa pun ke SILO ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Aplikasi mengirim foto, engine mengembalikan
+> keputusan + foto hasil optimasi (`output_image`), lalu aplikasi yang menyimpannya ke SILO dan (opsional) melaporkan
+> key-nya. Bagian dokumen ini yang menyebut bucket `photos-upload`/`photos-processed`/`photos-thumb` atau field
+> `stored` menggambarkan desain sebelumnya; bagian terpenting sudah diberi catatan. Rujukan yang berlaku:
+> [integration-guide.md](integration-guide.md), [operations.md](operations.md), [configuration.md](configuration.md).
+
 Dokumen ini disusun dari hasil diskusi/brainstorming dan mengikuti tahapan SDLC: **Planning → Analisis Kebutuhan → Desain → Implementasi → Testing → Deployment → Operasional & Maintenance**. Semua diagram flow ditulis dalam Mermaid dan bisa dirender langsung di GitLab/GitHub.
 
 ## Status implementasi
@@ -31,13 +38,14 @@ Per 23 Oktober 2026 (versi engine 0.1.0):
 | 2 | `retake_required` + `retake_message` (wajib foto ulang jika kualitas tidak memenuhi syarat) | ✅ |
 | 2 | Keputusan siap pakai `allow_status_update` + `courier_message`: `REJECT` di mode `enforce` menahan update status di aplikasi pengiriman; engine mati/lambat = fail-open | ✅ |
 | 2 | Integrasi tercepat: 1 panggilan sinkron, client `checkFile` (utama) / `checkObject` (TS & PHP) yang fail-open | ✅ |
-| 2 | "Scan dulu, baru simpan": file dikirim ke engine dulu, hanya foto yang diterima disimpan ke SILO (`photos-processed`) dan linknya dikembalikan di `stored`; foto ditolak tidak disimpan sebagai foto pengiriman | ✅ |
+| 2 | ~~"Scan dulu, baru simpan" (engine menyimpan foto diterima ke `photos-processed`, link `stored`)~~ → diganti: engine hanya memproses gambar, mengembalikan `output_image`; aplikasi yang menyimpan ke SILO ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)) | ✅ |
 | 2 | Review ops opsional per tenant (`review_required`, bawaan `false`: PASS + WARN langsung masuk evidence) | ✅ |
-| 2 | Halaman Pengaturan SILO di Web UI (impor JSON `mc`, test koneksi, secret terenkripsi, tanpa restart) | ✅ |
+| 2 | Halaman Koneksi SILO (dulu "Pengaturan SILO") di Web UI (impor JSON `mc`, test koneksi baca, secret terenkripsi, tanpa restart) | ✅ |
 | 2 | Panduan integrasi developer di browser (`/ui/guide.html`, tanpa login) + 4 diagram alur (integrasi, penggunaan, keputusan di aplikasi pengiriman, proses engine) | ✅ |
 | 2 | Halaman Uji Coba Kamera untuk HP (`/ui/coba.html`): simulasi aplikasi kurir tanpa membangun aplikasi, tenant `uji-coba`, HTTPS opsional | ✅ |
-| 2 | Pagar pengaman production: engine hanya menulis/menghapus di bucket miliknya (bucket aplikasi read-only walau key akses penuh), `PQE_ENV=production` menolak perintah demo | ✅ |
-| 2 | Backup NAS terjadwal dari engine (folder SMB/NFS atau NAS S3): foto asli kurir, foto pengiriman, dump database + rotasi; halaman Web UI **Backup NAS** | ✅ |
+| 2 | Pagar pengaman production: engine tidak menulis ke SILO (bucket aplikasi read-only walau key akses penuh), `PQE_ENV=production` menolak perintah demo | ✅ |
+| 2 | Backup NAS terjadwal dari engine (folder SMB/NFS atau NAS S3): foto yang disimpan aplikasi di SILO (dibaca), dump database + rotasi; halaman Web UI **Backup NAS** | ✅ |
+| 2 | Versi engine terlihat (Web UI, `/healthz`, `/v1/me`, header `X-PQE-Version`, `pqe --version`); Web UI dengan sidebar dan fokus otomatis ke field utama tiap halaman | ✅ |
 | 2 | Laporan export CSV/Excel | ⏳ belum |
 | 3 | Manifest Kubernetes + CI | ✅ (belum dideploy) |
 | 3 | Client library TypeScript & PHP | ✅ (Kotlin/Swift/Dart: contoh di panduan integrasi) |
@@ -66,14 +74,15 @@ Per 23 Oktober 2026 (versi engine 0.1.0):
    Engine mati/lambat/error tetap fail-open (status diupdate). Menahan status butuh integrasi level 2 (sinkron); di
    level 0/1 engine tetap bekerja setelahnya (lihat alternatif di flow 4.1). Integrasi paling cepat: satu panggilan
    `POST /v1/analyze?sync=true` dengan file, atau `checkFile` di client.
-7. **Scan dulu, baru simpan.** Aplikasi pengiriman mengirim file foto langsung ke engine, bukan ke SILO dulu. Engine
-   memeriksa foto, lalu hanya foto yang diterima disimpan ke SILO (`photos-processed`) dan lokasinya dikembalikan di
-   field `stored` untuk disimpan aplikasi. Foto ditolak tidak disimpan sebagai foto pengiriman; pesannya dikirim
-   balik ke kurir. Foto asli tetap diarsipkan di bucket internal `photos-upload` (verifikasi keaslian, review ops),
-   tidak pernah diberikan sebagai link. Engine mati → aplikasi menyimpan sendiri dengan kode lama (fail-open).
-   `checkObject` tetap tersedia untuk aplikasi yang sudah terlanjur menyimpan ke SILO dulu.
-8. **Backup NAS dikerjakan engine, plus pagar pengaman bucket aplikasi.** Karena foto asli kurir dan foto pengiriman
-   sekarang hanya ada di bucket engine, engine sendiri menyalinnya ke NAS secara terjadwal bersama dump database
+7. **Engine hanya memproses gambar** (diperbarui, [ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Aplikasi
+   pengiriman mengirim file foto langsung ke engine sebelum menyimpannya. Engine memeriksa dan mengoptimasi foto, lalu
+   mengembalikan keputusan + foto hasil (`output_image`); foto ditolak: `output_image: null`, pesannya dikirim balik ke
+   kurir. **Aplikasi** yang menyimpan foto diterima ke SILO (dan boleh melaporkan key-nya ke engine). Engine tidak
+   menyimpan foto apa pun. Engine mati → aplikasi menyimpan foto asli dengan kode lama (fail-open). `checkObject`
+   tetap tersedia untuk aplikasi yang sudah terlanjur menyimpan ke SILO dulu.
+   *(Desain sebelumnya: engine menyimpan foto diterima ke `photos-processed` dan mengembalikan link `stored`.)*
+8. **Backup NAS dikerjakan engine, plus pagar pengaman bucket aplikasi.** Engine membaca foto yang disimpan aplikasi
+   di SILO (dulu: foto di bucket engine) dan menyalinnya ke NAS secara terjadwal bersama dump database
    (halaman Web UI **Backup NAS**), alih-alih hanya mengandalkan `mcli mirror` di sisi infra. Backup hanya menyalin,
    tidak pernah menghapus di NAS. Engine juga dijaga di kode agar tidak bisa menulis/menghapus bucket aplikasi walau
    memakai key SILO berakses penuh, dan `PQE_ENV=production` menolak perintah demo.
@@ -312,10 +321,7 @@ flowchart TB
     end
 
     subgraph SILO[SILO - s3.pcpexpress.com]
-        B1[(photos-original<br/>milik aplikasi)]
-        B4[(photos-upload<br/>arsip asli + karantina)]
-        B2[(photos-processed<br/>foto pengiriman diterima)]
-        B3[(photos-thumb<br/>thumbnail)]
+        B1[(bucket foto aplikasi<br/>milik aplikasi, engine hanya baca)]
     end
 
     subgraph Engine[Photo Quality Engine]
@@ -335,26 +341,23 @@ flowchart TB
 
     NAS[(NAS backup<br/>lokasi berbeda)]
 
-    A1 -->|1. kirim file foto dulu, sebelum update status:<br/>POST /v1/analyze sync ≤ 3 dtk| API
-    A1 -.->|level 0/1 atau engine mati: upload sendiri| B1
+    A1 -->|1. kirim file foto dulu, sebelum update status:<br/>POST /v1/analyze ≤ 3 dtk| API
+    API -->|2. keputusan + output_image| A1
+    A1 -->|3. aplikasi menyimpan foto diterima<br/>atau foto asli jika engine mati| B1
     A2 -.->|upload| B1
-    API -->|arsip asli| B4
     B1 -->|bucket event / polling| I
     ADB -.->|read-only mapping| I
     API --> Q
     I --> Q
     Q --> W
-    W -->|baca original| B1
-    W -->|baca original upload| B4
-    W -->|tulis| B2
-    W -->|tulis| B3
+    W -->|hanya baca| B1
     W --> PG
     API --> PG
     UI --> API
     API --> WH
     API --> EV
     API --> RP
-    B1 -->|mirror| NAS
+    B1 -->|engine membaca, menyalin| NAS
     PG -->|pg_dump + WAL| NAS
 ```
 
@@ -405,9 +408,8 @@ Tanpa metadata pun engine tetap jalan (Level 0). Metadata hanya membuat mapping 
 
 | Data | Lokasi | Pemilik | Retensi default |
 |---|---|---|---|
-| Foto original | SILO `photos-original` | Aplikasi (engine hanya baca) | 3 tahun, object lock |
-| Foto terkompres (< 1 MB) | SILO `photos-processed` | Engine | 3 tahun |
-| Thumbnail (~30 KB) | SILO `photos-thumb` | Engine | 3 tahun |
+| Foto pengiriman (hasil optimasi engine, < 1 MB, atau foto asli jika engine mati) | SILO bucket aplikasi | Aplikasi (engine hanya baca) | 3 tahun, object lock |
+| Thumbnail | Tidak disimpan; dibuat engine saat diminta Web UI | — | — |
 | Skor, alasan, metadata, hash | PostgreSQL | Engine | 3 tahun |
 | File di disk engine | Hanya sementara saat proses, langsung dihapus | — | — |
 | Server aplikasi | **Tidak menyimpan foto permanen**, hanya outbox sementara saat SILO gagal | — | Sampai upload berhasil |
@@ -625,14 +627,13 @@ Engine memakai nama variabel yang sama dengan aplikasi yang sudah ada, supaya ko
 | `AWS_SECRET_ACCESS_KEY` | — | Secret key (rahasia) |
 | `AWS_BUCKET` | `ekas-pcptransport` | Bucket foto original aplikasi (engine hanya baca) |
 | `AWS_URL` | `https://s3.pcpexpress.com/ekas-pcptransport` | Base URL bucket |
-| `ENGINE_BUCKET_PROCESSED` | `photos-processed` | Bucket hasil kompres (milik engine) |
-| `ENGINE_BUCKET_THUMB` | `photos-thumb` | Bucket thumbnail (milik engine) |
+| `ENGINE_BUCKET_PROCESSED` / `ENGINE_BUCKET_THUMB` | `photos-processed` / `photos-thumb` | Hanya untuk data versi awal (engine tidak lagi menulis ke SILO) |
 | `ENGINE_PRESIGN_TTL_UI` / `_CUSTOMER` | `900` / `604800` | Masa berlaku presigned URL (detik) |
 
 Untuk multi-tenant, kredensial per tenant direferensikan dari config (`dsn_ref`/`secret_ref`), bukan ditulis langsung.
 
 **Aturan kredensial:**
-- Engine **tidak memakai akun root/admin SILO**. Buat **service account khusus engine** dengan policy minimum: `GetObject` + `ListBucket` di bucket aplikasi, `GetObject`/`PutObject`/`DeleteObject` hanya di bucket milik engine.
+- Engine **tidak memakai akun root/admin SILO**. Buat **service account khusus engine** dengan policy minimum: `GetObject` + `ListBucket` di bucket aplikasi. Engine tidak butuh izin tulis (ADR 0006).
 - Kredensial yang pernah tersebar (chat, tiket, dokumen) dianggap bocor dan harus dirotasi.
 
 ### 3.11 Teknologi
@@ -656,10 +657,11 @@ Untuk multi-tenant, kredensial per tenant direferensikan dari config (`dsn_ref`/
 
 ### 4.1 Flow utama: kurir memotret sampai foto divalidasi
 
-Ini alur integrasi level 2B (disarankan): **scan dulu, baru simpan**. Foto **langsung dikirim ke engine** (belum ke
-SILO), **divalidasi di dalam panggilan itu** (sinkron, maks. 3 detik), dan **hanya foto yang diterima disimpan ke
-SILO**. Semua terjadi **sebelum** aplikasi pengiriman mengupdate status. Status pengiriman tetap milik aplikasi
-pengiriman; engine hanya menjawab `allow_status_update`, `courier_message`, dan `stored` (link foto yang disimpan).
+Ini alur integrasi level 2B (disarankan, diperbarui sesuai [ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)):
+foto **langsung dikirim ke engine** (belum ke SILO), **divalidasi dan dioptimasi di dalam panggilan itu** (sinkron,
+maks. 3 detik), lalu **aplikasi** menyimpan foto yang diterima ke SILO. Semua terjadi **sebelum** aplikasi pengiriman
+mengupdate status. Status pengiriman dan penyimpanan tetap milik aplikasi pengiriman; engine hanya menjawab
+`allow_status_update`, `courier_message`, dan `output_image` (foto hasil optimasi, base64).
 
 ```mermaid
 sequenceDiagram
@@ -673,31 +675,29 @@ sequenceDiagram
     K->>App: Ambil foto POD, tekan Kirim
     App->>BE: Foto asli + resi
     rect rgb(230, 235, 250)
-    note over BE,E: ① FOTO LANGSUNG DIKIRIM KE ENGINE (belum ke SILO, sebelum update status)
-    BE->>E: POST /v1/analyze?sync=true (file + awb, photo_type)
-    E->>S: Arsipkan foto asli (photos-upload, internal)
-    note over E: ② SCAN / VALIDASI (≤ 3 dtk)<br/>ketajaman, pecah, resolusi, cahaya,<br/>EXIF, duplikat, OCR → verdict
+    note over BE,E: ① FOTO DIKIRIM KE ENGINE (belum ke SILO, sebelum update status)
+    BE->>E: POST /v1/analyze (file + awb, photo_type, object_key)
+    note over E: ② SCAN / VALIDASI (≤ 3 dtk)<br/>ketajaman, pecah, resolusi, cahaya,<br/>EXIF, duplikat, OCR → verdict<br/>+ optimasi < 1 MB (tanpa manipulasi)
     end
     alt diterima
-        E->>E: Optimasi + kompres < 1 MB (tanpa manipulasi)
-        E->>S: Simpan foto pengiriman (photos-processed) + thumbnail
-        E-->>BE: allow_status_update true + stored.url (+ courier_message)
-        BE->>BE: Simpan stored.url + update status pengiriman
+        E-->>BE: allow_status_update true + output_image (+ courier_message)
+        BE->>S: Simpan output_image di object_key (kode aplikasi)
+        BE->>BE: Update status pengiriman
         BE-->>App: OK (+ courier_message jika ada)
         App-->>K: Terkirim ✅
     else ditolak (REJECT, mode enforce)
-        E-->>BE: allow_status_update false + courier_message, stored null
-        BE-->>App: Ditolak + courier_message (status TIDAK diupdate)
+        E-->>BE: allow_status_update false + courier_message, output_image null
+        BE-->>App: Ditolak + courier_message (foto TIDAK disimpan, status TIDAK diupdate)
         App-->>K: Wajib foto ulang → kembali ke langkah 1
     else engine tidak menjawab ≤ 3 dtk (fail-open)
-        BE->>S: Simpan foto sendiri (kode lama)
+        BE->>S: Simpan foto asli (kode lama)
         BE->>BE: Update status pengiriman
         BE-->>App: OK
     end
 ```
 
-Foto yang ditolak tidak pernah diberi link dan tidak menjadi foto pengiriman; salinan aslinya hanya diarsipkan di
-bucket internal engine untuk verifikasi keaslian dan review ops. Aplikasi yang sudah terlanjur menyimpan ke SILO dulu
+Foto yang ditolak tidak disimpan di mana pun dan tidak menjadi foto pengiriman; engine hanya mencatat metadata hasil
+analisisnya (untuk review ops dan laporan). Aplikasi yang sudah terlanjur menyimpan ke SILO dulu
 bisa memakai level 2A (`checkObject` dengan key objek): keputusannya sama, tetapi foto yang ditolak sudah ada di bucket
 aplikasi.
 
@@ -948,38 +948,31 @@ flowchart TD
 
 ### 4.11 Flow backup & retensi
 
-Backup ke NAS dijalankan **engine** (worker) sesuai jadwal di halaman Web UI **Backup NAS**: foto asli kurir
-(`photos-upload`), foto pengiriman (`photos-processed`), dan dump database. Foto asli di bucket aplikasi bisa ikut
-disalin engine (opsi) atau tetap di-mirror tim infra. Backup hanya menyalin; penghapusan retensi di SILO tidak diterapkan
-ke NAS. Detail: [operations.md bagian 6](operations.md#6-postgresql--backup).
+Backup ke NAS dijalankan **engine** (worker) sesuai jadwal di halaman Web UI **Backup NAS**: dump database dan foto
+yang disimpan aplikasi di SILO (engine membacanya dari lokasi yang dilaporkan aplikasi; opsi `include_photos`, bisa
+dimatikan jika tim infra sudah mem-mirror bucket aplikasi). Backup hanya menyalin; penghapusan retensi di SILO tidak
+diterapkan ke NAS. Detail: [operations.md bagian 6](operations.md#6-postgresql--backup).
 
 ```mermaid
 flowchart LR
     subgraph SILO
         A[(bucket aplikasi<br/>versioning + object lock)]
-        U[(photos-upload<br/>foto asli kurir)]
-        P[(photos-processed<br/>foto pengiriman)]
-        T[(photos-thumb)]
     end
     PG[(Postgres engine)]
     W[Worker engine<br/>jadwal Backup NAS]
 
     subgraph NAS[NAS - lokasi berbeda]
-        NU[(photos/photos-upload)]
-        NP[(photos/photos-processed)]
-        NA[(photos/bucket aplikasi - opsional)]
+        NA[(photos/bucket aplikasi)]
         ND[(database/pqe-waktu.dump<br/>simpan 14 terakhir)]
     end
 
-    U --> W
-    P --> W
+    A -->|hanya baca| W
     PG -->|pg_dump harian| W
-    W --> NU
-    W --> NP
+    W --> NA
     W --> ND
-    A -.->|opsi engine atau mcli mirror infra| NA
+    A -.->|alternatif: mcli mirror infra| NA
 
-    U --> L{Umur objek}
+    A --> L{Umur objek}
     L -- "≤ 90 hari" --> L1[Hot storage]
     L -- "90 hari - 3 tahun" --> L2[Cold / tier murah<br/>jika tersedia]
     L -- "> 3 tahun" --> L3[Hapus otomatis<br/>+ catat di audit log]
@@ -987,11 +980,9 @@ flowchart LR
 
 | Data | Backup | Retensi default |
 |---|---|---|
-| Foto asli kurir (`photos-upload`) | **Wajib**, disalin engine ke NAS (bawaan aktif) | 3 tahun (lifecycle di SILO) |
-| Foto pengiriman (`photos-processed`) | **Wajib**, disalin engine ke NAS (bawaan aktif) | 3 tahun, lalu dihapus engine dari SILO |
+| Foto pengiriman di bucket aplikasi | **Wajib**: disalin engine ke NAS (`include_photos`, bawaan aktif) atau `mcli mirror` infra | 3 tahun (lifecycle di SILO, diatur infra) |
 | Postgres | **Wajib**, dump oleh engine setiap 24 jam (bawaan), simpan 14 terakhir; tambah WAL archiving untuk PITR | 3 tahun data analisis |
-| Foto asli di bucket aplikasi | **Wajib** jika aplikasi memakai level 0/1: opsi engine (`include_app_originals`) atau `mcli mirror` infra | 3 tahun, lalu hapus otomatis |
-| Thumbnail | Opsional (bisa dibuat ulang) | 3 tahun |
+| Data versi lama di bucket engine (`photos-upload`, `photos-processed`, `photos-thumb`) | Opsi "Data versi lama" di Backup NAS | Sampai habis masa retensi |
 
 Uji restore berkala (misal bulanan, sampel acak). Durasi retensi final dikonfirmasi ke legal/finance (UU PDP dan kemungkinan kewajiban simpan dokumen pajak).
 
