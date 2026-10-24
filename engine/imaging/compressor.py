@@ -198,3 +198,60 @@ def img_from(data: bytes) -> Image.Image:
 def thumbnail(src: LoadedImage, cfg: Thumbnail) -> bytes:
     img = _resize(src.pil, cfg.long_side_px)
     return _encode(img, "jpeg", cfg.quality)
+
+
+REVIEW_QUALITY = (82, 92)  # rentang quality JPEG salinan review (kualitas tinggi, cacat foto tetap terlihat apa adanya)
+REVIEW_SIDES = (3000, 2400, 2000, 1600)  # resolusi dicoba dari yang terbesar sampai muat batas
+
+
+def review_copy(data: bytes, max_bytes: int) -> tuple[bytes, str, dict]:
+    """Salinan arsip untuk foto yang DITOLAK: tetap memperlihatkan masalahnya (buram/gelap/pecah) untuk review dan
+    kalibrasi, tetapi tidak sebesar foto kamera asli. Tanpa koreksi apa pun, EXIF ikut disimpan (orientasi sudah
+    diterapkan) supaya pemeriksaan keaslian tetap bisa dicek ulang.
+
+    File asli dipakai apa adanya bila sudah <= max_bytes. Return (bytes, content_type, info).
+    """
+    from engine.imaging.loader import load_image
+
+    src = load_image(data)
+    info = {"original_bytes": len(data), "width": src.width, "height": src.height}
+    if len(data) <= max_bytes and src.format in ("JPEG", "PNG", "WEBP"):
+        return data, f"image/{src.format.lower()}", {**info, "compressed": False, "bytes": len(data)}
+    exif = b""
+    try:
+        if src.exif:
+            ex = src.exif
+            ex[0x0112] = 1  # orientasi sudah diterapkan saat load (exif_transpose)
+            exif = ex.tobytes()
+    except Exception:
+        exif = b""
+
+    def enc(img: Image.Image, q: int, fast: bool) -> bytes:
+        buf = io.BytesIO()
+        opts = {} if fast else {"optimize": True, "progressive": True}
+        img.save(buf, "JPEG", quality=q, subsampling="4:2:0", exif=exif, **opts)
+        return buf.getvalue()
+
+    long_side = max(src.width, src.height)
+    sides = [s for s in REVIEW_SIDES if s < long_side] or [long_side]
+    if long_side <= REVIEW_SIDES[0]:
+        sides = [long_side, *sides]
+    out = None
+    for side in dict.fromkeys(sides):
+        img = _resize(src.pil, side)
+        lo, hi, q_ok = REVIEW_QUALITY[0], REVIEW_QUALITY[1], None
+        while lo <= hi:
+            q = (lo + hi) // 2
+            if len(enc(img, q, fast=True)) <= max_bytes:
+                q_ok, lo = q, q + 1
+            else:
+                hi = q - 1
+        if q_ok is not None:
+            out = (enc(img, q_ok, fast=False), img, q_ok)
+            break
+    if out is None:  # foto sangat "ramai": resolusi & quality terendah yang masih layak dilihat
+        img = _resize(src.pil, REVIEW_SIDES[-1])
+        out = (enc(img, 75, fast=False), img, 75)
+    body, img, q = out
+    return body, "image/jpeg", {**info, "compressed": True, "bytes": len(body), "quality": q,
+                                "width": img.width, "height": img.height}

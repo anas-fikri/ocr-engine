@@ -356,7 +356,8 @@ def test_version_is_visible(client, admin_headers):
 def test_engine_archives_to_ocr_bucket(client, admin_headers, samples):
     """ADR 0007: engine mengarsipkan foto di bucket `ocr` per tenant; aplikasi tetap menyimpan salinannya sendiri.
 
-    Diterima -> arsip = foto yang sama dengan output_image. Ditolak -> arsip = foto asli (review & kalibrasi).
+    Diterima -> arsip = foto yang sama dengan output_image. Ditolak -> arsip = foto asli jika <= 1,5 MB, selain itu
+    salinan review terkompres (lihat test_rejected_archive_is_compressed_review_copy).
     Lewat archive_retention_days (bawaan 520) file arsip dihapus, catatan analisis tetap.
     """
     import base64
@@ -421,3 +422,54 @@ def test_precheck_js_copy_in_webui_is_identical():
 
     root = Path(__file__).resolve().parents[1]
     assert (root / "engine/webui/precheck.js").read_bytes() == (root / "clients/typescript/precheck.js").read_bytes()
+
+
+def test_rejected_archive_is_compressed_review_copy(client, admin_headers):
+    """Foto ditolak yang besar diarsipkan sebagai salinan review (JPEG kualitas tinggi, maks. 1,5 MB, EXIF tetap),
+    masalahnya tetap terlihat (tanpa koreksi). archive_rejected_max_bytes: 0 -> file asli."""
+    import hashlib
+    import io
+
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    from engine.imaging.loader import load_image
+    from engine.processor import wait_for_archives
+    from engine.storage import get_storage
+    from engine.synth import base_scene
+    from tests.conftest import TENANT_YAML
+
+    h = {**admin_headers, "Content-Type": "application/x-yaml"}
+    strict = TENANT_YAML.replace("mode: warn", "mode: enforce\n    text_first: false")
+    assert client.put("/v1/admin/tenants", content=strict, headers=h).status_code == 200
+    blurred = np.asarray(base_scene(4000, 3000).filter(ImageFilter.GaussianBlur(14)), dtype=np.float32)
+    noisy = np.clip(blurred + np.random.default_rng(1).normal(0, 9, blurred.shape), 0, 255).astype("uint8")
+    ex = Image.Exif()
+    ex[0x0110] = "Phone X"
+    buf = io.BytesIO()
+    Image.fromarray(noisy).save(buf, "JPEG", quality=96, exif=ex.tobytes())
+    big = buf.getvalue()
+    assert len(big) > 3_000_000
+
+    def send(awb):
+        r = client.post("/v1/analyze", params={"tenant": "test-app"}, headers=admin_headers,
+                        files={"file": ("f.jpg", big, "image/jpeg")}, data={"awb": awb})
+        assert r.status_code == 200 and r.json()["verdict"] == "REJECT", r.text
+        wait_for_archives()
+        return client.get(f"/v1/photos/{r.json()['id']}", headers=admin_headers).json()
+
+    p = send("RC1")
+    a = p["archive"]
+    data = get_storage().get("ocr", a["key"]).data
+    rc = a["review_copy"]
+    assert len(data) <= 1_500_000 and rc["compressed"] is True and rc["bytes"] == len(data)
+    assert rc["original_bytes"] == len(big) and rc["quality"] >= 82 and max(rc["width"], rc["height"]) >= 2000
+    copy = load_image(data)
+    assert copy.format == "JPEG" and copy.exif.get(0x0110) == "Phone X"
+    assert p["sha256"] == hashlib.sha256(big).hexdigest()  # hash & penilaian tetap milik foto asli
+
+    # tenant memilih menyimpan file asli
+    assert client.put("/v1/admin/tenants", content=strict + "archive_rejected_max_bytes: 0\n",
+                      headers=h).status_code == 200
+    p = send("RC2")
+    assert get_storage().get("ocr", p["archive"]["key"]).data == big and p["archive"]["review_copy"] is None

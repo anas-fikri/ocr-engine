@@ -11,7 +11,7 @@ Web UI dipakai tim **ops/SPV**, **admin engine**, dan **viewer** (finance, manaj
   untuk HP untuk mencoba engine seperti aplikasi kurir, lihat [Uji Coba Kamera](#uji-coba-kamera-hp).
 - Penyimpanan foto pengiriman dikerjakan aplikasi pengiriman ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)).
   Web UI menampilkan foto dari **arsip engine** (bucket `ocr`, [ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)):
-  foto diterima = foto hasil, foto ditolak = foto asli (untuk review). Foto polling dibaca dari bucket aplikasi.
+  foto diterima = foto hasil, foto ditolak = salinan review kualitas tinggi (maks. 1,5 MB). Foto polling dibaca dari bucket aplikasi.
 
 **Navigasi:** menu ada di sidebar kiri, dikelompokkan **Pantau** (Dashboard, Review, Cari foto, Evidence), **Uji** (Uji
 foto, Uji Coba Kamera), **Pengaturan** (Tenant, API key, Koneksi SILO, Backup NAS; khusus admin), dan **Lainnya** (Sistem,

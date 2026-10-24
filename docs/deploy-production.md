@@ -36,7 +36,7 @@ Semua komponen di atas (Caddy, engine, PostgreSQL) berjalan di **satu server** l
 
 Aplikasi pengiriman tetap menyimpan foto pengirimannya ke bucket-nya sendiri
 ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Engine menyimpan **arsipnya sendiri** di bucket `ocr`
-(per aplikasi, masa simpan 520 hari; foto ditolak = foto asli untuk review) dan hanya **membaca** bucket aplikasi
+(per aplikasi, masa simpan 520 hari; foto ditolak = salinan review kualitas tinggi (maks. 1,5 MB)) dan hanya **membaca** bucket aplikasi
 ([ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)).
 
 Buat bucket arsip dan service account engine: baca (`s3:GetObject`, `s3:ListBucket`) di bucket aplikasi, baca/tulis/hapus

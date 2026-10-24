@@ -89,8 +89,8 @@ sequenceDiagram
 ```
 
 Engine mengarsipkan setiap foto yang dikirim ke bucket `ocr` (`<tenant>/<yyyy>/<mm>/<dd>/<id>.<ext>`, masa simpan
-520 hari): foto diterima = foto yang sama dengan `output_image`, foto ditolak = foto asli untuk review dan kalibrasi
-ops. Arsip ditulis setelah respons dikirim, jadi tidak menambah waktu tunggu kurir. Web UI, Evidence PDF, dan Backup NAS
+520 hari): foto diterima = foto yang sama dengan `output_image`, foto ditolak = salinan review kualitas tinggi (maks. 1,5 MB)
+untuk review & kalibrasi ops. Arsip ditulis setelah respons dikirim, jadi tidak menambah waktu tunggu kurir. Web UI, Evidence PDF, dan Backup NAS
 memakai arsip ini.
 
 `object_key` opsional: engine mencatat lokasi foto di bucket aplikasi (hanya untuk foto yang diterima) sebagai

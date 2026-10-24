@@ -97,7 +97,8 @@ Engine hanya membaca objek itu dari SILO (tidak diarsipkan ulang). Default async
 
 File selalu dianalisis langsung di request itu (maks. `timeout_ms`; `sync` tidak berpengaruh). Setelah respons
 dikirim, engine mengarsipkan salinannya di bucket arsip (`<tenant>/<yyyy>/<mm>/<dd>/<id>.<ext>`): foto diterima = sama
-dengan `output_image`, foto ditolak = foto asli. Gagal tulis dicoba ulang (1, 4, 15 detik), metrik
+dengan `output_image`, foto ditolak = salinan review (file asli bila ≤ 1,5 MB, selain itu JPEG kualitas tinggi maks.
+`archive_rejected_max_bytes`; info di `archive.review_copy`). Gagal tulis dicoba ulang (1, 4, 15 detik), metrik
 `pqe_archive_total`. Respons menambahkan `output_image`:
 
 ```json

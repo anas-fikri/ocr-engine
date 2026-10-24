@@ -17,8 +17,12 @@ Setelah ADR 0006 (engine tidak menyimpan apa pun), uji coba menunjukkan dua masa
 
 - Engine menyimpan **arsipnya sendiri** di satu bucket (`ENGINE_BUCKET_ARCHIVE`, bawaan `ocr`), dipisah per aplikasi
   lewat prefix: `<tenant>/<yyyy>/<mm>/<dd>/<id-foto>.<ext>`. Tenant bisa memakai bucket lain (`archive_bucket`).
-- Isi arsip: foto **diterima** = foto yang sama dengan `output_image`; foto **ditolak** = foto asli (untuk review dan
-  kalibrasi). Foto polling / `object_key` (sudah ada di SILO aplikasi) tidak diarsipkan ulang.
+- Isi arsip: foto **diterima** = foto yang sama dengan `output_image`; foto **ditolak** = salinan review untuk review
+  dan kalibrasi: file asli bila ≤ 1,5 MB, selain itu JPEG kualitas tinggi (quality 82-92, sisi panjang s.d. 3000 px,
+  EXIF tetap, tanpa koreksi sehingga buram/gelapnya tetap terlihat) maks. `archive_rejected_max_bytes` (bawaan
+  1,5 MB; `0` = selalu file asli). Diperbarui 24 Okt 2026 atas permintaan pemilik produk supaya storage terkendali
+  (foto kamera ditolak 3-7 MB → ±1,3 MB). Hash, EXIF, dan skor di catatan analisis tetap milik foto asli.
+  Foto polling / `object_key` (sudah ada di SILO aplikasi) tidak diarsipkan ulang.
 - Masa simpan arsip **520 hari** (`archive_retention_days` per tenant). Setelah itu worker menghapus file arsipnya;
   catatan analisis tetap sampai `retention_days`.
 - Arsip ditulis **di belakang layar** setelah keputusan dikirim ke aplikasi, dengan beberapa kali coba ulang. Kurir tidak

@@ -110,7 +110,9 @@ def photo_to_dict(
         # lokasi foto di SILO aplikasi (dilaporkan aplikasi); null = tidak disimpan / belum dilaporkan
         "object": {"bucket": p.bucket, "key": p.object_key} if p.bucket else None,
         # salinan engine di bucket arsip (ADR 0007); null = belum tersimpan, sudah lewat masa simpan, atau foto polling
-        "archive": {"bucket": p.processed_bucket, "key": p.processed_key} if p.processed_key else None,
+        # review_copy: foto ditolak yang diarsipkan sebagai salinan review terkompres (ukuran asli -> ukuran arsip)
+        "archive": {"bucket": p.processed_bucket, "key": p.processed_key,
+                    "review_copy": (p.image_info or {}).get("archive")} if p.processed_key else None,
         "sha256": p.sha256,
         "error": {"code": p.error_code, "message": p.error_message} if p.error_code else None,
     }

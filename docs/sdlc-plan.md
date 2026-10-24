@@ -9,7 +9,7 @@
 
 > **Pembaruan 24 Okt 2026 (desain penyimpanan berubah):** aplikasi menyimpan foto pengirimannya sendiri
 > ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)); engine hanya menyimpan **arsipnya sendiri** di bucket `ocr`
-> (per aplikasi, 520 hari; foto ditolak = foto asli untuk review) dan tidak pernah menulis ke bucket aplikasi
+> (per aplikasi, 520 hari; foto ditolak = salinan review kualitas tinggi (maks. 1,5 MB)) dan tidak pernah menulis ke bucket aplikasi
 > ([ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)). Pernyataan di bawah bahwa engine "tidak menyimpan apa pun" atau
 > "foto ditolak tidak disimpan di mana pun" sudah digantikan ADR 0007. Aplikasi mengirim foto, engine mengembalikan
 > keputusan + foto hasil optimasi (`output_image`), lalu aplikasi yang menyimpannya ke SILO dan (opsional) melaporkan

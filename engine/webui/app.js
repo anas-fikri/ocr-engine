@@ -237,6 +237,12 @@ function ocrText(o) {
   return `${o.words} kata, confidence ${o.confidence}${o.awb_found ? " · nomor resi terbaca" : ""}`;
 }
 
+function archiveNote(rc) {
+  if (!rc) return "";
+  return rc.compressed ? `<div class="small muted">salinan review: ${kb(rc.original_bytes)} → ${kb(rc.bytes)} (quality ${rc.quality}, ${rc.width}×${rc.height}, EXIF tetap)</div>`
+    : `<div class="small muted">file asli (${kb(rc.bytes)}, sudah di bawah batas)</div>`;
+}
+
 function closeDrawer() { $("#drawer").classList.add("hidden"); }
 
 function scoreBars(scores) {
@@ -264,7 +270,7 @@ async function openPhoto(id, onChange) {
       <div class="images">
         ${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank"><img src="${esc(p.urls.processed)}" data-photo="${esc(p.id)}" data-variant="processed" onerror="viaEngine(this)" alt="foto"></a>`
           : `<div class="empty card">Tidak ada file foto.<div class="small">Arsip engine belum tersimpan atau sudah lewat masa simpan, dan aplikasi tidak melaporkan lokasinya.</div></div>`}
-        ${p.urls.processed && p.archive && p.verdict === "REJECT" && !p.object ? `<div class="small muted">Foto asli yang ditolak (arsip engine, untuk review & kalibrasi). Tidak disimpan aplikasi.</div>` : ""}
+        ${p.urls.processed && p.archive && p.verdict === "REJECT" && !p.object ? `<div class="small muted">Foto yang ditolak (arsip engine, salinan review kualitas tinggi tanpa koreksi, untuk review & kalibrasi). Tidak disimpan aplikasi.</div>` : ""}
         <div class="small">${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank">Buka foto</a>` : ""}${p.awb ? `${p.urls.processed ? " · " : ""}<a href="#" data-evidence="${esc(p.awb)}">Evidence PDF resi ini</a>` : ""}</div>
       </div>
       <div>
@@ -288,7 +294,7 @@ async function openPhoto(id, onChange) {
     <h3>Data pengiriman</h3>${kv([["Kurir", esc(p.courier_id)], ["Cabang", esc(p.branch)], ["Pelanggan", esc(p.customer_id)], ["ID eksternal", esc(p.external_id)],
       ["Waktu foto", fmtDate(p.captured_at)], ["Diterima", fmtDate(p.received_at)], ["Dianalisis", fmtDate(p.analyzed_at)],
       ["Lokasi", p.location ? `<a target="_blank" href="https://maps.google.com/?q=${p.location.lat},${p.location.lng}">${p.location.lat}, ${p.location.lng}</a>` : "-"],
-      ["Sumber", esc(p.ingest_source)], ["Arsip engine", p.archive ? `<code>${esc(p.archive.bucket)}/${esc(p.archive.key)}</code>` : "-"],
+      ["Sumber", esc(p.ingest_source)], ["Arsip engine", p.archive ? `<code>${esc(p.archive.bucket)}/${esc(p.archive.key)}</code>${archiveNote(p.archive.review_copy)}` : "-"],
       ["Lokasi di aplikasi", p.object ? `<code>${esc(p.object.bucket)}/${esc(p.object.key)}</code>` : "tidak dilaporkan aplikasi"]])}
     <h3>Gambar & kompresi</h3>${kv([["Format", esc((p.image || {}).format)], ["Dimensi", p.image && p.image.width ? `${p.image.width} × ${p.image.height}` : "-"],
       ["Ukuran", c.original_bytes ? `${kb(c.original_bytes)} → ${kb(c.output_bytes)} ${c.passthrough ? "(tidak perlu dikompres)" : `(quality ${c.quality}, SSIM ${c.ssim})`}` : "-"],

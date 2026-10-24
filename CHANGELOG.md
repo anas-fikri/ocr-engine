@@ -13,6 +13,17 @@ Kode build berubah di setiap deploy, nomor versi berubah di setiap rilis.
 Rilis dibuat dengan tag git `vX.Y.Z`; server production memakai tag, bukan cabang
 ([deploy-production.md](docs/deploy-production.md#11-operasional)).
 
+## [0.4.0] - 25 Okt 2026 (UAT)
+
+### Engine
+- Arsip foto **ditolak** tidak lagi menyimpan file kamera asli yang besar: file asli dipakai bila ≤ 1,5 MB, selain itu
+  disimpan sebagai salinan review JPEG kualitas tinggi (quality 82-92, s.d. 3000 px, EXIF tetap, tanpa koreksi)
+  maks. 1,5 MB. Foto kamera ditolak 3-7 MB → ±1,3 MB; buram/gelapnya tetap terlihat (skor sama). Dikerjakan di
+  belakang layar, kurir tidak menunggu. Atur per tenant dengan `archive_rejected_max_bytes` (`0` = file asli).
+
+### Web UI
+- Detail foto, baris **Arsip engine**: ukuran asli → ukuran salinan review, quality, dan resolusi.
+
 ## [0.3.0] - 24 Okt 2026 (UAT)
 
 ### Engine

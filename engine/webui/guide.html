@@ -216,7 +216,7 @@ if allow:
             Engine tidak menjawab dalam 3 detik → aplikasi menyimpan foto asli (kode lama) + update status (fail-open).</td></tr>
         </table>
         <p class="muted small">Engine hanya membaca bucket aplikasi dan menulis ke bucket arsipnya sendiri (<code>ocr</code>, per aplikasi,
-          masa simpan 520 hari): foto diterima = foto hasil, foto ditolak = foto asli (untuk review &amp; kalibrasi). Web UI, evidence, dan backup NAS
+          masa simpan 520 hari): foto diterima = foto hasil, foto ditolak = salinan review kualitas tinggi (maks. 1,5 MB). Web UI, evidence, dan backup NAS
           memakai arsip ini. Menyimpan foto asli di bucket aplikasi (selain versi optimasi) adalah keputusan aplikasi.
           Level 0/1 (aplikasi tidak memanggil engine): aplikasi menyimpan ke SILO sendiri, engine membaca dan memeriksa belakangan lewat bucket notification/polling;
           hasilnya untuk laporan dan evidence, tetapi tidak bisa menahan status.</p>

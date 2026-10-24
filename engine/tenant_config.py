@@ -133,6 +133,9 @@ class TenantConfig(_Strict):
     upload_bucket: str | None = None  # tidak dipakai lagi (ADR 0006); data lama di bucket ini tetap bisa dibaca
     # arsip engine (ADR 0007). Kosong = ENGINE_BUCKET_ARCHIVE (bawaan "ocr"), dipisah per tenant lewat prefix.
     archive_bucket: str | None = None
+    # Foto DITOLAK diarsipkan sebagai salinan review berkualitas tinggi (JPEG q82-92, EXIF tetap) maks. sekian byte,
+    # supaya storage terkendali. 0 = simpan file asli apa adanya.
+    archive_rejected_max_bytes: int = Field(1_500_000, ge=0, le=50_000_000)
     archive_retention_days: int = Field(520, ge=1, le=3650)  # lewat ini file arsip dihapus (catatan analisis tetap)
     default_profile: str = "default"
     sources: list[Source] = []

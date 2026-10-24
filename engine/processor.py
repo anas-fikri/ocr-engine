@@ -142,14 +142,15 @@ def process_upload(photo_id: str, data: bytes, content_type: str | None) -> tupl
     pengiriman dan meminta kurir foto ulang).
 
     Engine juga mengarsipkan salinannya sendiri di bucket arsip (ADR 0007), di belakang layar setelah keputusan
-    keluar: foto diterima = foto yang sama dengan `output_image`, foto ditolak = foto asli (untuk review & kalibrasi).
+    keluar: foto diterima = foto yang sama dengan `output_image`; foto ditolak = salinan review berkualitas tinggi
+    (maks. `archive_rejected_max_bytes`, bawaan 1,5 MB; 0 = file asli) untuk review & kalibrasi.
     """
     status, output = analyze_and_record(photo_id, data, content_type, None, None, want_output=True)
     if status == "done":
         if output is not None:
             schedule_archive(photo_id, output.data, output.content_type)
         else:
-            schedule_archive(photo_id, data, content_type or "image/jpeg")
+            schedule_archive(photo_id, data, content_type or "image/jpeg", review=True)
     return status, output
 
 
@@ -167,9 +168,10 @@ def archive_bucket(tenant_code: str) -> str:
     return b or get_storage().s.engine_bucket_archive
 
 
-def schedule_archive(photo_id: str, data: bytes, content_type: str) -> None:
-    """Simpan ke arsip tanpa menahan respons ke aplikasi. Gagal -> dicoba ulang beberapa kali, lalu dicatat."""
-    fut = _archive_pool.submit(_archive_with_retry, photo_id, data, content_type)
+def schedule_archive(photo_id: str, data: bytes, content_type: str, review: bool = False) -> None:
+    """Simpan ke arsip tanpa menahan respons ke aplikasi. Gagal -> dicoba ulang beberapa kali, lalu dicatat.
+    review=True: foto ditolak, dikompres dulu jadi salinan review (di thread arsip, kurir tidak menunggu)."""
+    fut = _archive_pool.submit(_archive_with_retry, photo_id, data, content_type, review)
     _pending_archives.add(fut)
     fut.add_done_callback(_pending_archives.discard)
 
@@ -184,12 +186,34 @@ def wait_for_archives(timeout: float = 30) -> None:
     wait(list(_pending_archives), timeout=timeout)
 
 
-def _archive_with_retry(photo_id: str, data: bytes, content_type: str) -> None:
+def _review_copy(photo_id: str, data: bytes, content_type: str) -> tuple[bytes, str, dict | None]:
+    from engine.imaging.compressor import review_copy
+
+    with session_scope() as s:
+        p = s.get(Photo, photo_id)
+        tenant_code = p.tenant_code if p is not None else None
+    try:
+        cap = registry.get(tenant_code).config.archive_rejected_max_bytes if tenant_code else 0
+    except TenantNotFound:
+        cap = 1_500_000
+    if not cap:
+        return data, content_type, None
+    try:
+        return review_copy(data, cap)
+    except Exception as e:  # file aneh: arsipkan apa adanya daripada kehilangan bukti
+        log.warning("salinan review foto %s gagal, arsip file asli: %s", photo_id, e)
+        return data, content_type, None
+
+
+def _archive_with_retry(photo_id: str, data: bytes, content_type: str, review: bool = False) -> None:
+    info = None
+    if review:
+        data, content_type, info = _review_copy(photo_id, data, content_type)
     for i, wait in enumerate((0, *ARCHIVE_RETRY_SEC)):
         if wait:
             time.sleep(wait)
         try:
-            archive_photo(photo_id, data, content_type)
+            archive_photo(photo_id, data, content_type, info=info)
             metrics.ARCHIVE.labels(result="ok").inc()
             return
         except Exception as e:  # SILO lambat/mati: kurir tidak terpengaruh, coba lagi
@@ -198,7 +222,8 @@ def _archive_with_retry(photo_id: str, data: bytes, content_type: str) -> None:
             log.warning("arsip foto %s gagal (percobaan %s): %s", photo_id, i + 1, e)
 
 
-def archive_photo(photo_id: str, data: bytes, content_type: str, storage: Storage | None = None) -> None:
+def archive_photo(photo_id: str, data: bytes, content_type: str, storage: Storage | None = None,
+                  info: dict | None = None) -> None:
     storage = storage or get_storage()
     with session_scope() as s:
         p = s.get(Photo, photo_id)
@@ -208,11 +233,16 @@ def archive_photo(photo_id: str, data: bytes, content_type: str, storage: Storag
         at = as_aware(p.received_at) or utcnow()
     bucket = archive_bucket(tenant_code)
     key = f"{tenant_code}/{at:%Y/%m/%d}/{photo_id}.{_EXT.get(content_type.lower(), 'jpg')}"
-    storage.put(bucket, key, data, content_type, {"photo-id": photo_id, "verdict": verdict, "sha256-original": sha})
+    meta = {"photo-id": photo_id, "verdict": verdict, "sha256-original": sha}
+    if info and info.get("compressed"):
+        meta["review-copy"] = f"q{info['quality']} {info['width']}x{info['height']} dari {info['original_bytes']} byte"
+    storage.put(bucket, key, data, content_type, meta)
     with session_scope() as s:
         p = s.get(Photo, photo_id)
         if p is not None:
             p.processed_bucket, p.processed_key = bucket, key
+            if info is not None:  # salinan review foto ditolak: tampil di Web UI (baris Arsip engine)
+                p.image_info = {**(p.image_info or {}), "archive": info}
             s.execute(delete(BackupItem).where(BackupItem.photo_id == photo_id))  # ada file baru: salin ke NAS
 
 
