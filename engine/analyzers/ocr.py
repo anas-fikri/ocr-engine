@@ -115,7 +115,7 @@ def estimate_skew(img: LoadedImage) -> float:
     if lines is None:
         return 0.0
     angles, weights = [], []
-    for x1, y1, x2, y2 in lines[:, 0]:
+    for x1, y1, x2, y2 in np.asarray(lines).reshape(-1, 4):  # OpenCV 4: (N,1,4), OpenCV 5: (N,4)
         a = float(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
         a = (a + 90) % 180 - 90  # -90..90
         if abs(a) > 45:  # garis tegak: pakai sebagai kemiringan sumbu lain
