@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 
-from engine import __version__
+from engine import __build__, __version__
 from engine.api import admin, routes
 from engine.bootstrap import bootstrap
 from engine.db import session_scope
@@ -61,6 +61,7 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
     async def version_header(request: Request, call_next):
         resp = await call_next(request)
         resp.headers["X-PQE-Version"] = __version__  # versi engine yang menjawab (cek setelah upgrade/rollback)
+        resp.headers["X-PQE-Build"] = __build__
         return resp
 
     @app.exception_handler(HTTPException)
@@ -88,7 +89,7 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
 
     @app.get("/healthz", tags=["ops"], summary="Liveness: proses hidup")
     def healthz():
-        return {"status": "ok", "version": __version__}
+        return {"status": "ok", "version": __version__, "build": __build__}
 
     @app.get("/readyz", tags=["ops"], summary="Readiness: DB & SILO bisa diakses")
     def readyz():

@@ -327,5 +327,5 @@ $("#logout").onclick = () => { saveKey(null); showLogin(); };
 $("#tenant").onchange = async () => { setMode(state.mode); await loadProfiles(); };
 document.querySelectorAll("#mode-seg button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
 window.addEventListener("pagehide", stopStream);
-fetch("/healthz").then((r) => r.json()).then((h) => document.querySelectorAll("[data-version]").forEach((el) => (el.textContent = `v${h.version}`))).catch(() => {});
+fetch("/healthz").then((r) => r.json()).then((h) => document.querySelectorAll("[data-version]").forEach((el) => (el.textContent = `v${h.version}${h.build && h.build !== "dev" ? ` · ${h.build}` : ""}`))).catch(() => {});
 boot();

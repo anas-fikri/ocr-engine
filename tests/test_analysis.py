@@ -35,8 +35,10 @@ def test_synthetic_verdicts(samples, name):
     if ocr_available():
         if name == "warn_pixelated_upscaled":
             expected = "REJECT"  # teks wajib terbaca: foto pecah yang teksnya tidak terbaca ditolak
-        if name in ("reject_dark", "reject_overexposed", "reject_low_contrast", "reject_heavy_jpeg"):
+        if name in ("reject_dark", "reject_low_contrast", "reject_heavy_jpeg"):
             expected = "WARN"  # teks masih terbaca: masalah kejelasan foto cukup diberi tahu
+        if name == "reject_overexposed":
+            expected = "PASS"  # latar putih + teks jelas terbaca: putih dianggap kertas, bukan silau
     r = analyze(samples[name], ctx(), do_compress=False, do_thumbnail=False)
     assert r.verdict.verdict == expected, (name, r.verdict.scores, [x.code for x in r.verdict.reasons])
 
@@ -57,6 +59,8 @@ def test_reason_codes(samples, name, code):
     # heavy jpeg boleh terbaca sebagai PIXELATED maupun HEAVY_COMPRESSION (keduanya rusak)
     if code == "HEAVY_COMPRESSION":
         assert resolution["HEAVY_COMPRESSION"] < 30 and codes & {"HEAVY_COMPRESSION", "PIXELATED"}
+    elif code == "TOO_BRIGHT":  # latar putih: terlalu terang tercatat sebagai TOO_BRIGHT atau GLARE
+        assert codes & {"TOO_BRIGHT", "GLARE"}, codes
     else:
         assert code in codes, codes
 
@@ -372,3 +376,33 @@ def test_text_sharpener_only_when_it_helps(samples):
     assert r.image.sha256 == load_image(samples["warn_pixelated_upscaled"]).sha256
     clear = analyze(samples["pass_sharp_large"], ctx(sharpen=True), do_compress=False, do_thumbnail=False)
     assert "sharpen_text" not in clear.enhancement  # teks sudah terbaca: tidak disentuh
+
+
+def _document_page(lines: int = 24, w: int = 1600, h: int = 1200) -> bytes:
+    """Tangkapan layar/halaman dokumen: latar putih bersih, banyak baris teks (seperti laporan Trace AWB)."""
+    from PIL import ImageDraw
+
+    from engine.synth import _font
+
+    img = Image.new("RGB", (w, h), (255, 255, 255))
+    d = ImageDraw.Draw(img)
+    words = ["AWB", "JKTMKQC2260919000021", "JAKARTA", "PCP", "EXPRESS", "PULOGADUNG", "MERAUKE", "PAPUA",
+             "SHIPMENT", "ENTRY", "CONSIGNEE", "WAREHOUSE", "KARGO", "DARAT"]
+    for i in range(lines):
+        d.text((60, 40 + i * 46), " ".join(words[(i + k) % len(words)] for k in range(6)), font=_font(30),
+                fill=(20, 20, 20))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
+@ocr_only
+def test_white_document_is_not_glare_and_dense_text_is_read():
+    """Kasus nyata uji coba: halaman/struk berlatar putih dengan teks jelas tidak boleh dinilai silau, dan halaman
+    penuh teks harus terbaca dalam batas waktu (dicontoh per kelompok baris)."""
+    r = analyze(_document_page(), ctx(), do_compress=False, do_thumbnail=False)
+    ocr = next(c for c in r.checks if c.check == "ocr")
+    assert ocr.score >= 80 and ocr.metrics["words"] >= 15 and not ocr.metrics["timed_out"]
+    assert r.verdict.verdict in ("PASS", "WARN")
+    assert not any(x.code in ("GLARE", "TOO_BRIGHT") and x.severity != "info" for x in r.verdict.reasons)
+    assert next(c for c in r.checks if c.check == "exposure").metrics["paper_background"] is True

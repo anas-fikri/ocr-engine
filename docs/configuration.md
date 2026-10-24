@@ -519,6 +519,10 @@ target berikutnya paket/foto terlihat jelas.
 diberi tahu, status pengiriman tetap boleh diupdate. Alasan tersebut ditandai `detail.softened: "text_readable"`. Teks
 tidak terbaca tetap REJECT. `text_first: false` = aturan lama (setiap pemeriksaan bisa REJECT sendiri).
 
+**Latar putih dokumen/layar:** pemeriksaan `exposure` mengenali latar kertas (banyak putih + goresan teks gelap;
+metrik `paper_background`). Silau dihitung hanya dari area putih yang jauh dari teks, dan "terlalu terang" dari
+kepekatan teks tergelap. Jika teks terbaca jelas (skor `ocr` ≥ 80), `GLARE`/`TOO_BRIGHT` pada latar kertas hanya info.
+
 (format `reject / warn`)
 
 **authenticity** (keaslian) defaultnya hanya bisa WARN (`reject: null`). Temuan keaslian adalah indikasi untuk ditinjau manusia, bukan bukti.
@@ -630,6 +634,8 @@ sudah menyertakan bahasa `ind` + `eng`).
 - Skor = rata-rata confidence Tesseract per kata (berbobot panjang kata; kata dengan < 2 karakter alfanumerik diabaikan).
 - Kurang dari 3 kata terbaca (dan resi tidak ditemukan) → skor 0, kode `NO_TEXT_DETECTED`; selain itu skor di bawah
   threshold → `TEXT_UNREADABLE`.
+- Area dengan banyak baris (> 8, misal struk panjang atau halaman laporan) dibaca per kelompok 4 baris: awal, tengah,
+  akhir (dipotong di sela baris). Keterbacaan diukur dari sampel itu.
 - Batas waktu baca 1,2 detik per foto. Waktu habis tanpa hasil (server sibuk / foto sangat buram) → info
   `OCR_TIMEOUT`, **tanpa skor** (tidak menolak foto hanya karena waktu habis; foto buram tetap ditolak oleh `sharpness`).
 - Metrik: `score`, `confidence`, `words`, `awb_found`, `method` (`regions`/`full`), `regions` (koordinat relatif area teks).

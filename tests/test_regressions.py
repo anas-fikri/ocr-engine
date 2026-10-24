@@ -34,11 +34,11 @@ def test_extends_in_tenant_default_profile():
 def test_reason_filter_total_matches(client, admin_headers, samples):
     from tests.test_e2e import ingest_and_process, put_photo
 
-    put_photo("pod/pod_recipient/AWB1.jpg", samples["reject_overexposed"])
+    put_photo("pod/pod_recipient/AWB1.jpg", samples["reject_dark"])
     put_photo("pod/pod_recipient/AWB2.jpg", samples["reject_blur_severe"])
     put_photo("pod/pod_recipient/AWB3.jpg", samples["pass_huge_camera"])
     ingest_and_process()
-    r = client.get("/v1/photos", params={"reason": "TOO_BRIGHT", "limit": 1}, headers=admin_headers).json()
+    r = client.get("/v1/photos", params={"reason": "TOO_DARK", "limit": 1}, headers=admin_headers).json()
     assert r["total"] == 1 and r["items"][0]["awb"] == "AWB1"
     assert client.get("/v1/photos", params={"reason": "bukan kode"}, headers=admin_headers).status_code == 422
 
@@ -349,7 +349,8 @@ def test_version_is_visible(client, admin_headers):
     assert r.json()["version"] == __version__ and r.headers["X-PQE-Version"] == __version__
     assert client.get("/v1/photos/tidak-ada", headers=admin_headers).headers["X-PQE-Version"] == __version__
     out = subprocess.run([sys.executable, "-m", "engine.cli", "--version"], capture_output=True, text=True)
-    assert out.stdout.strip() == f"pqe {__version__}"
+    assert out.stdout.strip().startswith(f"pqe {__version__} (build ")
+    assert client.get("/healthz").json()["build"] and r.headers["X-PQE-Build"]
 
 
 def test_engine_archives_to_ocr_bucket(client, admin_headers, samples):

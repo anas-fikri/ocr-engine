@@ -504,7 +504,7 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
   <script src="diagram.js"></script>
   <script>
     "use strict";
-    fetch("/healthz").then((r) => r.json()).then((h) => document.querySelectorAll("[data-version]").forEach((el) => (el.textContent = `v${h.version}`))).catch(() => {});
+    fetch("/healthz").then((r) => r.json()).then((h) => document.querySelectorAll("[data-version]").forEach((el) => (el.textContent = `v${h.version}${h.build && h.build !== "dev" ? ` · ${h.build}` : ""}`))).catch(() => {});
     const BASE = location.origin;
     document.getElementById("base-label").textContent = BASE;
     document.querySelectorAll(".base").forEach((el) => (el.textContent = BASE));

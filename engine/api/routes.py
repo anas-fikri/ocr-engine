@@ -593,7 +593,7 @@ def meta_profiles(
 
 @router.get("/me", summary="Info API key yang sedang dipakai")
 def me(principal: Annotated[Principal, Depends(current_principal)]):
-    from engine import __version__
+    from engine import __build__, __version__
 
     return {"name": principal.name, "role": principal.role, "tenant": principal.tenant_code,
-            "customer_id": principal.customer_id, "version": __version__}
+            "customer_id": principal.customer_id, "version": __version__, "build": __build__}

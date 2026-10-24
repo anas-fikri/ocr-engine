@@ -32,7 +32,10 @@ services:
     logging: *logging
 
   engine:
-    build: .
+    build:
+      context: .
+      args:
+        PQE_BUILD: ${PQE_BUILD:-unknown}   # diisi scripts/deploy.sh dengan commit git
     image: photo-quality-engine:${PQE_VERSION:-local}
     command: ["pqe", "run"]
     depends_on:

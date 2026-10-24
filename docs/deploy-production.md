@@ -183,8 +183,9 @@ Lanjutkan dengan [Rencana UAT](uat-plan.md).
 |---|---|
 | Lihat log | `docker compose -f docker-compose.prod.yml logs -f engine` |
 | Status | `docker compose -f docker-compose.prod.yml ps` |
-| Update ke versi baru | `git fetch --tags && git checkout v0.1.1 && docker compose -f docker-compose.prod.yml up -d --build` |
-| Rollback | `git checkout v0.1.0 && docker compose -f docker-compose.prod.yml up -d --build` |
+| Update ke kode terbaru | `scripts/deploy.sh` (git pull, build dengan kode build = commit, tunggu siap, cek build yang berjalan, preflight) |
+| Update ke versi/tag tertentu | `scripts/deploy.sh v0.1.1` |
+| Rollback | `scripts/deploy.sh v0.1.0` |
 | Restart | `docker compose -f docker-compose.prod.yml restart engine` |
 | Cek versi yang berjalan | `docker compose -f docker-compose.prod.yml exec engine pqe --version`, atau lihat Web UI (sidebar / pojok kanan atas), `GET /healthz`, header `X-PQE-Version` |
 | Restore dari NAS | [operations.md bagian 6.4](operations.md) |

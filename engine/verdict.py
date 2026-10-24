@@ -10,6 +10,7 @@ from engine.tenant_config import Profile
 PASS, WARN, REJECT = "PASS", "WARN", "REJECT"
 _RANK = {PASS: 0, WARN: 1, REJECT: 2}
 TEXT_FIRST_SOFTEN = {"sharpness", "resolution", "exposure"}  # diturunkan ke WARN jika teks terbaca
+PAPER_CLEAR_OCR = 80  # teks sejelas ini di latar putih: silau/terlalu terang tidak dianggap masalah
 
 
 @dataclass
@@ -77,8 +78,22 @@ def decide(profile: Profile, results: list[CheckResult]) -> Verdict:
             if r.severity == "reject" and r.check in TEXT_FIRST_SOFTEN:
                 r.severity = "warn"
                 r.detail = {**r.detail, "softened": "text_readable"}
-        if level == REJECT and not any(r.severity == "reject" for r in reasons):
+        # Dokumen/resi/layar dengan latar putih yang teksnya JELAS terbaca: putih itu kertas, bukan silau.
+        exp = next((r for r in results if r.check == "exposure"), None)
+        clear = scores["ocr"] >= max(PAPER_CLEAR_OCR, t_ocr.warn or 0)
+        if exp is not None and exp.metrics.get("paper_background") and clear:
+            for r in reasons:
+                if r.code in ("GLARE", "TOO_BRIGHT") and r.severity in ("warn", "reject"):
+                    r.severity = "info"
+                    r.detail = {**r.detail, "paper_background": True}
+            subs = exp.metrics.get("sub_scores") or {}
+            scores["exposure"] = min(subs.get("TOO_DARK", 100.0), subs.get("LOW_CONTRAST", 100.0))
+        if any(r.severity == "reject" for r in reasons):
+            level = REJECT
+        elif any(r.severity == "warn" for r in reasons):
             level = WARN
+        else:
+            level = PASS
 
     auth, risks = authenticity_score(results)
     if auth is not None:

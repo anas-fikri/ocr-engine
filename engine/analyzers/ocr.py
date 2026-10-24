@@ -182,6 +182,42 @@ def _crop(view: _View, region: list[float]) -> np.ndarray:
     return c
 
 
+LINES_PER_STRIP = 4  # area teks padat (struk panjang, halaman penuh) dibaca per kelompok baris
+MAX_STRIPS = 3
+DENSE_LINES = 8
+
+
+def _text_lines(crop: np.ndarray) -> list[tuple[int, int]]:
+    """Baris teks dari profil tinta per baris piksel (teks gelap di terang maupun sebaliknya)."""
+    _, bw = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    if bw.mean() > 127:  # mayoritas "tinta" = latar gelap: balik
+        bw = 255 - bw
+    ink = (bw > 0).mean(axis=1) > 0.02
+    lines, start = [], None
+    for y, v in enumerate(ink):
+        if v and start is None:
+            start = y
+        elif not v and start is not None:
+            if y - start >= 4:
+                lines.append((start, y))
+            start = None
+    if start is not None and len(ink) - start >= 4:
+        lines.append((start, len(ink)))
+    return lines
+
+
+def _strips(crop: np.ndarray) -> list[np.ndarray]:
+    """Area teks dengan banyak baris cukup dicontoh: kelompok baris awal, tengah, akhir (dipotong di sela baris,
+    tidak pernah membelah huruf). Keterbacaan diukur dari sampel; jauh lebih cepat, tidak kehabisan waktu."""
+    lines = _text_lines(crop)
+    if len(lines) <= DENSE_LINES:
+        return [crop]
+    groups = [lines[i:i + LINES_PER_STRIP] for i in range(0, len(lines), LINES_PER_STRIP)]
+    pick = sorted({0, len(groups) // 2, len(groups) - 1})[:MAX_STRIPS]
+    h = crop.shape[0]
+    return [crop[max(0, groups[k][0][0] - 6):min(h, groups[k][-1][1] + 6)] for k in pick]
+
+
 def _norm(text: str) -> str:
     return re.sub(r"[^0-9A-Z]", "", text.upper())
 
@@ -206,12 +242,18 @@ def readability(img: LoadedImage, awb: str | None = None, regions: list[list[flo
         crop = _crop(view, r)
         if crop.size == 0:
             continue
-        tries = [crop]
-        if crop.shape[0] > 1.5 * crop.shape[1]:  # area tegak: kemungkinan teks diputar
-            tries += [cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE), cv2.rotate(crop, cv2.ROTATE_90_COUNTERCLOCKWISE)]
-        reads = [_read(t, 6, max(0.1, min(0.6, left()))) for t in tries]
+        reads = [_read(s, 6, max(0.1, min(0.6, left()))) for s in _strips(crop)]
+        first = (sum(x[0] for x in reads), sum(x[1] for x in reads), sum(max(x[2], 0) for x in reads),
+                 " ".join(x[3] for x in reads))
         timed_out |= any(x[2] < 0 for x in reads)
-        best = max(reads, key=lambda x: (x[1] and x[0] / x[1]) * min(max(x[2], 0), 10))
+        best = first
+        if first[2] < MIN_WORDS and crop.shape[0] > 1.5 * crop.shape[1] and left() > 0.3:
+            # hampir tidak terbaca dan areanya tegak: mungkin teks diputar 90 derajat
+            for rot in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
+                x = _read(cv2.rotate(crop, rot), 6, max(0.1, min(0.5, left())))
+                timed_out |= x[2] < 0
+                if (x[1] and x[0] / x[1]) * min(max(x[2], 0), 10) > (best[1] and best[0] / best[1]) * min(best[2], 10):
+                    best = (x[0], x[1], max(x[2], 0), x[3])
         total, weight, words = total + best[0], weight + best[1], words + max(best[2], 0)
         texts.append(best[3])
     region_conf = total / weight if weight else 0.0

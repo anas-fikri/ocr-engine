@@ -62,8 +62,9 @@ function focusPage(root = $("#main")) {
 
 async function loadVersion() {
   try {
-    const v = (await (await fetch("/healthz")).json()).version;
-    document.querySelectorAll("[data-version]").forEach((el) => (el.textContent = `v${v}`));
+    const h = await (await fetch("/healthz")).json();
+    const label = `v${h.version}${h.build && h.build !== "dev" ? ` · ${h.build}` : ""}`;
+    document.querySelectorAll("[data-version]").forEach((el) => { el.textContent = label; el.title = `build ${h.build}`; });
   } catch { /* abaikan */ }
 }
 

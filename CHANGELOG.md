@@ -2,7 +2,8 @@
 
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/); nomor versi mengikuti
 [Semantic Versioning](https://semver.org/lang/id/). Versi yang sedang berjalan tampil di Web UI (sidebar & login),
-`GET /healthz`, `GET /v1/me`, header `X-PQE-Version` di setiap respons, dan `pqe --version`.
+`GET /healthz`, `GET /v1/me`, header `X-PQE-Version` di setiap respons, dan `pqe --version`, lengkap dengan **kode
+build** (commit git, contoh `v0.1.0 · b58baf9`, header `X-PQE-Build`) jika di-deploy dengan `scripts/deploy.sh`.
 
 Rilis dibuat dengan tag git `vX.Y.Z`; server production memakai tag, bukan cabang
 ([deploy-production.md](docs/deploy-production.md#11-operasional)).
@@ -23,6 +24,8 @@ Rilis pertama untuk live uji coba dan UAT.
 - **Teks harus terbaca** di semua jenis foto: foto miring diluruskan dulu, OCR per area teks, pencocokan nomor resi,
   foto tidak terbaca ditolak (`NO_TEXT_DETECTED`/`TEXT_UNREADABLE`); waktu habis tidak menghukum (`OCR_TIMEOUT`).
 - `text_first`: teks terbaca → gelap/terang/pudar/pecah/buram ringan cukup WARN (target berikutnya: paket jelas).
+- Dokumen/struk/layar berlatar putih tidak lagi dinilai silau: putih dianggap kertas bila teks jelas terbaca.
+- Halaman penuh teks dibaca per kelompok baris (awal/tengah/akhir) supaya tidak kehabisan waktu.
 - Penajam teks tanpa AI (unsharp mask), dipakai hanya jika keterbacaan teks terbukti naik.
 - Optimasi tanpa manipulasi: hanya diperkecil proporsional + kompresi dinamis dengan pengaman SSIM dan penjaga
   keterbacaan teks (hasil kompres dibaca ulang; kualitas/resolusi dinaikkan bila teks memburuk, maks. 1,5 MB).

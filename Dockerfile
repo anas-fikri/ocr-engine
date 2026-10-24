@@ -4,7 +4,10 @@
 FROM python:3.12-slim
 
 ARG WITH_OCR=true
-ENV PYTHONDONTWRITEBYTECODE=1 \
+# commit git yang di-build (scripts/deploy.sh mengisinya); tampil di Web UI, /healthz, header X-PQE-Build
+ARG PQE_BUILD=unknown
+ENV PQE_BUILD=$PQE_BUILD \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
