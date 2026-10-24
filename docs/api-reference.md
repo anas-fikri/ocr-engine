@@ -19,7 +19,7 @@ versi interaktif tanpa login di `<base-url>/ui/guide.html`.
 | Error | `{"error": {"code": "KODE", "message": "penjelasan"}}`. Daftar kode: [integration-guide.md#10-kode-error](integration-guide.md#10-kode-error) |
 | Versi | Prefix `/v1`. Perubahan yang tidak kompatibel akan memakai `/v2`; field baru bisa ditambahkan kapan saja (abaikan field yang tidak dikenal) |
 | Versi engine | Setiap respons berisi header `X-PQE-Version` (contoh `0.1.0`), juga di `GET /healthz` dan `GET /v1/me`. Berguna untuk memastikan versi setelah upgrade/rollback |
-| Penyimpanan | Engine **tidak pernah menulis ke SILO**. Foto disimpan aplikasi; engine hanya membaca bucket aplikasi ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)) |
+| Penyimpanan | Foto pengiriman disimpan **aplikasi** di bucket-nya ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Engine hanya **membaca** bucket aplikasi dan menulis ke **arsipnya sendiri** (bucket `ocr`, per tenant, 520 hari; [ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)) |
 
 ## Role & hak akses
 
@@ -50,7 +50,8 @@ API key `admin`/`ops`/`viewer` tanpa tenant bisa melihat semua tenant. Untuk end
 
 ### `POST /v1/analyze`
 
-Menganalisis foto. Engine **hanya memproses**: tidak menyimpan file ke SILO. Bentuk A idempotent per objek
+Menganalisis foto. Engine tidak menyimpan file ke bucket aplikasi; foto upload (Bentuk B) diarsipkan di bucket arsip
+engine (`ocr`) di belakang layar. Bentuk A idempotent per objek
 (bucket + key): memanggil ulang untuk objek yang sama mengembalikan foto yang sama.
 
 **Query:** `tenant`, `sync` (bool, default `false`, hanya Bentuk A), `timeout_ms` (100-30000, default `PQE_SYNC_TIMEOUT_MS` = 3000), `lang`.
@@ -77,18 +78,20 @@ Menganalisis foto. Engine **hanya memproses**: tidak menyimpan file ke SILO. Ben
 Hanya `object_key` yang wajib. `bucket` default `AWS_BUCKET`. Field yang dikirim eksplisit selalu menang atas
 metadata objek dan aturan mapping tenant.
 
-Engine hanya membaca objek itu dari SILO. Default async (`202` + `poll_url`); `sync=true` menunggu hasil sampai `timeout_ms`.
+Engine hanya membaca objek itu dari SILO (tidak diarsipkan ulang). Default async (`202` + `poll_url`); `sync=true` menunggu hasil sampai `timeout_ms`.
 
 **Bentuk B: upload file** (`multipart/form-data`, **disarankan**): field `file` (JPEG/PNG/HEIC/WebP, maks.
 `PQE_MAX_UPLOAD_MB`) ditambah field metadata yang sama seperti di atas (semua opsional), plus:
 
 | Field | Keterangan |
 |---|---|
-| `object_key` | Opsional. Key SILO tempat **aplikasi** akan menyimpan foto jika diterima. Dicatat sebagai `object` (hanya untuk foto yang diterima) supaya Web UI, evidence, dan backup NAS bisa membaca fotonya |
+| `object_key` | Opsional. Key SILO tempat **aplikasi** akan menyimpan foto jika diterima. Dicatat sebagai `object` (hanya untuk foto yang diterima), pelengkap arsip engine |
 | `bucket` | Opsional, bucket untuk `object_key`. Default `AWS_BUCKET` |
 
-File selalu dianalisis langsung di request itu (maks. `timeout_ms`; `sync` tidak berpengaruh). Engine tidak menyimpan
-file-nya. Respons menambahkan `output_image`:
+File selalu dianalisis langsung di request itu (maks. `timeout_ms`; `sync` tidak berpengaruh). Setelah respons
+dikirim, engine mengarsipkan salinannya di bucket arsip (`<tenant>/<yyyy>/<mm>/<dd>/<id>.<ext>`): foto diterima = sama
+dengan `output_image`, foto ditolak = foto asli. Gagal tulis dicoba ulang (1, 4, 15 detik), metrik
+`pqe_archive_total`. Respons menambahkan `output_image`:
 
 ```json
 "output_image": {"content_type": "image/jpeg", "bytes": 412345, "optimized": true,
@@ -167,17 +170,18 @@ Mencari foto. Diurutkan dari yang terbaru diterima.
 
 ### `GET /v1/photos/{id}/file?variant=processed`
 
-Mengambil file foto **lewat engine**, untuk browser/HP yang tidak bisa menjangkau host SILO (presigned URL). Engine
-membacanya dari lokasi `object` di SILO aplikasi (engine tidak menyimpan foto). `variant`: `processed` (bawaan) dan
-`original` sama-sama file di lokasi `object` (foto lama dari versi sebelumnya yang punya salinan di bucket engine tetap
-memakai salinan itu); `thumbnail` dibuat saat diminta (JPEG). `404 FILE_NOT_FOUND` jika foto tidak disimpan di SILO
-(ditolak, atau aplikasi belum melaporkan lokasinya) atau file sudah tidak ada. Aplikasi produksi sebaiknya tetap
+Mengambil file foto **lewat engine**, untuk browser/HP yang tidak bisa menjangkau host SILO (presigned URL).
+`variant`: `processed` (bawaan) = arsip engine (`archive`), atau lokasi `object` jika tidak ada arsip; `original` =
+lokasi `object`, atau arsip jika aplikasi tidak menyimpan/melaporkan; `thumbnail` dibuat saat diminta (JPEG) dari
+arsip atau lokasi `object`. `404 FILE_NOT_FOUND` jika tidak ada arsip (belum selesai ditulis / lewat masa simpan) dan
+tidak ada lokasi aplikasi, atau file sudah tidak ada. Aplikasi produksi sebaiknya tetap
 memakai `urls.*` (presigned) agar tidak membebani engine.
 
 ### `POST /v1/photos/{id}/stored`
 
 Opsional: melaporkan key SILO tempat aplikasi menyimpan foto, jika `object_key` belum dikirim saat `POST /v1/analyze`.
-Dipakai Web UI, evidence, dan backup NAS untuk **membaca** foto. Engine tidak memeriksa atau mengubah file di SILO.
+Pelengkap arsip engine: dipakai Web UI, evidence, dan backup NAS untuk **membaca** foto jika arsip tidak ada (misal
+lewat masa simpan). Engine tidak memeriksa atau mengubah file di bucket aplikasi.
 
 Body: `{"object_key": "pod/2026/10/22/AWB123.jpg", "bucket": "ekas-pcptransport"}` (`bucket` opsional, default
 `AWS_BUCKET`). Respons: [objek foto](#objek-foto) dengan `object` terisi. Foto lain yang tercatat di lokasi yang sama
@@ -215,8 +219,9 @@ Memicu webhook `review.updated` dan tercatat di audit log.
 
 ### `POST /v1/photos/{id}/reprocess`
 
-Antrekan analisis ulang (misal setelah threshold diubah); engine membaca ulang file dari lokasi `object`. Respons
-`{"id": "...", "status": "pending"}`. `409 NOT_STORED` untuk foto yang tidak disimpan di SILO (`object: null`).
+Antrekan analisis ulang (misal setelah threshold diubah); engine membaca ulang file dari lokasi `object`, atau dari
+arsip untuk foto upload tanpa lokasi aplikasi (foto diterima: versi optimasi). Respons `{"id": "...", "status":
+"pending"}`. `409 NOT_STORED` jika tidak ada arsip maupun lokasi aplikasi.
 
 ### `GET /v1/photos/{id}/reviews`
 
@@ -239,8 +244,8 @@ Resi tanpa foto layak tidak muncul di PDF; jika tidak ada satu pun, PDF berisi s
 `image_url` adalah presigned URL dengan masa berlaku `ENGINE_PRESIGN_TTL_CUSTOMER` (default 7 hari).
 Foto yang muncul = foto dengan `evidence_eligible: true`: dengan `review_required: false` (bawaan tenant) `PASS` dan
 `WARN`; dengan `review_required: true` hanya `PASS` atau yang di-approve ops. `REJECT` hanya muncul jika di-approve ops.
-Hanya foto yang **disimpan aplikasi** dan lokasinya diketahui engine (`object` terisi, lewat `object_key` atau
-`POST /v1/photos/{id}/stored`) yang muncul; gambarnya dibaca dari SILO aplikasi. `sha256`/`verify_url` merujuk ke
+Hanya foto yang punya file yang muncul: gambar diambil dari arsip engine (`archive`), atau dari lokasi di bucket
+aplikasi (`object`) untuk foto polling / `object_key` dan foto yang arsipnya sudah lewat masa simpan. `sha256`/`verify_url` merujuk ke
 file yang dianalisis engine.
 
 ---
@@ -317,7 +322,7 @@ Semua butuh role `admin`, kecuali endpoint baca yang juga boleh `ops`/`viewer` (
 | `PUT /v1/admin/settings/backup` | JSON | Simpan konfigurasi backup NAS (berlaku di putaran worker berikutnya) |
 | `POST /v1/admin/settings/backup/test` | JSON | Uji tujuan NAS dengan nilai yang dikirim, tanpa menyimpan |
 | `POST /v1/admin/backup/run` | JSON `{"kind": "photos"\|"database"\|"all"}` | Minta worker menjalankan backup sekarang (±10 detik) |
-| `GET /v1/admin/preflight?check_silo=true` | - | Cek kesiapan production, sama dengan `pqe preflight`: `{"ready", "counts": {"ok", "warn", "fail"}, "checks": [{"group", "check", "status", "detail", "fix"}]}`. `ready` = tidak ada `fail`. Dengan `check_silo=true` (bawaan) engine mencoba membaca bucket aplikasi (hanya baca; cek SILO: "Baca bucket aplikasi '<bucket>'" dan "Engine hanya membaca SILO") |
+| `GET /v1/admin/preflight?check_silo=true` | - | Cek kesiapan production, sama dengan `pqe preflight`: `{"ready", "counts": {"ok", "warn", "fail"}, "checks": [{"group", "check", "status", "detail", "fix"}]}`. `ready` = tidak ada `fail`. Dengan `check_silo=true` (bawaan) engine membaca bucket aplikasi dan menulis lalu menghapus file uji kecil di bucket arsip (cek SILO: "Kredensial", "Baca bucket aplikasi '<bucket>'", "Tulis bucket arsip '<ocr>'", "Bucket aplikasi hanya dibaca") |
 
 Contoh mengubah config:
 
@@ -329,8 +334,9 @@ curl -X PUT "$PQE_URL/v1/admin/tenants" -H "X-API-Key: $ADMIN_KEY" \
 ### Pengaturan SILO
 
 Penjelasan lengkap (prioritas, enkripsi, jebakan `127.0.0.1`): [configuration.md §1.6](configuration.md#16-koneksi-silo-lewat-web-ui).
-Di Web UI halaman ini bernama **Koneksi SILO**. Engine hanya **membaca** SILO (foto yang disimpan aplikasi), jadi
-service account cukup izin `s3:GetObject` + `s3:ListBucket` di bucket aplikasi. Field `processed_bucket`,
+Di Web UI halaman ini bernama **Koneksi SILO**. Engine **membaca** bucket aplikasi (`app_bucket`) dan menulis ke
+bucket arsipnya (`archive_bucket`, bawaan `ocr`). Service account: `s3:GetObject` + `s3:ListBucket` di bucket aplikasi;
+`s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket` di bucket arsip. Field `processed_bucket`,
 `thumb_bucket`, `upload_bucket` masih diterima untuk data versi lama, tetapi tidak diperlukan untuk instalasi baru.
 
 **`GET /v1/admin/settings/storage`**
@@ -348,6 +354,7 @@ service account cukup izin `s3:GetObject` + `s3:ListBucket` di bucket aplikasi. 
     "addressing_style":  {"value": "path", "source": "database"},
     "signature_version": {"value": "s3v4", "source": "env"},
     "app_bucket":        {"value": "ekas-pcptransport", "source": "env"},
+    "archive_bucket":    {"value": "ocr", "source": "default"},
     "processed_bucket":  {"value": "photos-processed", "source": "env"},
     "thumb_bucket":      {"value": "photos-thumb", "source": "env"},
     "upload_bucket":     {"value": "photos-upload", "source": "env"}
@@ -371,6 +378,7 @@ field opsional; field kosong/tidak dikirim = tidak diubah.
   "addressing_style": "path",
   "signature_version": "s3v4",
   "app_bucket": "ekas-pcptransport",
+  "archive_bucket": "ocr",
   "mc_config": {"url": "https://s3.pcpexpress.com", "accessKey": "...", "secretKey": "...", "api": "s3v4", "path": "auto"},
   "clear": ["public_endpoint"]
 }
@@ -388,7 +396,8 @@ Respons `PUT`: `{"version": <n>, ...}` + isi yang sama dengan `GET`. Error: `422
 valid), `409 SECRET_KEY_MISSING` (mengirim `secret_key` tetapi `PQE_SECRET_KEY` belum diisi di server). Tercatat di
 audit log `settings.storage.update` (nama field saja, tanpa nilai rahasia).
 
-Respons `test` (tidak menyimpan dan tidak menulis apa pun ke SILO; field kosong memakai nilai efektif saat ini):
+Respons `test` (tidak menyimpan pengaturan; hanya menulis lalu menghapus file uji kecil `_pqe_connection_test/...` di
+bucket arsip; field kosong memakai nilai efektif saat ini):
 
 ```json
 {
@@ -396,7 +405,8 @@ Respons `test` (tidak menyimpan dan tidak menulis apa pun ke SILO; field kosong 
   "endpoint": "http://127.0.0.1:9000",
   "checks": [
     {"check": "Baca bucket aplikasi 'ekas-pcptransport'", "ok": false, "detail": "EndpointConnectionError: Could not connect to the endpoint URL: ..."},
-    {"check": "Baca isi foto", "ok": false, "detail": "..."}
+    {"check": "Baca isi foto", "ok": false, "detail": "..."},
+    {"check": "Tulis bucket arsip 'ocr'", "ok": false, "detail": "..."}
   ]
 }
 ```
@@ -428,9 +438,9 @@ Field: [configuration.md §1.7](configuration.md#17-backup-nas-lewat-web-ui).
 
 | Field | Keterangan |
 |---|---|
-| `include_photos` | Foto yang disimpan aplikasi di SILO (lokasi `object`), dibaca dari bucket aplikasi lalu disalin ke NAS |
+| `include_photos` | Satu salinan per foto: arsip engine (`archive`, bucket `ocr`) bila ada, selain itu foto di lokasi `object` (bucket aplikasi, misal foto polling) |
 | `include_database` | Dump database engine |
-| `include_upload_originals`, `include_processed`, `include_thumbs` | Data versi lama saja: salinan di bucket engine sebelum engine berhenti menulis ke SILO |
+| `include_upload_originals`, `include_processed`, `include_thumbs` | Data versi lama saja: salinan di bucket `photos-upload`/`photos-processed`/`photos-thumb` dari versi sebelum arsip `ocr` |
 
 `include_app_originals` sudah dihapus (diganti `include_photos`); jika masih dikirim, field itu diabaikan.
 
@@ -455,7 +465,7 @@ Respons `GET`/`PUT`/`run` (rahasia tidak pernah dikembalikan):
 }
 ```
 
-`pending` = foto selesai dianalisis yang disimpan aplikasi (`object` terisi) dan belum tersalin; `backed_up` = foto yang sudah tersalin; `free_space` hanya untuk
+`pending` = foto selesai dianalisis yang punya file (arsip engine atau lokasi `object`) dan belum tersalin; `backed_up` = foto yang sudah tersalin; `free_space` hanya untuk
 tujuan folder. `state.requested` terisi saat permintaan `run` menunggu worker.
 
 Respons `test`:
@@ -468,6 +478,7 @@ Respons `test`:
     {"check": "Tujuan backup (folder /backup)", "ok": true, "detail": "folder ada"},
     {"check": "Tulis ke NAS", "ok": true, "detail": "tulis, baca, hapus berhasil"},
     {"check": "Ruang kosong NAS", "ok": true, "detail": "19.7 GB kosong dari 252.0 GB"},
+    {"check": "Baca bucket arsip engine 'ocr'", "ok": true, "detail": "bisa diakses"},
     {"check": "Baca bucket foto aplikasi 'ekas-pcptransport'", "ok": true, "detail": "bisa diakses"},
     {"check": "Dump database", "ok": true, "detail": "dump postgresql siap"}
   ]
@@ -513,11 +524,12 @@ pilihan), `409 SECRET_KEY_MISSING` (mengirim `s3_secret_key` tetapi `PQE_SECRET_
 | `reasons[]` | array | `{code, check, severity, score, detail, message, suggestion}`, urut `reject` → `warn` → `info` |
 | `review` | objek | `{status, by, at, note}` |
 | `evidence_eligible` | bool | Apakah foto tampil di evidence pelanggan. Bawaan (`review_required: false`): `PASS`/`WARN` = `true`. Lihat [Evidence](#evidence--verifikasi) |
-| `object` | objek / null | `{bucket, key}` lokasi foto di SILO aplikasi: objek yang dianalisis (Bentuk A, polling), atau `object_key` yang dikirim/dilaporkan aplikasi (Bentuk B, hanya untuk foto yang diterima). `null` = tidak disimpan (ditolak) atau lokasi belum dilaporkan; foto seperti ini tidak punya file di Web UI, tidak masuk evidence/backup NAS, dan tidak bisa dianalisis ulang. Ada juga di webhook |
-| `output_image` | objek / null | **Hanya di respons upload file** `POST /v1/analyze` (tidak disimpan, tidak ada di `GET` maupun webhook): `{content_type, bytes, optimized, sha256, base64}` foto yang disimpan aplikasi ke SILO. `null` = ditolak atau masih `pending` |
+| `object` | objek / null | `{bucket, key}` lokasi foto di SILO aplikasi: objek yang dianalisis (Bentuk A, polling), atau `object_key` yang dikirim/dilaporkan aplikasi (Bentuk B, hanya untuk foto yang diterima). `null` = tidak disimpan aplikasi (ditolak) atau lokasi belum dilaporkan. Ada juga di webhook |
+| `archive` | objek / null | `{bucket, key}` salinan engine di bucket arsip (bawaan `ocr`, key `<tenant>/<yyyy>/<mm>/<dd>/<id>.<ext>`): foto hasil (diterima) atau foto asli (ditolak). `null` = foto Bentuk A/polling (tidak diarsipkan ulang), arsip belum selesai ditulis, atau lewat `archive_retention_days` (bawaan 520 hari). Foto tanpa `archive` dan tanpa `object` tidak punya file di Web UI, tidak masuk evidence/backup NAS, dan tidak bisa dianalisis ulang |
+| `output_image` | objek / null | **Hanya di respons upload file** `POST /v1/analyze` (tidak ada di `GET` maupun webhook; salinannya ada di `archive`): `{content_type, bytes, optimized, sha256, base64}` foto yang disimpan aplikasi ke SILO. `null` = ditolak atau masih `pending` |
 | `sha256` | string | Hash file yang dianalisis engine (untuk verifikasi) |
 | `error` | objek / null | `{code, message}` jika `status = error` |
-| `urls` | objek | Presigned URL ke lokasi `object`: `original` dan `processed` (sama; `null` jika `object` null), `thumbnail` (`null` untuk foto baru; pakai `GET /v1/photos/{id}/file?variant=thumbnail`), `expires_in` (detik). Foto lama yang punya salinan di bucket engine memakai salinan itu untuk `processed`/`thumbnail`. Tidak ada di webhook |
+| `urls` | objek | Presigned URL: `processed` = arsip engine, atau lokasi `object` jika tidak ada arsip; `original` = lokasi `object`, atau arsip jika aplikasi tidak menyimpan/melaporkan (`null` jika keduanya tidak ada); `thumbnail` (`null` untuk foto baru; pakai `GET /v1/photos/{id}/file?variant=thumbnail`); `expires_in` (detik). Tidak ada di webhook |
 | `poll_url` | string | Hanya pada respons `202` |
 
 ---
@@ -565,8 +577,8 @@ tercatat di `enhancement.before.codes`.
 | 422 | `INVALID_SETTINGS` | `/v1/admin/settings/storage...` | Field tidak dikenal, `addressing_style`/`signature_version` salah, endpoint tanpa `http(s)://` |
 | 422 | `INVALID_SETTINGS` | `/v1/admin/settings/backup...` | Angka di luar rentang, `folder_path` bukan path absolut, endpoint NAS tanpa `http(s)://`, tujuan `s3` tanpa endpoint/bucket |
 | 409 | `SECRET_KEY_MISSING` | `PUT /v1/admin/settings/storage`, `PUT /v1/admin/settings/backup` | `PQE_SECRET_KEY` belum diisi di server, secret key SILO/NAS tidak bisa disimpan terenkripsi |
-| 404 | `FILE_NOT_FOUND` | `GET /v1/photos/{id}/file` | Foto tidak disimpan di SILO (ditolak / lokasi belum dilaporkan) atau file sudah tidak ada di SILO |
-| 409 | `NOT_STORED` | `POST /v1/photos/{id}/reprocess` | Foto tidak disimpan di SILO (`object: null`), tidak ada file untuk dianalisis ulang |
+| 404 | `FILE_NOT_FOUND` | `GET /v1/photos/{id}/file` | Tidak ada arsip engine (belum selesai ditulis / lewat masa simpan) dan tidak ada lokasi aplikasi, atau file sudah tidak ada di SILO |
+| 409 | `NOT_STORED` | `POST /v1/photos/{id}/reprocess` | Tidak ada arsip maupun lokasi aplikasi, tidak ada file untuk dianalisis ulang |
 
 ## Webhook
 
