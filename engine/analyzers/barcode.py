@@ -80,6 +80,20 @@ def read_codes(img: LoadedImage) -> list[dict[str, Any]]:
     return unique
 
 
+def shape(text: str) -> str:
+    """Pola nomor: huruf -> A, angka -> 9. Dua nomor berpola sama = jenis nomor yang sama (resi lain, invoice lain)."""
+    return re.sub(r"[A-Z]", "A", re.sub(r"[0-9]", "9", norm(text)))
+
+
+def mismatch(codes: list[dict[str, Any]], expected: str | None) -> dict[str, Any] | None:
+    """Kode berpola sama dengan nomor yang dikirim aplikasi tetapi isinya berbeda (resi/invoice lain di foto).
+    None jika nomor itu ada di foto, atau tidak ada kode sejenis (tidak bisa disimpulkan)."""
+    if not expected or len(norm(expected)) < 6 or find_awb(codes, expected) is not None:
+        return None
+    want = shape(expected)
+    return next((c for c in codes if shape(c["text"]) == want), None)
+
+
 def find_awb(codes: list[dict[str, Any]], awb: str | None) -> dict[str, Any] | None:
     """Kode yang memuat nomor resi aplikasi; tanpa `awb`, kode pertama yang tampak seperti nomor resi."""
     if awb and len(norm(awb)) >= 6:

@@ -158,11 +158,16 @@ async function submit(file, source) {
   $("#result").innerHTML = `<h2><span class="num">3</span> Hasil</h2><div class="busy"><div class="spinner"></div>Mengirim ${kb(file.size)} ke engine...</div>`;
   $("#result").scrollIntoView({ behavior: "smooth", block: "start" });
   try {
+    // pra-cek di HP (sama seperti yang bisa dipasang di aplikasi kurir): hanya saran, foto tetap dikirim
+    const t0 = performance.now();
+    run.precheck = await import("./precheck.js").then((m) => m.precheckImage(file)).catch(() => null);
+    if (run.precheck) run.precheck.ms = Math.round(performance.now() - t0);
     if (run.mode === "quick") await runQuick(run); else await runSim(run, source);
     if (run.mode === "sim" && !run.r.retake_required) $("#awb").value = newAwb(); // foto diterima: resi berikutnya
     state.history.unshift(run);
     renderHistory();
     render(run);
+    if (run.precheck && run.precheck.metrics) $("#result").insertAdjacentHTML("beforeend", precheckHtml(run.precheck));
   } catch (e) {
     if (e.message === "unauthorized") return;
     $("#result").innerHTML = `<h2><span class="num">3</span> Hasil</h2><div class="msg reject"><b>Gagal</b>${esc(e.message)}
@@ -215,6 +220,14 @@ async function runSim(run, source) {
 }
 
 /* ---------------- tampilan ---------------- */
+function precheckHtml(pc) {
+  const m = pc.metrics;
+  return `<details class="small" ${pc.ok ? "" : "open"}><summary><b>Pra-cek di HP</b> (${pc.ms} ms, sebelum dikirim): ${pc.ok ? "tidak ada masalah" : esc(pc.issues.map((i) => i.code).join(", "))}</summary>
+    ${pc.issues.map((i) => `<div class="msg warn">${esc(i.message)}</div>`).join("")}
+    <p class="muted">Ketajaman ${m.sharpness} · kecerahan ${m.brightness} · ${m.width}×${m.height}. Pra-cek ini bisa dipasang di aplikasi kurir
+    (<code>clients/typescript/precheck.js</code>) supaya kurir langsung mengulang foto yang buram/gelap sebelum dikirim. Keputusan akhir tetap dari engine.</p></details>`;
+}
+
 function effectiveAction(r, viewMode) {
   if (!viewMode) return r.action;
   if (r.verdict === "PASS") return "log";

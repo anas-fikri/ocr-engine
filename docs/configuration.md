@@ -440,7 +440,24 @@ Perilaku pengiriman:
 
 ### 2.5 profiles: aturan per jenis foto
 
-Profile = kumpulan aturan pemeriksaan untuk satu jenis foto. Engine punya profile bawaan ([`engine/defaults/profiles.yaml`](../engine/defaults/profiles.yaml)): `default`, `pod_recipient`, `pod_document`, `package`, `goods`, `location`. Tenant cukup menulis **bagian yang ingin diubah**.
+Profile = kumpulan aturan pemeriksaan untuk satu jenis foto. Engine punya profile bawaan ([`engine/defaults/profiles.yaml`](../engine/defaults/profiles.yaml)). Tenant cukup menulis **bagian yang ingin diubah**.
+
+| Profile | Untuk | Teks wajib terbaca |
+|---|---|---|
+| `default` | Fallback | ya |
+| `pod_recipient` | Foto penerima + paket | ya |
+| `pod_document` | Resi, surat jalan, dokumen serah terima | ya (lebih ketat, resolusi lebih tinggi) |
+| `invoice` | Invoice, struk, kwitansi, nota | ya (lebih ketat, resolusi lebih tinggi) |
+| `package` | Label di paket | ya |
+| `goods` | Barang | ya |
+| `location` | Lokasi / depan rumah | ya |
+| `accident` | Bukti kecelakaan, kerusakan, insiden | **tidak** (detail tetap dijaga: resolusi simpan 2400 px) |
+| `other` | Foto bukti lain | **tidak** |
+
+`text_required: false` (bawaan untuk `accident` dan `other`): keterbacaan teks tetap diukur dan dicatat (berguna
+jika ada pelat nomor atau dokumen di foto), tetapi tidak membuat foto WARN/REJECT. Foto lain tetap dinilai ketajaman,
+pencahayaan, resolusi, keaslian, dan duplikat. Ubah per tenant bila perlu, contoh `profiles.location.text_required:
+false` jika foto lokasi tidak selalu memuat teks.
 
 #### Memilih profile untuk sebuah foto
 
@@ -485,7 +502,7 @@ Cek hasil akhir: Web UI → Tenant → Ubah → **Validasi** → "Profile hasil 
 | `checks` | `[sharpness, resolution, exposure, exif, duplicate, ocr]` | Pemeriksaan yang dijalankan. Pilihan: `sharpness`, `resolution`, `exposure`, `exif`, `duplicate`, `ocr`. `ocr` (teks terbaca) aktif di semua profile bawaan; hapus dari `checks` tenant hanya untuk jenis foto yang memang tanpa teks |
 | `thresholds` | lihat tabel di bawah | Batas skor per pemeriksaan |
 | `params` | lihat [bagian 3](#3-cara-skor-dihitung) | Parameter perhitungan |
-| `enhance` | `{enabled: false}` | Koreksi pencahayaan opsional tanpa AI. Bawaan nonaktif: engine tidak memanipulasi gambar. Lihat [di bawah](#perbaikan-pencahayaan-otomatis-enhance) |
+| `enhance` | `{enabled: false}` | Koreksi pencahayaan opsional tanpa AI. Bawaan nonaktif: engine tidak memanipulasi gambar. Lihat [di bawah](#koreksi-pencahayaan-opsional-enhance) |
 | `compression` | lihat [bagian 4](#4-kompresi--thumbnail) | Kompresi |
 | `thumbnail` | `{long_side_px: 320, quality: 70}` | Thumbnail |
 
@@ -669,6 +686,8 @@ Skor keaslian = `100 - total poin risiko` (minimal 0). Hanya dihitung jika `exif
 | `OLD_PHOTO` | 30 | Waktu EXIF lebih tua dari waktu foto diterima engine lebih dari N jam | `params.exif.max_age_hours` (48) |
 | `CAPTURE_TIME_MISMATCH` | 30 | Waktu EXIF berbeda dengan `captured_at` dari aplikasi lebih dari N jam | `params.exif.captured_at_tolerance_hours` (6) |
 | `GPS_MISMATCH` | 30 | GPS EXIF berjarak lebih dari N km dari `lat/lng` dari aplikasi | `params.exif.gps_tolerance_km` (2) |
+| `FAR_FROM_DESTINATION` | 30 | Foto diambil lebih dari N km dari alamat tujuan (`dest_lat`/`dest_lng` dari aplikasi). Posisi foto: GPS EXIF, jika tidak ada `lat`/`lng` HP. Jarak tercatat di `metrics.exif.dest_distance_km` | `params.exif.dest_radius_km` (1) |
+| `REFERENCE_MISMATCH` | 30 | Barcode/QR di foto berisi nomor **sejenis** (pola huruf/angka sama) dengan `awb`/`reference` dari aplikasi tetapi isinya berbeda: kemungkinan foto paket/dokumen lain. Nomor sejenis tidak ditemukan → tidak dinilai | — |
 | `DUPLICATE_EXACT` | 70 | File identik (SHA-256 sama) sudah dipakai foto lain dengan resi **berbeda** | — |
 | `DUPLICATE_SIMILAR` | 50 | Foto secara visual sangat mirip (jarak Hamming pHash 64-bit ≤ N) dengan foto resi berbeda | `params.duplicate.max_distance` (6) |
 | `EXIF_MISSING` | 0 (info) | Tidak ada make, model, maupun waktu di EXIF. **Normal**: banyak aplikasi/platform menghapus EXIF | — |
@@ -760,7 +779,7 @@ disimpan.
 Alur yang disarankan: semua tenant mulai di `shadow` (1-2 minggu, kalibrasi), lalu `warn`, lalu `enforce` setelah disetujui ops & finance. Mode bisa berbeda per profile (contoh `pod_document: enforce`, `location: warn`).
 
 Verdict dihitung dari foto apa adanya (atau setelah koreksi pencahayaan jika profile mengaktifkan
-[enhance](#perbaikan-pencahayaan-otomatis-enhance)). Selain `action`, setiap foto punya field turunan:
+[enhance](#koreksi-pencahayaan-opsional-enhance)). Selain `action`, setiap foto punya field turunan:
 
 | Field | Aturan |
 |---|---|
@@ -774,6 +793,23 @@ Verdict dihitung dari foto apa adanya (atau setelah koreksi pencahayaan jika pro
 <a id="kalibrasi-threshold"></a>
 
 ## 6. Kalibrasi threshold
+
+**Cara cepat (otomatis):** Web UI → **Kalibrasi** (atau `pqe calibration --days 7`, `GET /v1/admin/calibration`).
+Engine membandingkan verdict dengan keputusan reviewer di halaman Review:
+
+- **Salah tolak** = REJECT tetapi disetujui reviewer (layak tagih) → batas terlalu ketat.
+- **Salah terima** = PASS tetapi reviewer meminta foto ulang / menandai kecurangan → batas terlalu longgar.
+
+Saran angka batas muncul jika ≥ 10 foto REJECT karena satu alasan sudah direview dan ≥ 30% di antaranya disetujui
+(batas baru = di bawah sebagian besar foto yang disetujui, tetapi di atas foto yang memang buruk), atau jika ≥ 5 foto
+PASS (≥ 10%) diminta foto ulang. Saran naik mode: `shadow → warn` setelah ≥ 200 foto, ≥ 30 review, salah tolak ≤ 5%;
+`warn → enforce` setelah ≥ 500 foto, ≥ 50 review, salah tolak ≤ 2%. Engine **tidak** mengubah config sendiri; admin
+yang menyimpan angka baru di config tenant. Ringkasan ini juga ikut ringkasan harian setiap Senin (Laporan & alert).
+
+Supaya sarannya bermakna, ops perlu mereview foto selama UAT (setujui / minta foto ulang), terutama foto REJECT dan
+sebagian foto PASS secara acak.
+
+**Cara manual** (sampel berlabel, sebelum ada data review):
 
 > **Penting:** threshold bawaan dikalibrasi dari sampel **sintetis** (`pqe synth-samples`) dan foto publik, **bukan** foto POD asli PCP Express. Wajib dikalibrasi ulang dengan foto POD asli selama mode `shadow` sebelum naik ke `warn`/`enforce`.
 

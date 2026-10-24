@@ -103,7 +103,7 @@ const toggleSide = (open) => { $("#side").classList.toggle("open", open); $("#si
 $("#menu").addEventListener("click", () => toggleSide(!$("#side").classList.contains("open")));
 $("#side-backdrop").addEventListener("click", () => toggleSide(false));
 
-const pages = { dashboard, review, photos, evidence, test: testPhoto, tenants, keys, silo, nas, system };
+const pages = { dashboard, review, photos, evidence, calibration, test: testPhoto, tenants, keys, silo, nas, alerts: alertsPage, system };
 function route() {
   const [path, query] = location.hash.replace(/^#\//, "").split("?");
   const page = path || "dashboard";
@@ -127,7 +127,7 @@ const tenantOptions = (sel = "", all = true) =>
 async function dashboard() {
   const f = dashboard.f || (dashboard.f = { tenant: "", days: 14 });
   const q = new URLSearchParams({ days: f.days, ...(f.tenant ? { tenant: f.tenant } : {}) });
-  const s = await api("/v1/stats?" + q);
+  const [s, dg] = await Promise.all([api("/v1/stats?" + q), api("/v1/admin/digest?" + new URLSearchParams(f.tenant ? { tenant: f.tenant } : {})).catch(() => null)]);
   const total = s.total || 0;
   const pct = (n) => (total ? Math.round((100 * (n || 0)) / total) : 0);
   const v = s.by_verdict || {};
@@ -144,6 +144,7 @@ async function dashboard() {
       <div class="card kpi"><div class="v" style="color:var(--reject)">${pct(v.REJECT)}%</div><div class="l">Tidak layak (REJECT) - ${v.REJECT || 0}</div></div>
       <div class="card kpi"><div class="v"><a href="#/review">${s.review_open}</a></div><div class="l">Menunggu review ops</div></div>
     </div>
+    ${dg && dg.spikes.length ? `<div class="card"><h2>Perlu dicek (24 jam terakhir)</h2>${dg.spikes.map((x) => `<div class="reason warn">${spikeText(x)}</div>`).join("")}</div>` : ""}
     <div class="card">
       <h2>Tren harian</h2>
       <div class="legend"><span><i class="dot" style="background:var(--pass)"></i>PASS</span><span><i class="dot" style="background:var(--warn)"></i>WARN</span><span><i class="dot" style="background:var(--reject)"></i>REJECT</span><span><i class="dot" style="background:#cbd2db"></i>diproses</span></div>
@@ -647,6 +648,83 @@ async function nas() {
   document.querySelectorAll("[data-run]").forEach((b) => (b.onclick = async () => {
     try { await api("/v1/admin/backup/run", { method: "POST", body: { kind: b.dataset.run } }); toast("Diminta, worker menjalankan dalam ±10 detik"); setTimeout(() => location.hash === "#/nas" && nas(), 12000); } catch (e) { toast(e.message, true); }
   }));
+}
+
+/* ---------------- Kalibrasi ---------------- */
+const pctTxt = (x) => (x == null ? "-" : `${Math.round(x * 100)}%`);
+function spikeText(x) {
+  if (x.kind === "errors") return `<b>${esc(x.tenant)}</b>: ${x.photos} foto gagal diproses dalam 24 jam. Cek log engine.`;
+  const who = x.kind === "branch" ? "Cabang" : "Kurir";
+  const q = new URLSearchParams({ [x.kind === "branch" ? "branch" : "courier_id"]: x.key, verdict: "REJECT" });
+  return `<b>${who} <a href="#/photos?${q}">${esc(x.key)}</a></b> (${esc(x.tenant)}): ${pctTxt(x.reject_rate)} foto ditolak dari ${x.photos} foto, biasanya ${pctTxt(x.baseline_rate)}.`;
+}
+
+async function calibration() {
+  const f = calibration.f || (calibration.f = { tenant: "", days: 7 });
+  const r = await api("/v1/admin/calibration?" + new URLSearchParams({ days: f.days, ...(f.tenant ? { tenant: f.tenant } : {}) }));
+  const sug = (s) => `<div class="reason ${s.kind === "mode" ? "info" : "warn"}"><b>${esc(s.tenant)}/${esc(s.profile)}</b> · ${esc(s.message)}
+    <div class="small">Ubah di config tenant: <code>${esc(s.field)}: ${esc(s.suggested)}</code> (sekarang ${esc(s.current)})</div></div>`;
+  $("#main").innerHTML = head("Kalibrasi", "Verdict engine dibandingkan dengan keputusan reviewer. <b>Salah tolak</b> = REJECT tetapi disetujui reviewer; <b>salah terima</b> = PASS tetapi diminta foto ulang. Engine hanya memberi saran, admin yang mengubah config tenant.", `
+      <label>Tenant<select id="c-tenant" data-autofocus>${tenantOptions(f.tenant)}</select></label>
+      <label>Periode<select id="c-days">${[7, 14, 30, 90].map((d) => `<option ${d == f.days ? "selected" : ""} value="${d}">${d} hari</option>`).join("")}</select></label>`) + `
+    <div class="card"><h2>Saran</h2>${r.suggestions.length ? r.suggestions.map(sug).join("") : `<p class="muted">Belum ada saran. Saran muncul setelah cukup foto direview (minimal 10 foto REJECT per alasan untuk angka batas; 30 review untuk naik mode).</p>`}</div>
+    <div class="card"><h2>Per tenant & jenis foto</h2>${r.groups.length ? `<div class="table-wrap"><table>
+      <tr><th>Tenant / jenis</th><th>Mode</th><th>Foto</th><th>PASS</th><th>WARN</th><th>REJECT</th><th>Error</th><th>Direview</th><th>Salah tolak</th><th>Salah terima</th><th>Naik mode</th></tr>
+      ${r.groups.map((g) => `<tr><td><b>${esc(g.tenant)}</b><div class="small muted">${esc(g.profile)}</div></td><td>${esc(g.mode || "-")}</td><td>${g.photos}</td>
+        <td>${g.verdicts.PASS}</td><td>${g.verdicts.WARN}</td><td>${g.verdicts.REJECT}</td><td>${g.verdicts.ERROR}</td><td>${g.reviewed}</td>
+        <td>${g.false_reject} <span class="small muted">${pctTxt(g.false_reject_rate)}</span></td><td>${g.false_accept}</td>
+        <td class="small">${g.mode_readiness ? `ke ${esc(g.mode_readiness.to)}: butuh ${esc(g.mode_readiness.blocked_by.join(", "))}` : g.suggestions.some((s) => s.kind === "mode") ? "siap" : "-"}</td></tr>`).join("")}
+    </table></div>` : `<p class="muted">Belum ada foto pada periode ini.</p>`}</div>
+    ${r.groups.filter((g) => g.reasons.length).map((g) => `<div class="card"><h2>Alasan: ${esc(g.tenant)}/${esc(g.profile)}</h2><div class="table-wrap"><table>
+      <tr><th>Kode</th><th>Check</th><th>Jumlah</th><th>REJECT</th><th>REJECT direview</th><th>Disetujui reviewer</th></tr>
+      ${g.reasons.map((x) => `<tr><td><a href="#/photos" data-reason="${esc(x.code)}">${esc(x.code)}</a></td><td>${esc(x.check)}</td><td>${x.count}</td><td>${x.reject}</td><td>${x.reviewed}</td><td>${x.approved} <span class="small muted">${pctTxt(x.approve_rate)}</span></td></tr>`).join("")}
+    </table></div></div>`).join("")}`;
+  $("#c-tenant").onchange = (e) => { f.tenant = e.target.value; calibration(); };
+  $("#c-days").onchange = (e) => { f.days = e.target.value; calibration(); };
+  document.querySelectorAll("[data-reason]").forEach((a) => a.addEventListener("click", () => { photos.f = { reason: a.dataset.reason }; }));
+}
+
+/* ---------------- Laporan & alert ---------------- */
+async function alertsPage() {
+  const [d, dg] = await Promise.all([api("/v1/admin/settings/alerts"), api("/v1/admin/digest").catch(() => null)]);
+  const c = d.config, s = d.state || {};
+  const chk = (k, label, help) => `<label class="check"><input type="checkbox" id="a-${k}" ${c[k] ? "checked" : ""}><span><b>${esc(label)}</b><br><span class="small muted">${esc(help)}</span></span></label>`;
+  $("#main").innerHTML = head("Laporan & alert", "Ringkasan harian dan peringatan otomatis ke chat tim (Slack, Google Chat, Microsoft Teams, Mattermost) atau ke endpoint JSON milik tim sendiri.") + `
+    ${d.secret_key_configured ? "" : `<div class="reason warn"><b>PQE_SECRET_KEY belum diisi di server.</b> URL webhook tidak bisa disimpan sampai PQE_SECRET_KEY diisi.</div>`}
+    <div class="grid cols-2">
+      <div class="card"><h2>Pengaturan</h2>
+        ${chk("enabled", "Aktifkan laporan & alert", "Dikirim oleh worker engine.")}
+        <label style="margin-bottom:10px">URL webhook
+          <input id="a-webhook_url" type="password" autocomplete="off" data-autofocus placeholder="${c.webhook_url.set ? "•••••• (tersimpan)" : "https://hooks.slack.com/services/..."}">
+          <span class="small">Incoming webhook dari Slack/Google Chat/Teams. Disimpan terenkripsi; kosongkan jika tidak ingin mengubah.</span></label>
+        <div class="filters">
+          <label>Format<select id="a-format"><option value="text" ${c.format === "text" ? "selected" : ""}>Teks (chat)</option><option value="json" ${c.format === "json" ? "selected" : ""}>JSON lengkap</option></select></label>
+          <label>Jam ringkasan harian<input id="a-daily_hour" type="number" min="0" max="23" value="${c.daily_hour}"></label>
+          <label>Zona waktu<input id="a-timezone" value="${esc(c.timezone)}"></label>
+        </div>
+        ${chk("spike_alerts", "Alert lonjakan", "Dicek tiap 15 menit: tingkat tolak cabang/kurir jauh di atas biasanya, atau banyak foto gagal diproses. Paling sering 1 alert per subjek per 24 jam.")}
+        ${chk("weekly_calibration", "Laporan kalibrasi setiap Senin", "Ringkasan salah tolak/salah terima 7 hari + saran angka batas & naik mode, ikut di ringkasan Senin.")}
+        <div class="actions"><button class="secondary" id="a-test">Kirim tes</button><button id="a-save">Simpan</button></div>
+        <div id="a-out"></div>
+        <h3>Status</h3>
+        <div class="kv"><div>Ringkasan terakhir</div><div>${esc(ago(s.last_digest_at))}</div><div>Alert terakhir</div><div>${esc(ago(s.last_alert_at))}</div></div>
+      </div>
+      <div class="card"><h2>Pratinjau ringkasan (24 jam terakhir)</h2>${dg ? `<pre class="json">${esc(dg.text)}</pre>` : `<p class="muted">-</p>`}</div>
+    </div>`;
+  const form = () => {
+    const out = { format: $("#a-format").value, daily_hour: Number($("#a-daily_hour").value), timezone: $("#a-timezone").value.trim() };
+    for (const k of ["enabled", "spike_alerts", "weekly_calibration"]) out[k] = $(`#a-${k}`).checked;
+    const url = $("#a-webhook_url").value.trim(); if (url) out.webhook_url = url;
+    return out;
+  };
+  $("#a-test").onclick = async () => {
+    $("#a-out").innerHTML = `<p class="muted">Mengirim...</p>`;
+    try { await api("/v1/admin/settings/alerts/test", { method: "POST", body: form() }); $("#a-out").innerHTML = `<div class="reason info">✅ Pesan tes terkirim. Cek channel chat.</div>`; }
+    catch (e) { $("#a-out").innerHTML = `<div class="reason reject">❌ ${esc(e.message)}</div>`; }
+  };
+  $("#a-save").onclick = async () => {
+    try { await api("/v1/admin/settings/alerts", { method: "PUT", body: form() }); toast("Tersimpan"); alertsPage(); } catch (e) { toast(e.message, true); }
+  };
 }
 
 /* ---------------- Sistem ---------------- */

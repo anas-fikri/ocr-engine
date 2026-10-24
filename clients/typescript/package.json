@@ -1,6 +1,6 @@
 {
   "name": "@pcpexpress/photo-quality-client",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Client Photo Quality Engine (tanpa dependency)",
   "type": "module",
   "main": "pqe-client.ts",

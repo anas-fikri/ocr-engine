@@ -302,6 +302,27 @@ def cmd_migrate_legacy(a) -> None:
     sys.exit(1 if failed else 0)
 
 
+def cmd_calibration(a) -> None:
+    from engine import calibration
+    from engine.db import init_db
+
+    init_db()
+    rep = calibration.report(days=a.days, tenant=a.tenant)
+    print(json.dumps(rep, indent=2, ensure_ascii=False) if a.json else calibration.format_text(rep))
+
+
+def cmd_digest(a) -> None:
+    from engine import alerts
+    from engine.db import init_db
+
+    init_db()
+    sm, sp = alerts.summary(hours=a.hours, tenant=a.tenant), alerts.spikes()
+    if a.json:
+        print(json.dumps({"summary": sm, "spikes": sp}, indent=2, ensure_ascii=False))
+    else:
+        print(alerts.format_digest(sm, sp))
+
+
 def main(argv: list[str] | None = None) -> None:
     from engine import __build__, __version__
 
@@ -366,6 +387,16 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--tenant")
 
     add("process", cmd_process, "Proses semua job di antrean lalu berhenti")
+
+    p = add("calibration", cmd_calibration, "Laporan kalibrasi: verdict vs review, saran angka batas & mode")
+    p.add_argument("--days", type=int, default=7)
+    p.add_argument("--tenant")
+    p.add_argument("--json", action="store_true")
+
+    p = add("digest", cmd_digest, "Ringkasan N jam terakhir + lonjakan foto ditolak (isi ringkasan harian)")
+    p.add_argument("--hours", type=int, default=24)
+    p.add_argument("--tenant")
+    p.add_argument("--json", action="store_true")
 
     p = add("migrate-legacy", cmd_migrate_legacy, "Upload folder foto lama ke SILO (dengan verifikasi)")
     p.add_argument("src_dir")

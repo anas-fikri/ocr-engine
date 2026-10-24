@@ -51,6 +51,12 @@ reasons:
   GPS_MISMATCH:
     message: Lokasi foto berbeda dengan lokasi pengiriman
     suggestion: Ambil foto di lokasi penerima.
+  REFERENCE_MISMATCH:
+    message: Barcode di foto berisi nomor lain, bukan nomor pengiriman ini
+    suggestion: Pastikan memotret paket/dokumen yang benar.
+  FAR_FROM_DESTINATION:
+    message: Foto diambil jauh dari alamat tujuan
+    suggestion: Ambil foto di alamat penerima.
   DUPLICATE_EXACT:
     message: Foto identik sudah pernah dipakai untuk pengiriman lain
     suggestion: Setiap pengiriman wajib memakai foto baru.

@@ -418,3 +418,82 @@ def test_storage_settings(body: StorageSettingsIn, _: Admin):
 
     run(f"Tulis bucket arsip '{settings.engine_bucket_archive}'", archive_check)
     return {"ok": all(c["ok"] for c in checks), "endpoint": settings.aws_endpoint, "checks": checks}
+
+
+# ---------------------------------------------------------------- kalibrasi, ringkasan & alert
+
+def _scope_tenant(principal: Principal, tenant: str | None) -> str | None:
+    if principal.tenant_code:  # key yang terikat tenant hanya melihat tenant-nya
+        return principal.tenant_code
+    return tenant or None
+
+
+@router.get("/calibration", summary="Laporan kalibrasi: verdict vs keputusan reviewer, saran angka batas & mode")
+def calibration_report(principal: Staff, days: Annotated[int, Query(ge=1, le=90)] = 7,
+                       tenant: Annotated[str | None, Query()] = None):
+    from engine import calibration
+
+    rep = calibration.report(days=days, tenant=_scope_tenant(principal, tenant))
+    return {**rep, "text": calibration.format_text(rep)}
+
+
+@router.get("/digest", summary="Ringkasan N jam terakhir + lonjakan foto ditolak (isi pesan ringkasan harian)")
+def digest(principal: Staff, hours: Annotated[int, Query(ge=1, le=168)] = 24,
+           tenant: Annotated[str | None, Query()] = None):
+    from engine import alerts
+
+    t = _scope_tenant(principal, tenant)
+    sm = alerts.summary(hours=hours, tenant=t)
+    sp = [x for x in alerts.spikes() if t is None or x["tenant"] == t]
+    return {"summary": sm, "spikes": sp, "text": alerts.format_digest(sm, sp)}
+
+
+class AlertSettingsIn(BaseModel):
+    enabled: bool | None = None
+    webhook_url: str | None = Field(None, description="Incoming webhook Slack/Google Chat/Teams/Mattermost atau "
+                                                      "endpoint JSON sendiri. Kosong = tidak diubah")
+    format: Literal["text", "json"] | None = None
+    daily_hour: int | None = Field(None, ge=0, le=23)
+    timezone: str | None = None
+    spike_alerts: bool | None = None
+    weekly_calibration: bool | None = None
+
+    def values(self) -> dict:
+        return {k: v for k, v in self.model_dump().items() if v is not None}
+
+
+@router.get("/settings/alerts", summary="Konfigurasi ringkasan harian & alert (URL webhook disamarkan)")
+def get_alert_settings(_: Admin):
+    from engine import alerts
+
+    return alerts.describe()
+
+
+@router.put("/settings/alerts", summary="Simpan konfigurasi ringkasan harian & alert")
+def put_alert_settings(body: AlertSettingsIn, principal: Admin):
+    from engine import alerts
+    from engine.secretbox import SecretKeyMissing
+
+    try:
+        alerts.save(body.values(), principal.actor)
+    except SecretKeyMissing as e:
+        raise api_error(409, "SECRET_KEY_MISSING",
+                        "PQE_SECRET_KEY belum diisi di server, URL webhook tidak bisa disimpan terenkripsi.") from e
+    except ValueError as e:
+        raise api_error(422, "INVALID_SETTINGS", str(e)) from e
+    return alerts.describe()
+
+
+@router.post("/settings/alerts/test", summary="Kirim pesan tes (ringkasan saat ini) ke webhook, sebelum disimpan")
+def test_alert_settings(body: AlertSettingsIn, _: Admin):
+    import httpx
+
+    from engine import alerts
+
+    try:
+        return alerts.send_test(body.values())
+    except ValueError as e:
+        raise api_error(422, "INVALID_SETTINGS", str(e)) from e
+    except httpx.HTTPError as e:  # pesan tanpa URL: URL webhook chat adalah rahasia
+        raise api_error(502, "WEBHOOK_FAILED",
+                        f"webhook menolak/tidak bisa dihubungi ({alerts.safe_error(e)})") from None

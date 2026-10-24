@@ -15,6 +15,7 @@ SCORED_CHECKS = ("sharpness", "resolution", "exposure", "ocr", "authenticity")
 MAPPABLE_FIELDS = (
     "awb", "courier_id", "photo_type", "customer_id", "branch",
     "captured_at", "lat", "lng", "source", "external_id",
+    "reference", "dest_lat", "dest_lng",
 )
 
 
@@ -69,6 +70,9 @@ class Profile(_Strict):
     # Target utama = teks terbaca. true: jika teks terbaca (skor ocr >= warn), masalah kejelasan foto lain
     # (ketajaman, resolusi, pencahayaan) paling berat WARN, bukan REJECT. Teks tidak terbaca tetap REJECT.
     text_first: bool = True
+    # true: teks wajib terbaca (resi, invoice, dokumen). false: foto bukti yang belum tentu berisi teks (kecelakaan,
+    # kerusakan, lainnya); keterbacaan teks tetap diukur & dicatat, tetapi tidak membuat foto WARN/REJECT.
+    text_required: bool = True
 
     @field_validator("checks")
     @classmethod

@@ -161,8 +161,8 @@ def _try_sharpen_text(result: PipelineResult, ctx: AnalysisContext) -> bool:
 
     ocr = next((c for c in result.checks if c.check == "ocr" and c.score is not None), None)
     th = ctx.profile.thresholds.get("ocr")
-    if ocr is None or th is None or th.warn is None or ocr.score >= th.warn:
-        return False
+    if ocr is None or th is None or th.warn is None or ocr.score >= th.warn or not ctx.profile.text_required:
+        return False  # teks sudah terbaca, atau jenis foto ini tidak mewajibkan teks (kecelakaan, lainnya)
     if ocr.score == 0 and not ocr.metrics.get("words"):
         return False  # tidak ada teks sama sekali: penajam tidak akan membantu
     src = result.output_image or result.image

@@ -413,3 +413,11 @@ def test_archive_bucket_editable_via_storage_settings(client, admin_headers, mon
     cfg = client.get("/v1/admin/settings/storage", headers=admin_headers).json()
     field = cfg["fields"]["archive_bucket"]
     assert field["value"] == "ocr-lain" and field["source"] == "database"
+
+
+def test_precheck_js_copy_in_webui_is_identical():
+    """Pra-cek HP: satu sumber (clients/typescript/precheck.js), Web UI menyajikan salinan identik."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "engine/webui/precheck.js").read_bytes() == (root / "clients/typescript/precheck.js").read_bytes()

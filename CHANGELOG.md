@@ -13,6 +13,33 @@ Kode build berubah di setiap deploy, nomor versi berubah di setiap rilis.
 Rilis dibuat dengan tag git `vX.Y.Z`; server production memakai tag, bukan cabang
 ([deploy-production.md](docs/deploy-production.md#11-operasional)).
 
+## [0.3.0] - 24 Okt 2026 (UAT)
+
+### Engine
+- Jenis foto baru: `invoice` (invoice/struk/kwitansi, teks wajib terbaca, resolusi simpan lebih tinggi), `accident`
+  (bukti kecelakaan/kerusakan/insiden) dan `other`. Untuk `accident`/`other` teks **tidak wajib**
+  (`text_required: false`): keterbacaan tetap diukur, tetapi foto tanpa teks tidak ditolak.
+- `REFERENCE_MISMATCH`: barcode di foto berisi nomor sejenis tetapi lain dari `awb`/`reference` yang dikirim aplikasi
+  (kemungkinan foto paket/dokumen lain) → WARN untuk ditinjau. Field baru `reference` untuk nomor selain resi
+  (nomor invoice, nomor laporan).
+- `FAR_FROM_DESTINATION`: foto diambil lebih dari 1 km (`params.exif.dest_radius_km`) dari alamat tujuan
+  (`dest_lat`/`dest_lng`); posisi dari GPS foto atau HP.
+- **Laporan kalibrasi** (Web UI Kalibrasi, `pqe calibration`, `GET /v1/admin/calibration`): verdict vs keputusan
+  reviewer, salah tolak/salah terima per jenis foto & alasan, saran angka batas, dan saran naik mode
+  `shadow → warn → enforce` dengan syarat yang jelas.
+- **Ringkasan harian & alert** ke Slack/Google Chat/Teams/Mattermost atau endpoint JSON (Web UI Laporan & alert,
+  `pqe digest`): ringkasan 24 jam setiap pagi, laporan kalibrasi setiap Senin, alert lonjakan tolakan per cabang/kurir
+  dan foto gagal diproses. URL webhook disimpan terenkripsi dan tidak pernah ditulis ke log.
+
+### Web UI
+- Halaman **Kalibrasi** dan **Laporan & alert**; Dashboard menampilkan "Perlu dicek (24 jam terakhir)".
+- Uji Coba Kamera menampilkan hasil pra-cek di HP sebelum foto dikirim.
+
+### Client
+- **Pra-cek di HP** (`clients/typescript/precheck.js`): buram/gelap/terlalu terang/terlalu kecil diperiksa di
+  browser/WebView sebelum dikirim, rumus ketajaman sama dengan engine, fail-open.
+- `PhotoFields` TS/PHP: `reference`, `dest_lat`, `dest_lng`.
+
 ## [0.2.0] - 24 Okt 2026 (UAT)
 
 ### Engine

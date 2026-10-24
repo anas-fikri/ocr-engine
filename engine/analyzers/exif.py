@@ -137,4 +137,18 @@ class ExifAnalyzer:
             if dist > float(p.param("exif", "gps_tolerance_km", 2)):
                 findings.append(Finding("GPS_MISMATCH", "risk", 30, {"distance_km": round(dist, 2)}))
 
+        # Jarak dari alamat tujuan (aplikasi mengirim dest_lat/dest_lng). Posisi foto: GPS EXIF, jika tidak ada
+        # posisi HP saat memotret (lat/lng). Tanpa salah satunya, tidak dinilai.
+        try:
+            dlat, dlng = float(ctx.meta["dest_lat"]), float(ctx.meta["dest_lng"])
+        except (KeyError, TypeError, ValueError):
+            dlat = dlng = None
+        plat, plng = (info.get("gps_lat"), info.get("gps_lng")) if "gps_lat" in info else (lat, lng)
+        if dlat is not None and plat is not None and plng is not None:
+            dist = haversine_km(dlat, dlng, plat, plng)
+            info["dest_distance_km"] = round(dist, 3)
+            if dist > float(p.param("exif", "dest_radius_km", 1.0)):
+                findings.append(Finding("FAR_FROM_DESTINATION", "risk", 30, {
+                    "distance_km": round(dist, 2), "source": "exif" if "gps_lat" in info else "device"}))
+
         return CheckResult(check=self.name, metrics=info, findings=findings)

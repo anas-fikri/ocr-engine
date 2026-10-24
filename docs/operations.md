@@ -138,7 +138,7 @@ docker compose -f docker-compose.remote-silo.yml up -d --build
 Alternatif tanpa mengedit `.env` untuk koneksi SILO: isi `PQE_BOOTSTRAP_ADMIN_KEY` dan `PQE_SECRET_KEY` saja, jalankan
 compose, lalu buka Web UI → **Koneksi SILO** (admin), tempel JSON `mc` atau isi endpoint/access key/secret key/bucket,
 klik **Test koneksi**, lalu **Simpan**. Nilai di halaman itu menimpa env dan berlaku tanpa restart
-(detail: [configuration.md §1.6](configuration.md#16-pengaturan-silo-lewat-web-ui)). Endpoint harus alamat yang bisa
+(detail: [configuration.md §1.6](configuration.md#16-koneksi-silo-lewat-web-ui)). Endpoint harus alamat yang bisa
 dijangkau **dari container engine** (contoh `https://s3.pcpexpress.com`), **bukan** `127.0.0.1`.
 
 Catatan:
@@ -599,6 +599,13 @@ Alert terakhir mengasumsikan blackbox exporter dengan job `pqe-readyz` yang meme
 Pantau juga kapasitas SILO/NAS (alert > 80%; ruang kosong tujuan folder juga terlihat di Web UI → Backup NAS) dan,
 jika dipakai, status `mcli mirror` di sisi infra. `pqe_backup_pending` dan `pqe_backup_*_total` muncul di endpoint
 metrik proses worker (`pqe run` di :8000, `pqe worker` di :9100).
+
+### 7.4 Ringkasan harian & alert ke chat
+
+Tanpa Prometheus pun tim bisa dapat peringatan: Web UI → **Laporan & alert** (lihat
+[web-ui-guide.md](web-ui-guide.md#laporan--alert-admin)). Dikirim oleh proses worker, jadi worker harus jalan. Dari
+terminal: `pqe digest` (isi ringkasan 24 jam) dan `pqe calibration --days 7` (laporan kalibrasi). Gagal kirim tercatat
+di log worker sebagai `gagal mengirim ringkasan/alert: HTTP <kode>` (URL webhook tidak pernah ditulis ke log).
 
 ---
 

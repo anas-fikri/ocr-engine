@@ -71,9 +71,16 @@ engine (`ocr`) di belakang layar. Bentuk A idempotent per objek
   "lat": -6.2001,
   "lng": 106.8166,
   "source": "camera",
-  "external_id": "foto-998877"
+  "external_id": "foto-998877",
+  "reference": "INV-2026-000123",
+  "dest_lat": -6.2005,
+  "dest_lng": 106.8170
 }
 ```
+
+`reference`: nomor lain yang seharusnya ada di foto (nomor invoice, nomor laporan kecelakaan), dicocokkan dengan
+barcode/teks seperti `awb`. `dest_lat`/`dest_lng`: koordinat alamat tujuan; foto yang diambil jauh dari sini ditandai
+`FAR_FROM_DESTINATION`. Field yang sama bisa dikirim di Bentuk B (multipart).
 
 Hanya `object_key` yang wajib. `bucket` default `AWS_BUCKET`. Field yang dikirim eksplisit selalu menang atas
 metadata objek dan aturan mapping tenant.
@@ -492,6 +499,19 @@ pilihan), `409 SECRET_KEY_MISSING` (mengirim `s3_secret_key` tetapi `PQE_SECRET_
 
 ---
 
+### Kalibrasi, ringkasan & alert
+
+| Endpoint | Role | Keterangan |
+|---|---|---|
+| `GET /v1/admin/calibration?days=7&tenant=` | admin, ops, viewer | Per tenant & jenis foto: jumlah PASS/WARN/REJECT/error, direview, salah tolak/terima, alasan, `suggestions` (angka batas & naik mode), `mode_readiness`, dan `text` siap baca |
+| `GET /v1/admin/digest?hours=24&tenant=` | admin, ops, viewer | Ringkasan N jam (`summary`), lonjakan (`spikes`: cabang/kurir/error), dan `text` (isi pesan ringkasan harian) |
+| `GET /v1/admin/settings/alerts` | admin | Konfigurasi ringkasan & alert. URL webhook tidak pernah dikembalikan (`{"set": true}`) |
+| `PUT /v1/admin/settings/alerts` | admin | `{enabled, webhook_url, format: text\|json, daily_hour, timezone, spike_alerts, weekly_calibration}`. URL disimpan terenkripsi (butuh `PQE_SECRET_KEY`, jika tidak `409 SECRET_KEY_MISSING`) |
+| `POST /v1/admin/settings/alerts/test` | admin | Kirim ringkasan saat ini ke webhook (boleh dengan nilai form yang belum disimpan). Gagal → `502 WEBHOOK_FAILED` (tanpa URL di pesan) |
+
+Format `text` mengirim `{"text": "..."}` (Slack, Google Chat, Microsoft Teams, Mattermost). Format `json` mengirim
+`{"event": "pqe.digest" | "pqe.alert" | "pqe.test", "text": "...", "data": {...}}`.
+
 ## Operasional
 
 | Endpoint | Keterangan |
@@ -555,6 +575,8 @@ pilihan), `409 SECRET_KEY_MISSING` (mengirim `s3_secret_key` tetapi `PQE_SECRET_
 | `OLD_PHOTO` | authenticity | Foto diambil jauh sebelum dikirim | The photo was taken long before it was sent |
 | `CAPTURE_TIME_MISMATCH` | authenticity | Waktu foto tidak sesuai dengan waktu yang dilaporkan aplikasi | The photo time does not match the time reported by the app |
 | `GPS_MISMATCH` | authenticity | Lokasi foto berbeda dengan lokasi pengiriman | The photo location differs from the delivery location |
+| `FAR_FROM_DESTINATION` | authenticity | Foto diambil jauh dari alamat tujuan | The photo was taken far from the destination address |
+| `REFERENCE_MISMATCH` | authenticity | Barcode di foto berisi nomor lain, bukan nomor pengiriman ini | The barcode in the photo contains a different number than this shipment |
 | `DUPLICATE_EXACT` | authenticity | Foto identik sudah pernah dipakai untuk pengiriman lain | An identical photo was already used for another delivery |
 | `DUPLICATE_SIMILAR` | authenticity | Foto sangat mirip dengan foto pengiriman lain | The photo is very similar to another delivery's photo |
 | `EXIF_MISSING` | exif (info) | Metadata kamera tidak tersedia | Camera metadata is not available |

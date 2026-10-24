@@ -50,6 +50,12 @@ reasons:
   GPS_MISMATCH:
     message: The photo location differs from the delivery location
     suggestion: Take the photo at the recipient's location.
+  REFERENCE_MISMATCH:
+    message: The barcode in the photo contains a different number than this shipment
+    suggestion: Make sure you photograph the right package/document.
+  FAR_FROM_DESTINATION:
+    message: The photo was taken far from the destination address
+    suggestion: Take the photo at the recipient's address.
   DUPLICATE_EXACT:
     message: An identical photo was already used for another delivery
     suggestion: Every delivery requires a new photo.

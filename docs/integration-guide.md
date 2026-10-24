@@ -231,7 +231,11 @@ Informasi yang perlu Anda berikan ke admin agar tenant dikonfigurasi dengan bena
 - Contoh 3-5 object key nyata, misal `pod/2026/10/22/AWB123_K045_1729580000.jpg`.
 - Di mana nomor resi, jenis foto, dan kurir bisa ditemukan (metadata objek, nama file, atau tabel DB).
 - Jenis foto yang dihasilkan aplikasi: `pod_recipient` (foto penerima), `pod_document` (resi/dokumen),
-  `package`, `goods`, `location`, atau jenis lain.
+  `invoice` (invoice/struk/kwitansi), `accident` (bukti kecelakaan/kerusakan; teks tidak wajib), `package`, `goods`,
+  `location`, `other` (bukti lain; teks tidak wajib), atau jenis lain yang dibuat admin di config tenant.
+- Field tambahan yang bisa dikirim: `reference` (nomor lain yang harus ada di foto, contoh nomor invoice atau nomor
+  laporan kecelakaan; dicocokkan dengan barcode/teks) dan `dest_lat`/`dest_lng` (koordinat alamat tujuan; foto yang
+  diambil jauh dari sini ditandai untuk review).
 
 Cek API key Anda:
 
@@ -641,6 +645,22 @@ curl -s -H "X-API-Key: $PQE_API_KEY" "$PQE_URL/v1/photos?external_id=foto-998877
 
 ## 7. Menampilkan hasil ke kurir
 
+**Pra-cek di HP (opsional, disarankan).** Sebelum foto dikirim, aplikasi bisa memeriksa buram/gelap/terlalu terang/
+terlalu kecil langsung di HP dengan [`clients/typescript/precheck.js`](../clients/typescript/precheck.js) (JavaScript
+tanpa dependency, untuk aplikasi web/WebView/React Native WebView; rumus ketajaman sama dengan engine, < 0,1 detik).
+Kurir bisa langsung mengulang foto, sehingga lebih sedikit foto yang ditolak engine. Ini hanya saran: tetap kirim ke
+engine, dan jangan memblokir kurir hanya dari pra-cek.
+
+```js
+import { precheckImage } from "./precheck.js";
+const pc = await precheckImage(file);            // file dari <input type="file" accept="image/*" capture>
+if (!pc.ok && !confirm(pc.issues.map((i) => i.message).join("\n") + "\n\nFoto ulang?")) { /* tetap kirim */ }
+```
+
+Aplikasi native (Kotlin/Swift/Flutter) bisa memakai rumus yang sama (variance of Laplacian per tile 4×4 pada sisi
+panjang 1024 px, rata-rata 25% tile tertajam, skala log 4..120); lihat komentar di file tersebut. Contoh hidupnya ada
+di halaman Uji Coba Kamera (bagian "Pra-cek di HP" di hasil).
+
 Status pengiriman **milik aplikasi pengiriman**; engine hanya memberi keputusan. Dua field menentukan semuanya:
 
 - **`allow_status_update`** menjawab *"boleh update status pengiriman sekarang?"*. `false` hanya jika foto ditolak:
@@ -709,7 +729,7 @@ dilakukan hanya optimasi dan kompresi dinamis, sehingga keabsahan dokumen bukti 
 #### Koreksi pencahayaan opsional (nonaktif secara bawaan)
 
 Admin bisa mengizinkan koreksi pencahayaan per profile (`enhance.enabled: true`, lihat
-[configuration.md](configuration.md#perbaikan-pencahayaan-otomatis-enhance)). Jika aktif, foto `TOO_DARK`,
+[configuration.md](configuration.md#koreksi-pencahayaan-opsional-enhance)). Jika aktif, foto `TOO_DARK`,
 `TOO_BRIGHT`, `LOW_CONTRAST`, atau `GLARE` dikoreksi dengan satu kurva pencahayaan global (levels + gamma) yang sama
 untuk seluruh piksel dan ketiga kanal warna, lalu diverifikasi eksak (setiap nilai masukan → tepat satu nilai keluaran,
 urutan tidak terbalik). Karena kurva memberi nilai yang sama untuk nilai yang sama di mana pun posisinya, koreksi ini

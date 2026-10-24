@@ -22,6 +22,7 @@ default:
       max_age_hours: 48             # foto lebih tua dari ini saat diterima -> curiga foto lama/galeri
       captured_at_tolerance_hours: 6
       gps_tolerance_km: 2
+      dest_radius_km: 1             # foto diambil lebih jauh dari ini dari alamat tujuan (dest_lat/dest_lng) -> curiga
     duplicate:
       max_distance: 6               # jarak Hamming pHash dianggap foto yang sama
   compression:
@@ -57,6 +58,31 @@ pod_document:
     min_quality: 70
     guard:
       min_ssim: 0.94
+
+invoice:            # invoice, struk, kwitansi, nota: angka & teks wajib terbaca
+  thresholds:
+    sharpness:  { reject: 30, warn: 55 }
+    resolution: { reject: 35, warn: 60 }
+  compression:
+    max_long_side_px: 2400
+    min_long_side_px: 1400
+    min_quality: 70
+    guard:
+      min_ssim: 0.94
+
+accident:           # bukti kecelakaan / kerusakan / insiden: belum tentu ada teks, detail harus tetap jelas
+  text_required: false
+  thresholds:
+    sharpness:  { reject: 20, warn: 45 }
+  compression:
+    max_long_side_px: 2400
+    min_long_side_px: 1400
+    min_quality: 70
+    guard:
+      min_ssim: 0.94
+
+other:              # foto bukti lain yang belum punya jenis sendiri
+  text_required: false
 
 package:
   thresholds:

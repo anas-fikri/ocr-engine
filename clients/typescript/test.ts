@@ -6,6 +6,7 @@
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { PhotoQualityClient, toDecision, verifyWebhook } from "./pqe-client.ts";
+import { assessGray } from "./precheck.js";
 
 // Versi minimal yang memuat security release 21 Okt 2026 (CVE-2026-111497 dkk).
 const MIN_PATCHED: Record<number, [number, number]> = { 22: [23, 4], 24: [22, 1], 26: [12, 1] };
@@ -23,6 +24,18 @@ check(
   !!min && (minor > min[0] || (minor === min[0] && patch >= min[1])),
   min ? `minimal v${major}.${min[0]}.${min[1]}` : "gunakan Node 22, 24, atau 26 terbaru",
 );
+
+// pra-cek di HP: kotak-kotak tajam lolos, gambar rata (buram) & gelap ditandai
+{
+  const w = 1024, h = 768, sharp = new Uint8Array(w * h), flat = new Uint8Array(w * h).fill(128);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) sharp[y * w + x] = ((x >> 4) + (y >> 4)) % 2 ? 230 : 30;
+  const a = assessGray(sharp, w, h, { width: 4000, height: 3000 });
+  check("precheck: foto tajam lolos", a.ok && a.metrics!.sharpness === 100, JSON.stringify(a.issues));
+  const b = assessGray(flat, w, h, { width: 4000, height: 3000 });
+  check("precheck: foto buram ditandai", !b.ok && b.issues.some((i) => i.code === "BLURRY"));
+  const c = assessGray(new Uint8Array(w * h).fill(10), w, h, { width: 640, height: 480 });
+  check("precheck: gelap & kecil ditandai", ["TOO_DARK", "LOW_RESOLUTION"].every((k) => c.issues.some((i) => i.code === k)));
+}
 
 const ts = String(Math.floor(Date.now() / 1000));
 const body = JSON.stringify({ event: "analysis.completed", photo: { id: "x" } });

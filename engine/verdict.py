@@ -51,7 +51,7 @@ def decide(profile: Profile, results: list[CheckResult]) -> Verdict:
     def apply(check: str, score: float, code: str, detail: dict | None = None) -> None:
         nonlocal level
         t = profile.thresholds.get(check)
-        if t is None:
+        if t is None or (check == "ocr" and not profile.text_required):
             return
         if t.reject is not None and score < t.reject:
             reasons.append(Reason(code, check, "reject", score, detail or {}))

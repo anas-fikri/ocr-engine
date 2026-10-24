@@ -97,7 +97,7 @@ class PhotoQualityClient
                 'optimized' => (bool) $o['optimized'], 'sha256' => $o['sha256']];
     }
 
-    /** Foto sudah disimpan aplikasi di SILO; engine hanya membacanya. Kirim key objeknya saja. $fields: awb, photo_type, courier_id, customer_id, branch, captured_at, lat, lng, source, external_id */
+    /** Foto sudah disimpan aplikasi di SILO; engine hanya membacanya. Kirim key objeknya saja. $fields: awb, photo_type, courier_id, customer_id, branch, captured_at, lat, lng, source, external_id, reference, dest_lat, dest_lng */
     public function analyzeObject(string $objectKey, array $fields = [], bool $sync = false, int $syncTimeoutMs = 3000, ?string $bucket = null): array
     {
         $body = array_merge(['object_key' => $objectKey], $bucket ? ['bucket' => $bucket] : [], $fields);

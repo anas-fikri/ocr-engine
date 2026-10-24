@@ -34,6 +34,8 @@ Daftar isi:
 - [API key (admin)](#api-key-admin)
 - [Koneksi SILO (admin)](#koneksi-silo-admin)
 - [Backup NAS (admin)](#backup-nas-admin)
+- [Kalibrasi](#kalibrasi)
+- [Laporan & alert (admin)](#laporan--alert-admin)
 - [Sistem](#sistem)
 - [Tips](#tips)
 
@@ -74,6 +76,7 @@ Ringkasan kualitas foto.
 | **Tren harian** | Batang bertumpuk per hari: PASS (hijau), WARN (oranye), REJECT (merah), masih diproses (abu-abu) |
 | **Alasan terbanyak** | Kode alasan paling sering (WARN/REJECT). Klik kodenya untuk membuka **Cari foto** dengan filter alasan itu |
 | **Kurir / Cabang dengan foto bermasalah terbanyak** | Top 10 jumlah foto WARN/REJECT. Dasar pembinaan kurir/cabang |
+| **Perlu dicek (24 jam terakhir)** | Muncul jika tingkat tolak sebuah cabang/kurir jauh di atas 7 hari sebelumnya (≥ 2× dan ≥ 15 poin persen, minimal 10 foto), atau banyak foto gagal diproses. Klik nama cabang/kurir untuk melihat fotonya |
 
 ---
 
@@ -351,6 +354,38 @@ status permintaan. Tombol **Backup foto sekarang** / **Backup database sekarang*
 
 Cara mount NAS di server (Linux, macOS, Kubernetes), izin uid 10001, dan restore: [operations.md bagian 6](operations.md#6-postgresql--backup).
 Masalah umum: [troubleshooting.md](troubleshooting.md#backup-nas).
+
+---
+
+## Kalibrasi
+
+Membandingkan verdict engine dengan keputusan reviewer di Review, per tenant dan jenis foto.
+
+| Elemen | Arti |
+|---|---|
+| **Saran** | Angka batas yang sebaiknya diubah (contoh "turunkan `sharpness.reject` dari 25 ke 16") dan saran naik mode (`shadow → warn → enforce`). Engine tidak mengubah config sendiri: salin angkanya ke config tenant (menu Tenant) |
+| **Salah tolak** | Foto REJECT yang disetujui reviewer (layak tagih). Tinggi = engine terlalu ketat |
+| **Salah terima** | Foto PASS yang diminta foto ulang / ditandai kecurangan. Tinggi = engine terlalu longgar |
+| **Naik mode** | Apa yang masih kurang sebelum aman naik mode (jumlah foto, jumlah review, atau salah tolak masih tinggi) |
+| **Alasan** | Per kode alasan: jumlah, berapa yang direview, berapa yang disetujui reviewer |
+
+Saran baru muncul jika data review cukup. Selama UAT, review foto REJECT dan sebagian foto PASS secara acak.
+Detail aturan: [configuration.md](configuration.md#6-kalibrasi-threshold).
+
+---
+
+## Laporan & alert (admin)
+
+Ringkasan harian dan peringatan otomatis ke chat tim.
+
+1. Buat **incoming webhook** di Slack / Google Chat / Microsoft Teams / Mattermost, salin URL-nya.
+2. Tempel di **URL webhook** (disimpan terenkripsi, butuh `PQE_SECRET_KEY` di server), pilih jam ringkasan harian.
+3. **Kirim tes** → pesan muncul di channel. Lalu centang **Aktifkan** dan **Simpan**.
+
+Isi ringkasan harian: jumlah foto, PASS/WARN/REJECT/error, waktu proses, alasan terbanyak, cabang & kurir dengan
+tolakan tertinggi, dan lonjakan. Setiap Senin ditambah laporan kalibrasi 7 hari. **Alert lonjakan** dicek tiap 15
+menit dan dikirim paling sering sekali per cabang/kurir per 24 jam. Format **JSON lengkap** untuk sistem tim sendiri
+(`{"event", "text", "data"}`).
 
 ---
 

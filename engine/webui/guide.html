@@ -270,7 +270,9 @@ if allow:
         <p>Minta ke admin engine: <b>kode tenant</b> (satu per aplikasi) dan <b>API key role <code>app</code></b>. Simpan key di env server (<code>PQE_API_KEY</code>). Cek key:</p>
         <pre data-code>curl -s -H "X-API-Key: $PQE_API_KEY" {{BASE}}/v1/me</pre>
         <p>Berikan ke admin: nama bucket + folder foto Anda, 3-5 contoh object key, dan jenis foto yang dihasilkan aplikasi
-          (<code>pod_recipient</code>, <code>pod_document</code>, <code>package</code>, <code>goods</code>, <code>location</code>).</p>
+          (<code>pod_recipient</code>, <code>pod_document</code>, <code>invoice</code>, <code>accident</code>, <code>package</code>,
+          <code>goods</code>, <code>location</code>, <code>other</code>). <code>accident</code> dan <code>other</code> tidak
+          mewajibkan teks (bukti kecelakaan/kerusakan); jenis lain mewajibkan teks terbaca.</p>
       </section>
 
       <section id="level1">

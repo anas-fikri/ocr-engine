@@ -52,6 +52,12 @@ class PhotoFields(BaseModel):
     lng: float | None = None
     source: Literal["camera", "gallery"] | None = Field(None, description="Asal foto di HP")
     external_id: str | None = Field(None, description="ID foto di aplikasi Anda (untuk korelasi)")
+    reference: str | None = Field(None, description="Nomor referensi lain yang seharusnya ada di foto (nomor "
+                                                    "invoice, nomor laporan kecelakaan, ...). Dicocokkan dengan "
+                                                    "barcode/teks seperti awb", examples=["INV-2026-000123"])
+    dest_lat: float | None = Field(None, description="Koordinat alamat tujuan; foto yang diambil jauh dari sini "
+                                                     "ditandai (FAR_FROM_DESTINATION)")
+    dest_lng: float | None = None
 
     def as_fields(self) -> dict[str, Any]:
         return {k: v for k, v in self.model_dump().items() if v not in (None, "")}
@@ -131,6 +137,9 @@ async def analyze_upload(
     lng: Annotated[float | None, Form()] = None,
     source: Annotated[str | None, Form()] = None,
     external_id: Annotated[str | None, Form()] = None,
+    reference: Annotated[str | None, Form()] = None,
+    dest_lat: Annotated[float | None, Form()] = None,
+    dest_lng: Annotated[float | None, Form()] = None,
     object_key: Annotated[str | None, Form(description="Key SILO tempat APLIKASI akan menyimpan foto ini jika "
                                                        "diterima (opsional, untuk Web UI & evidence)")] = None,
     bucket: Annotated[str | None, Form(description="Bucket untuk object_key (default: AWS_BUCKET)")] = None,
@@ -171,7 +180,8 @@ async def analyze_upload(
                                    request_lang(request, lang), PhotoFields(
             awb=awb, photo_type=photo_type, courier_id=courier_id, customer_id=customer_id, branch=branch,
             captured_at=captured_at, lat=lat, lng=lng, source=source if source in ("camera", "gallery") else None,
-            external_id=external_id).as_fields(), object_key, bucket)
+            external_id=external_id, reference=reference, dest_lat=dest_lat,
+            dest_lng=dest_lng).as_fields(), object_key, bucket)
     else:
         raise api_error(422, "NO_INPUT", "kirim file (multipart) atau JSON berisi object_key")
 

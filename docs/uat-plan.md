@@ -82,6 +82,12 @@ Isi kolom **Hasil** dengan ✅ / ❌ dan catatan. Skenario bertanda ★ wajib lu
 | O-10 ★ | Teks resi terbaca | Foto resi/label dari dekat, jelas | Diterima; di detail foto "Teks terbaca: N kata", isi No. resi = nomor di foto → "nomor resi terbaca" | |
 | O-11 ★ | Teks tidak terbaca | Foto resi dari jauh / miring / sebagian tertutup | Ditolak dengan alasan teks tidak terbaca (`TEXT_UNREADABLE`/`NO_TEXT_DETECTED`) + saran mendekatkan kamera | |
 | O-12 ★ | Teks tetap terbaca setelah kompres | Foto resi besar (> 1 MB) yang jelas | Detail foto: "Teks setelah kompres" skor tidak turun berarti; buka foto di arsip `ocr`, teks terbaca oleh mata | |
+| O-13 ★ | Bukti kecelakaan tanpa teks | Foto kerusakan/kecelakaan tanpa tulisan, `photo_type=accident` | Tidak ditolak karena teks (`NO_TEXT_DETECTED` tidak menjadi WARN/REJECT); buram/gelap tetap dinilai | |
+| O-14 | Invoice/struk | Foto invoice jelas dan buram, `photo_type=invoice` | Jelas → PASS; tidak terbaca → REJECT | |
+| O-15 | Nomor tidak cocok | Foto label resi A dikirim dengan `awb` resi B (format sama) | WARN `REFERENCE_MISMATCH` berisi nomor yang terbaca | |
+| O-16 | Jauh dari tujuan | Kirim `dest_lat/dest_lng` alamat lain (> 1 km) + `lat/lng` HP | WARN `FAR_FROM_DESTINATION` dengan jaraknya | |
+| O-17 | Pra-cek di HP | Uji Coba Kamera: foto sengaja buram & gelap | Bagian "Pra-cek di HP" menandai BLURRY/TOO_DARK sebelum hasil engine; foto tetap terkirim | |
+| O-18 ★ | Kalibrasi & alert | Review ≥ 10 foto REJECT (setujui/minta ulang); isi Laporan & alert → Kirim tes | Halaman Kalibrasi menampilkan salah tolak & saran; pesan tes masuk ke channel chat | |
 
 ### Finance
 

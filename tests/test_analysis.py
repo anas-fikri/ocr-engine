@@ -483,3 +483,50 @@ def test_both_tesseract_backends_read_text(monkeypatch):
     slow = ocr_mod.readability(img)
     for r in (fast, slow):
         assert r["score"] >= 80 and r["words"] >= 15 and not r["timed_out"]
+
+
+# ---------------- jenis foto bukti lain, nomor referensi, lokasi tujuan ----------------
+
+def test_accident_photo_does_not_need_text():
+    """Bukti kecelakaan/kerusakan belum tentu berisi teks: tanpa teks tetap diterima (teks tetap diukur)."""
+    from engine.synth import base_scene
+
+    scene = base_scene(2400, 1800)
+    from PIL import ImageDraw
+    ImageDraw.Draw(scene).rectangle((0, 0, 2400, 1800), fill=(120, 130, 140))  # tanpa teks sama sekali
+    import numpy as np
+    noise = np.clip(np.asarray(scene, dtype=float) + np.random.default_rng(3).normal(0, 25, (1800, 2400, 3)), 0, 255)
+    img = Image.fromarray(noise.astype("uint8"))
+    for x in range(0, 2400, 120):  # tepi tajam: foto tidak buram
+        ImageDraw.Draw(img).line((x, 0, x + 300, 1800), fill=(20, 20, 20), width=6)
+    data = to_jpeg(img, 90)
+    acc = analyze(data, ctx("accident"), do_compress=False, do_thumbnail=False)
+    assert not any(r.check == "ocr" and r.severity != "info" for r in acc.verdict.reasons)
+    assert acc.verdict.verdict == "PASS"
+    from engine.analyzers.ocr import ocr_available
+    if ocr_available():
+        doc = analyze(data, ctx("invoice"), do_compress=False, do_thumbnail=False)
+        assert doc.verdict.verdict == "REJECT"  # invoice wajib terbaca
+
+
+@barcode_only
+def test_reference_mismatch_flags_other_shipment():
+    """Barcode berpola sama tetapi nomornya lain -> REFERENCE_MISMATCH (WARN lewat authenticity)."""
+    other = analyze(_label_photo(), ctx(meta={"awb": "JKTMKQC2260919000099"}), do_compress=False,
+                    do_thumbnail=False)
+    m = next(x for x in other.verdict.reasons if x.code == "REFERENCE_MISMATCH")
+    assert m.severity == "warn" and m.detail["found"] == AWB and other.verdict.verdict == "WARN"
+    for meta in ({"awb": AWB}, {"reference": "INV-2026-000123"}, {}):  # cocok / jenis nomor lain / tanpa nomor
+        r = analyze(_label_photo(), ctx(meta=meta), do_compress=False, do_thumbnail=False)
+        assert not any(x.code == "REFERENCE_MISMATCH" for x in r.verdict.reasons)
+
+
+def test_far_from_destination_is_flagged(samples):
+    near = {"lat": -6.2, "lng": 106.8, "dest_lat": -6.2005, "dest_lng": 106.8004}
+    far = {**near, "dest_lat": -6.30}
+    r = analyze(samples["pass_sharp_large"], ctx(meta=near), do_compress=False, do_thumbnail=False)
+    assert not any(x.code == "FAR_FROM_DESTINATION" for x in r.verdict.reasons)
+    assert next(c for c in r.checks if c.check == "exif").metrics["dest_distance_km"] < 1
+    r = analyze(samples["pass_sharp_large"], ctx(meta=far), do_compress=False, do_thumbnail=False)
+    f = next(x for x in r.verdict.reasons if x.code == "FAR_FROM_DESTINATION")
+    assert f.severity == "warn" and f.detail["distance_km"] > 10 and f.detail["source"] == "device"

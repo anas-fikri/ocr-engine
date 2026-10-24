@@ -124,7 +124,7 @@ class Worker:
                 self.stop_event.wait(idle)
 
     def _maintenance_loop(self) -> None:
-        from engine import backup
+        from engine import alerts, backup
 
         last_slow = last_backup = 0.0
         while not self.stop_event.is_set():
@@ -144,6 +144,10 @@ class Worker:
                     archive_sweep(self.storage or get_storage())
                     cleanup_webhook_history()
                     last_slow = now
+                    try:  # ringkasan harian & alert lonjakan; gagal kirim tidak boleh menghentikan maintenance
+                        alerts.maybe_run()
+                    except Exception as e:  # tanpa traceback: pesan httpx memuat URL webhook (rahasia)
+                        log.warning("gagal mengirim ringkasan/alert: %s", alerts.safe_error(e))
             except Exception:
                 log.exception("maintenance error")
             self.stop_event.wait(2.0)

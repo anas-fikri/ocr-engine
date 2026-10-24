@@ -22,7 +22,7 @@ export type Verdict = "PASS" | "WARN" | "REJECT";
 
 export interface PhotoFields {
   awb?: string;
-  photo_type?: string; // pod_recipient | pod_document | package | goods | location | ...
+  photo_type?: string; // pod_recipient | pod_document | invoice | accident | package | goods | location | other
   courier_id?: string;
   customer_id?: string;
   branch?: string;
@@ -31,6 +31,9 @@ export interface PhotoFields {
   lng?: number;
   source?: "camera" | "gallery";
   external_id?: string; // ID foto di aplikasi Anda
+  reference?: string; // nomor lain yang harus ada di foto: nomor invoice, nomor laporan, ...
+  dest_lat?: number; // koordinat alamat tujuan (foto jauh dari sini ditandai)
+  dest_lng?: number;
 }
 
 export interface Reason {

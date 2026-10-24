@@ -375,11 +375,17 @@ class OcrAnalyzer:
     def __call__(self, img: LoadedImage, ctx: AnalysisContext) -> CheckResult:
         if not ocr_available() and not barcode.barcode_available():
             return CheckResult(check=self.name, findings=[Finding("OCR_UNAVAILABLE", "info")])
-        r = readability(img, (ctx.meta or {}).get("awb"))
+        meta = ctx.meta or {}
+        expected = meta.get("awb") or meta.get("reference")
+        r = readability(img, expected)
         if r["method"] == "unavailable":  # tanpa Tesseract dan barcode tidak terbaca
             return CheckResult(check=self.name, metrics=r, findings=[Finding("OCR_UNAVAILABLE", "info")])
+        findings = []
+        other = barcode.mismatch(r.get("codes") or [], expected)
+        if other is not None:  # barcode di foto berisi nomor lain yang sejenis: foto paket/dokumen lain?
+            findings.append(Finding("REFERENCE_MISMATCH", "risk", 30, {"expected": expected, "found": other["text"]}))
         if r["timed_out"]:  # server sibuk / foto sangat buram: jangan menolak hanya karena waktu habis
-            return CheckResult(check=self.name, metrics=r, findings=[Finding("OCR_TIMEOUT", "info")])
+            return CheckResult(check=self.name, metrics=r, findings=[*findings, Finding("OCR_TIMEOUT", "info")])
         code = "NO_TEXT_DETECTED" if r["words"] < MIN_WORDS and not r["awb_found"] and r["method"] != "barcode" \
             else "TEXT_UNREADABLE"
-        return CheckResult(check=self.name, score=r["score"], issue_code=code, metrics=r)
+        return CheckResult(check=self.name, score=r["score"], issue_code=code, metrics=r, findings=findings)
