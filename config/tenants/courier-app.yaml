@@ -8,7 +8,6 @@ name: Aplikasi Kurir
 default_lang: id
 timezone: Asia/Jakarta
 retention_days: 1095          # 3 tahun
-store_mode: processed         # processed = simpan versi kompres + thumbnail | none = hanya analisis
 review_required: false        # false = foto PASS & WARN langsung masuk evidence; review ops opsional
 default_profile: pod_recipient
 

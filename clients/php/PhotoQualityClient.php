@@ -6,13 +6,16 @@
  * PRINSIP: engine TIDAK BOLEH menghambat proses kurir. Semua method "fail-open":
  * jika engine lambat/mati, hasil ['ok' => false, 'unavailable' => true] dan TIDAK melempar exception.
  *
- * Cara utama ("scan dulu", satu panggilan, satu keputusan):
+ * Engine HANYA memproses gambar. Sebelum dan sesudahnya (termasuk menyimpan ke SILO) dikerjakan aplikasi Anda.
+ *
+ * Cara utama (satu panggilan, satu keputusan):
  *   $pqe = new PhotoQualityClient('https://photo-quality.pcpexpress.com', getenv('PQE_API_KEY'));
- *   $d = $pqe->checkFile($pathFoto, ['awb' => 'AWB123', 'photo_type' => 'pod_recipient']);
+ *   $key = 'pod/2026/10/24/AWB123.jpg';   // key SILO yang akan dipakai aplikasi
+ *   $d = $pqe->checkFile($pathFoto, ['awb' => 'AWB123', 'photo_type' => 'pod_recipient'], 3000, $key);
  *   if ($d['message']) { ... kirim $d['message'] ke aplikasi kurir ... }
- *   if (!$d['allow_status_update']) { ... foto ditolak: tidak disimpan, minta foto ulang, status JANGAN diupdate ... }
- *   $link = $d['stored']['url'] ?? simpanKeSiloSendiri($pathFoto);   // null = engine tidak menjawab (fail-open)
- *   ... update status pengiriman + simpan $link ...
+ *   if (!$d['allow_status_update']) { ... foto ditolak: jangan disimpan, minta foto ulang, status JANGAN diupdate ... }
+ *   $isi = $d['image']['data'] ?? file_get_contents($pathFoto);   // image null = engine tidak menjawab -> foto asli
+ *   ... simpan $isi ke SILO di $key, update status pengiriman ...
  */
 
 class PhotoQualityClient
@@ -43,26 +46,36 @@ class PhotoQualityClient
     }
 
     /**
-     * CARA UTAMA ("scan dulu"). Kirim file ke engine: engine memeriksa dulu, lalu HANYA foto yang diterima disimpan
-     * ke SILO (link di 'stored'). Ditolak -> allow_status_update false + message, tanpa link.
-     * decided false (engine mati/lambat) -> simpan foto ke SILO sendiri seperti sekarang, lalu lanjut.
+     * CARA UTAMA. Kirim file ke engine; engine memeriksa dan mengoptimasi, TIDAK menyimpan apa pun.
+     * Diterima -> 'image' = ['data' => isi file, 'content_type', 'optimized', 'sha256']: simpan ini ke SILO.
+     * Ditolak -> allow_status_update false + message, 'image' null.
+     * decided false (engine mati/lambat) -> simpan foto asli seperti sekarang, lalu lanjut.
+     * $objectKey (opsional): key SILO yang akan dipakai aplikasi, supaya Web UI/evidence engine bisa menampilkan fotonya.
      */
-    public function checkFile(string $path, array $fields = [], int $timeoutMs = 3000): array
+    public function checkFile(string $path, array $fields = [], int $timeoutMs = 3000, ?string $objectKey = null, ?string $bucket = null): array
     {
-        return self::toDecision($this->analyzeFile($path, $fields, true, $timeoutMs));
+        return self::toDecision($this->analyzeFile($path, $fields, $timeoutMs, $objectKey, $bucket));
+    }
+
+    /** Opsional: laporkan key SILO setelah foto disimpan (jika belum dikirim sebagai $objectKey di checkFile). */
+    public function reportStored(string $photoId, string $objectKey, ?string $bucket = null): array
+    {
+        $body = array_merge(['object_key' => $objectKey], $bucket ? ['bucket' => $bucket] : []);
+        return $this->request('POST', '/v1/photos/' . rawurlencode($photoId) . '/stored', [], json_encode($body),
+            ['Content-Type: application/json']);
     }
 
     /** Ubah hasil API menjadi keputusan. Tanpa hasil (engine mati, timeout, error) -> fail-open. */
     public static function toDecision(array $r): array
     {
         $open = ['allow_status_update' => true, 'message' => null, 'retake_required' => false, 'decided' => false,
-                 'photo_id' => null, 'verdict' => null, 'stored' => null];
+                 'photo_id' => null, 'verdict' => null, 'image' => null];
         if (!$r['ok']) {
             return $open + ['error' => $r['error']];
         }
         $p = $r['data'];
         if (($p['status'] ?? null) === 'pending') {
-            return array_merge($open, ['photo_id' => $p['id'] ?? null, 'stored' => $p['stored'] ?? null]);
+            return array_merge($open, ['photo_id' => $p['id'] ?? null]);
         }
         return [
             'allow_status_update' => $p['allow_status_update'] ?? (($p['action'] ?? null) !== 'reject'),
@@ -71,11 +84,20 @@ class PhotoQualityClient
             'decided' => true,
             'photo_id' => $p['id'] ?? null,
             'verdict' => $p['verdict'] ?? null,
-            'stored' => $p['stored'] ?? null, // ['bucket','key','url'] jika diterima; simpan url-nya di database Anda
+            'image' => self::decodeImage($p['output_image'] ?? null), // simpan ke SILO jika tidak null
         ];
     }
 
-    /** Foto sudah ada di SILO; kirim key objeknya saja. $fields: awb, photo_type, courier_id, customer_id, branch, captured_at, lat, lng, source, external_id */
+    private static function decodeImage(?array $o): ?array
+    {
+        if (!$o) {
+            return null;
+        }
+        return ['data' => base64_decode($o['base64']), 'content_type' => $o['content_type'],
+                'optimized' => (bool) $o['optimized'], 'sha256' => $o['sha256']];
+    }
+
+    /** Foto sudah disimpan aplikasi di SILO; engine hanya membacanya. Kirim key objeknya saja. $fields: awb, photo_type, courier_id, customer_id, branch, captured_at, lat, lng, source, external_id */
     public function analyzeObject(string $objectKey, array $fields = [], bool $sync = false, int $syncTimeoutMs = 3000, ?string $bucket = null): array
     {
         $body = array_merge(['object_key' => $objectKey], $bucket ? ['bucket' => $bucket] : [], $fields);
@@ -83,8 +105,8 @@ class PhotoQualityClient
         return $this->request('POST', '/v1/analyze', $query, json_encode($body), ['Content-Type: application/json'], $syncTimeoutMs + 2000);
     }
 
-    /** Kirim file langsung ke engine (engine yang menyimpan ke SILO). */
-    public function analyzeFile(string $path, array $fields = [], bool $sync = false, int $syncTimeoutMs = 3000): array
+    /** Kirim file ke engine untuk dianalisis (selalu langsung, maks. $syncTimeoutMs). Engine tidak menyimpan file-nya. */
+    public function analyzeFile(string $path, array $fields = [], int $syncTimeoutMs = 3000, ?string $objectKey = null, ?string $bucket = null): array
     {
         $post = ['file' => new CURLFile($path, mime_content_type($path) ?: 'image/jpeg', basename($path))];
         foreach ($fields as $k => $v) {
@@ -92,8 +114,13 @@ class PhotoQualityClient
                 $post[$k] = (string) $v;
             }
         }
-        $query = $sync ? ['sync' => 'true', 'timeout_ms' => $syncTimeoutMs] : [];
-        return $this->request('POST', '/v1/analyze', $query, $post, [], $syncTimeoutMs + 15000);
+        if ($objectKey) {
+            $post['object_key'] = $objectKey;
+        }
+        if ($bucket) {
+            $post['bucket'] = $bucket;
+        }
+        return $this->request('POST', '/v1/analyze', ['timeout_ms' => $syncTimeoutMs], $post, [], $syncTimeoutMs + 15000);
     }
 
     public function getPhoto(string $id): array

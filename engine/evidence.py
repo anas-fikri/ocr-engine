@@ -38,7 +38,8 @@ TEXT = {
 
 def eligible_photos(session, tenant_codes: list[str] | None, awbs: list[str],
                     customer_id: str | None = None) -> list[Photo]:
-    q = select(Photo).where(Photo.awb.in_(awbs), Photo.status == "done")
+    # hanya foto yang disimpan aplikasi di SILO (bucket "" = tidak disimpan / lokasi belum dilaporkan)
+    q = select(Photo).where(Photo.awb.in_(awbs), Photo.status == "done", Photo.bucket != "")
     if tenant_codes is not None:
         q = q.where(Photo.tenant_code.in_(tenant_codes))
     if customer_id is not None:
@@ -49,9 +50,7 @@ def eligible_photos(session, tenant_codes: list[str] | None, awbs: list[str],
 
 def evidence_item(p: Photo, storage: Storage | None, ttl: int) -> dict:
     s = get_settings()
-    passthrough = (p.compression or {}).get("passthrough")
-    bucket = p.processed_bucket or (p.bucket if passthrough else None)
-    key = p.processed_key or (p.object_key if passthrough else None)
+    bucket, key = (p.processed_bucket, p.processed_key) if p.processed_key else (p.bucket, p.object_key)
     return {
         "photo_id": p.id,
         "awb": p.awb,

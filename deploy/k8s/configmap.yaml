@@ -7,6 +7,7 @@ data:
   AWS_DEFAULT_REGION: "us-east-1"
   AWS_USE_PATH_STYLE_ENDPOINT: "true"
   AWS_BUCKET: "ekas-pcptransport"
+  # engine hanya membaca SILO; bucket engine hanya untuk data versi lama
   ENGINE_BUCKET_PROCESSED: "photos-processed"
   ENGINE_BUCKET_THUMB: "photos-thumb"
   ENGINE_BUCKET_UPLOAD: "photos-upload"

@@ -1,10 +1,13 @@
-"""Proses satu job: ambil foto dari SILO -> analisis -> simpan hasil & varian -> antre webhook."""
+"""Analisis foto: dari file upload aplikasi atau dari SILO (hanya baca). Engine tidak pernah menulis ke SILO."""
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 
 from sqlalchemy import delete, select
@@ -14,10 +17,10 @@ from engine.analyzers import AnalysisContext, DuplicateMatch
 from engine.analyzers.duplicate import hamming
 from engine.db import BackupItem, Job, Photo, WebhookDelivery, as_aware, session_scope, utcnow
 from engine.imaging.loader import UnreadableImage
-from engine.jobs import apply_mapped, claim_job, fail_job, finish_job
+from engine.jobs import UNSTORED_BUCKET, apply_mapped, claim_job, fail_job, finish_job
 from engine.mapping import map_metadata
 from engine.pipeline import analyze
-from engine.serializers import photo_to_dict
+from engine.serializers import allow_status_update, photo_to_dict
 from engine.settings import get_settings
 from engine.storage import ObjectNotFound, Storage, get_storage
 from engine.tenants import TenantNotFound, registry
@@ -75,11 +78,6 @@ class PhashIndex:
 phash_index = PhashIndex()
 
 
-def _variant_key(p: Photo, ext: str) -> str:
-    at = as_aware(p.received_at) or utcnow()
-    return f"{p.tenant_code}/{at:%Y/%m/%d}/{p.id}.{ext}"
-
-
 def _queue_webhooks(s, tenant_cfg, event: str, payload: dict) -> None:
     for i, sink in enumerate(tenant_cfg.sinks):
         if event in sink.events:
@@ -96,27 +94,66 @@ def queue_photo_event(s, photo: Photo, event: str) -> None:
     _queue_webhooks(s, t.config, event, payload)
 
 
+@dataclass
+class OutputImage:
+    """Foto yang disimpan APLIKASI ke SILO (engine tidak menyimpan apa pun ke SILO)."""
+
+    data: bytes
+    content_type: str
+    optimized: bool  # False = foto asli sudah memenuhi syarat ukuran, dikembalikan apa adanya
+
+    def to_dict(self) -> dict:
+        return {
+            "content_type": self.content_type,
+            "bytes": len(self.data),
+            "optimized": self.optimized,
+            "sha256": hashlib.sha256(self.data).hexdigest(),
+            "base64": base64.b64encode(self.data).decode(),
+        }
+
+
 def process_photo(photo_id: str, storage: Storage | None = None) -> str:
-    """Return status akhir foto: done | error. Raise untuk error sementara (akan di-retry)."""
+    """Analisis foto yang sudah ada di SILO aplikasi (polling / event / object_key). Hanya MEMBACA SILO.
+
+    Return status akhir foto: done | error. Raise untuk error sementara (akan di-retry).
+    """
     storage = storage or get_storage()
-    st = storage.s  # konfigurasi SILO efektif (env + halaman Pengaturan SILO)
     with session_scope() as s:
         p = s.get(Photo, photo_id)
         if p is None:
             return "error"
-        tenant_code, bucket, key, fields = p.tenant_code, p.bucket, p.object_key, dict(p.meta or {})
-        ingest_source = p.ingest_source
-        received_at = as_aware(p.received_at)
-    tenant = registry.get(tenant_code)
-    cfg = tenant.config
-
+        bucket, key = p.bucket, p.object_key
     try:
         obj = storage.get(bucket, key)
     except ObjectNotFound:
         _mark_error(photo_id, "OBJECT_NOT_FOUND", f"objek {bucket}/{key} tidak ditemukan")
         return "error"
+    status, _ = analyze_and_record(photo_id, obj.data, obj.content_type, obj.metadata, obj.etag)
+    return status
 
-    mapped = map_metadata(cfg.mapping, key, obj.metadata, fields)
+
+def process_upload(photo_id: str, data: bytes, content_type: str | None) -> tuple[str, OutputImage | None]:
+    """Analisis file yang dikirim aplikasi (tanpa menyentuh SILO). Return (status, foto untuk disimpan aplikasi).
+
+    Foto untuk disimpan hanya dikembalikan jika foto diterima (`allow_status_update`): versi optimasi, atau foto
+    asli jika sudah memenuhi syarat ukuran. Foto ditolak -> None (aplikasi tidak menyimpannya sebagai foto
+    pengiriman dan meminta kurir foto ulang).
+    """
+    return analyze_and_record(photo_id, data, content_type, None, None, want_output=True)
+
+
+def analyze_and_record(photo_id: str, data: bytes, content_type: str | None, obj_metadata: dict | None,
+                       etag: str | None, *, want_output: bool = False) -> tuple[str, OutputImage | None]:
+    with session_scope() as s:
+        p = s.get(Photo, photo_id)
+        if p is None:
+            return "error", None
+        tenant_code, key, fields = p.tenant_code, p.object_key, dict(p.meta or {})
+        received_at = as_aware(p.received_at)
+    tenant = registry.get(tenant_code)
+    cfg = tenant.config
+
+    mapped = map_metadata(cfg.mapping, key, obj_metadata, fields)
     profile_name, profile = cfg.resolve_profile(mapped.get("photo_type"))
     ctx = AnalysisContext(
         profile=profile,
@@ -125,38 +162,14 @@ def process_photo(photo_id: str, storage: Storage | None = None) -> str:
         timezone=cfg.timezone,
         find_duplicates=lambda sha, ph, dist: phash_index.find(tenant_code, photo_id, sha, ph, dist),
     )
-    store = cfg.store_mode == "processed"
     t0 = time.perf_counter()
     try:
-        result = analyze(obj.data, ctx, do_compress=store, do_thumbnail=store)
+        result = analyze(data, ctx, do_compress=want_output, do_thumbnail=False)
     except UnreadableImage as e:
         _mark_error(photo_id, "UNREADABLE_FILE", str(e), mapped=mapped, profile=profile_name, tz=cfg.timezone)
-        return "error"
+        return "error", None
 
-    processed_key = thumb_key = None
-    if store:
-        with session_scope() as s:
-            p = s.get(Photo, photo_id)
-            pkey, tkey = _variant_key(p, "jpg"), _variant_key(p, "jpg")
-        comp = result.compression
-        accepted = result.verdict.action != "reject"  # ditolak: tidak dibuat versi foto pengiriman
-        if accepted and comp is not None and not comp.passthrough and comp.data is not None:
-            ext = "webp" if comp.content_type == "image/webp" else "jpg"
-            processed_key = pkey.rsplit(".", 1)[0] + f".{ext}"
-            storage.put(st.engine_bucket_processed, processed_key, comp.data, comp.content_type,
-                        {"photo-id": photo_id, "source-key": key, "sha256-original": result.image.sha256})
-        if accepted and processed_key is None and ingest_source == "upload":
-            # "scan dulu": foto upload yang diterima selalu punya salinan di bucket hasil, supaya link `stored`
-            # tidak pernah menunjuk ke bucket upload (arsip asli + karantina foto yang ditolak)
-            ext = key.rsplit(".", 1)[-1] if "." in key else "jpg"
-            processed_key = pkey.rsplit(".", 1)[0] + f".{ext}"
-            storage.put(st.engine_bucket_processed, processed_key, obj.data, obj.content_type or "image/jpeg",
-                        {"photo-id": photo_id, "source-key": key, "sha256-original": result.image.sha256})
-        if result.thumbnail:
-            thumb_key = tkey
-            storage.put(st.engine_bucket_thumb, thumb_key, result.thumbnail, "image/jpeg", {"photo-id": photo_id})
-
-    data = result.to_dict()
+    data_out = result.to_dict()
     with session_scope() as s:
         p = s.get(Photo, photo_id)
         apply_mapped(p, mapped, cfg.timezone)
@@ -164,29 +177,58 @@ def process_photo(photo_id: str, storage: Storage | None = None) -> str:
         p.config_version = tenant.version
         p.sha256 = result.image.sha256
         p.phash = result.phash
-        p.verdict = data["verdict"]
-        p.action = data["action"]
-        p.scores = data["scores"]
-        p.reasons = data["reasons"]
-        p.metrics = data["metrics"]
-        p.exif = data["exif"]
-        p.image_info = {**data["image"], "enhancement": data["enhancement"]}
-        p.compression = data["compression"] or {}
-        p.processed_bucket = st.engine_bucket_processed if processed_key else None
-        p.processed_key = processed_key
-        p.thumb_bucket = st.engine_bucket_thumb if thumb_key else None
-        p.thumb_key = thumb_key
-        p.etag = p.etag or obj.etag
+        p.verdict = data_out["verdict"]
+        p.action = data_out["action"]
+        p.scores = data_out["scores"]
+        p.reasons = data_out["reasons"]
+        p.metrics = data_out["metrics"]
+        p.exif = data_out["exif"]
+        p.image_info = {**data_out["image"], "enhancement": data_out["enhancement"]}
+        p.compression = data_out["compression"] or {}
+        p.etag = p.etag or etag
         p.status = "done"
         p.error_code = p.error_message = None
         p.analyzed_at = utcnow()
         p.duration_ms = int((time.perf_counter() - t0) * 1000)
+        if want_output and allow_status_update(p):
+            _bind_location(s, p)  # lokasi yang dikirim aplikasi (object_key) dicatat hanya untuk foto diterima
         s.flush()
+        accepted = allow_status_update(p)
         queue_photo_event(s, p, "analysis.completed")
         s.execute(delete(BackupItem).where(BackupItem.photo_id == p.id))  # hasil baru: salin ulang ke NAS
         metrics.PHOTOS_ANALYZED.labels(tenant=tenant_code, verdict=p.verdict).inc()
         metrics.ANALYSIS_SECONDS.observe(p.duration_ms / 1000)
-    return "done"
+
+    output = None
+    if want_output and accepted:
+        c = result.compression
+        if c is not None and not c.passthrough and c.data is not None:
+            output = OutputImage(c.data, c.content_type, True)
+        else:
+            output = OutputImage(data, content_type or "image/jpeg", False)
+    return "done", output
+
+
+def _bind_location(s, p: Photo) -> None:
+    """Pindahkan foto upload dari lokasi sementara ke bucket/key yang dikirim aplikasi (meta object_key)."""
+    key = (p.meta or {}).get("object_key")
+    if not key or p.bucket != UNSTORED_BUCKET:
+        return
+    bind_location(s, p, (p.meta or {}).get("bucket") or get_storage().s.aws_bucket, key)
+
+
+def bind_location(s, p: Photo, bucket: str, key: str) -> None:
+    """Catat di mana aplikasi menyimpan foto ini di SILO. Foto lain yang tercatat di lokasi yang sama (misal foto
+    lama yang ditimpa, atau salinan dari polling) dilepas dari lokasi itu."""
+    other = s.scalar(select(Photo).where(Photo.bucket == bucket, Photo.object_key == key, Photo.id != p.id))
+    if other is not None:
+        if other.ingest_source in ("s3_poll", "s3_event"):
+            s.delete(other)  # polling sempat mencatat file yang sama (foto hasil engine): cukup satu catatan
+        else:
+            other.bucket, other.object_key = UNSTORED_BUCKET, f"replaced/{other.id}"
+        s.flush()
+    p.bucket, p.object_key = bucket, key
+    s.execute(delete(BackupItem).where(BackupItem.photo_id == p.id))  # lokasi baru: salin ke NAS
 
 
 def _reject_action(tenant_code: str, profile: str | None) -> str:

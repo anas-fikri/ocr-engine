@@ -38,10 +38,20 @@ def _enforce(client, admin_headers):
 
 
 def _upload(client, admin_headers, data, awb):
-    r = client.post("/v1/analyze", params={"tenant": "test-app", "sync": True}, headers=admin_headers,
-                    files={"file": ("f.jpg", data, "image/jpeg")}, data={"awb": awb})
+    """Tiru aplikasi: kirim foto ke engine, simpan `output_image` ke SILO sendiri jika diterima."""
+    import base64
+
+    from engine.storage import get_storage
+
+    key = f"pod/{awb}.jpg"
+    r = client.post("/v1/analyze", params={"tenant": "test-app"}, headers=admin_headers,
+                    files={"file": ("f.jpg", data, "image/jpeg")}, data={"awb": awb, "object_key": key})
     assert r.status_code == 200, r.text
-    return r.json()
+    body = r.json()
+    if body["output_image"]:
+        out = body["output_image"]
+        get_storage().put("app-photos", key, base64.b64decode(out["base64"]), out["content_type"], allow_foreign=True)
+    return body
 
 
 def test_backup_to_folder(client, admin_headers, samples, tmp_path):
@@ -50,7 +60,8 @@ def test_backup_to_folder(client, admin_headers, samples, tmp_path):
     _enforce(client, admin_headers)
     ok = _upload(client, admin_headers, samples["pass_huge_camera"], "BK1")
     rej = _upload(client, admin_headers, samples["reject_blur_severe"], "BK2")
-    assert ok["stored"] and rej["stored"] is None
+    assert ok["output_image"] and ok["object"] == {"bucket": "app-photos", "key": "pod/BK1.jpg"}
+    assert rej["output_image"] is None and rej["object"] is None  # ditolak: aplikasi tidak menyimpan
 
     nas = tmp_path / "nas"
     nas.mkdir()
@@ -59,19 +70,17 @@ def test_backup_to_folder(client, admin_headers, samples, tmp_path):
     r = client.put("/v1/admin/settings/backup", json={"enabled": True, "target": "folder", "folder_path": str(nas)},
                    headers=admin_headers)
     assert r.status_code == 200, r.text
-    assert r.json()["pending"] == 2
+    assert r.json()["pending"] == 1  # foto ditolak tidak disimpan aplikasi: tidak ada yang perlu disalin
     test = client.post("/v1/admin/settings/backup/test", json={}, headers=admin_headers).json()
     assert test["ok"], test
     assert not (nas / "_pqe_backup_test").exists()  # uji tidak meninggalkan sampah di NAS
 
     res = backup.maybe_run()
-    assert res["error"] is None and res["photos"]["photos"] == 2
+    assert res["error"] is None and res["photos"] == {"photos": 1, "files": 1}
     files = sorted(p.relative_to(nas).as_posix() for p in nas.rglob("*") if p.is_file())
-    assert sum(f.startswith("photos/photos-upload/") for f in files) == 2  # foto asli keduanya
-    assert sum(f.startswith("photos/photos-processed/") for f in files) == 1  # hanya foto yang diterima
+    photo_files = [f for f in files if f.startswith("photos/")]
+    assert photo_files == ["photos/app-photos/pod/BK1.jpg"]  # dibaca dari SILO aplikasi; foto ditolak tidak ada
     assert any(f.startswith("database/pqe-") and f.endswith(".sqlite") for f in files)
-    stored = ok["stored"]
-    assert (nas / "photos" / stored["bucket"] / stored["key"]).exists()
 
     assert backup.maybe_run() is None  # belum waktunya (jadwal 15 menit), tidak ada permintaan
     assert client.post("/v1/admin/backup/run", json={"kind": "photos"}, headers=admin_headers).status_code == 200
@@ -88,7 +97,7 @@ def test_backup_to_folder(client, admin_headers, samples, tmp_path):
     assert len(dumps) == 1 and dumps[0] != "pqe-20200101-000000.sqlite"
 
     status = client.get("/v1/admin/settings/backup", headers=admin_headers).json()
-    assert status["pending"] == 0 and status["backed_up"] == 2 and status["state"]["last_error"] is None
+    assert status["pending"] == 0 and status["backed_up"] == 1 and status["state"]["last_error"] is None
 
     # dianalisis ulang (misal threshold diubah) -> hasil baru harus disalin lagi
     from engine.worker import Worker
@@ -122,9 +131,9 @@ def test_backup_to_s3_nas_and_errors(client, admin_headers, samples, env, monkey
     assert r.status_code == 200, r.text
     assert r.json()["config"]["s3_secret_key"] == {"set": True} and "rahasia-nas" not in r.text
     res = backup.maybe_run()
-    assert res["error"] is None and res["photos"]["files"] == 2  # asli + versi pengiriman
+    assert res["error"] is None and res["photos"]["files"] == 1
     keys = [o["Key"] for o in s3.list_objects_v2(Bucket="nas-backup", Prefix="pqe/photos/").get("Contents", [])]
-    assert len(keys) == 2
+    assert keys == ["pqe/photos/app-photos/pod/BK3.jpg"]
 
     # NAS tidak bisa dijangkau -> dicatat sebagai error, foto tetap menunggu (tidak dianggap tersalin)
     _upload(client, admin_headers, samples["pass_small_ok"], "BK4")
@@ -147,8 +156,8 @@ def test_preflight_flags_unsafe_setup_then_passes(client, admin_headers, tmp_pat
     assert status["PQE_BOOTSTRAP_ADMIN_KEY"] == "fail"  # terlalu pendek
     assert status["PQE_SECRET_KEY"] == "fail"  # belum diisi
     assert status["Jadwal backup"] == "fail"
-    assert status["Tulis bucket engine 'photos-processed'"] == "ok"
-    assert status["Pagar pengaman bucket aplikasi"] == "ok"
+    assert status["Baca bucket aplikasi 'app-photos'"] == "ok"
+    assert status["Engine hanya membaca SILO"] == "ok"
     with pytest.raises(SystemExit) as e:
         main(["preflight", "--no-silo"])
     assert e.value.code == 1

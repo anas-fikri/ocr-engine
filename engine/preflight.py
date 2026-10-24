@@ -6,7 +6,6 @@ untuk production; "warn" boleh jalan untuk uji coba tetapi sebaiknya dibereskan.
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -76,17 +75,9 @@ def run(check_silo: bool = True) -> dict[str, Any]:
             return "bisa dibaca" if first is not None else "bisa dibaca (kosong)"
 
         probe(f"Baca bucket aplikasi '{cfg.aws_bucket}'", read_app, "Cek endpoint, key, dan izin baca bucket aplikasi.")
-        for b in (cfg.engine_bucket_upload, cfg.engine_bucket_processed, cfg.engine_bucket_thumb):
-            def write(b=b) -> str:
-                key = f"_pqe_preflight/{uuid.uuid4().hex}.txt"
-                st.put(b, key, b"ok", "text/plain")
-                st.delete(b, key)
-                return "tulis & hapus berhasil"
-            probe(f"Tulis bucket engine '{b}'", write,
-                  f"Buat bucket {b} di SILO dan beri key engine izin tulis (docs/operations.md bagian 4).")
-    out.append(_item("SILO", "Pagar pengaman bucket aplikasi", "ok",
-                     f"engine tidak bisa menulis/menghapus '{cfg.aws_bucket}' "
-                     f"(hanya {', '.join(sorted(st.owned_buckets()))})"))
+    out.append(_item("SILO", "Engine hanya membaca SILO", "ok",
+                     f"engine tidak menyimpan foto; bucket aplikasi '{cfg.aws_bucket}' "
+                     "tidak bisa ditulis/dihapus engine"))
 
     # ---- tenant
     from engine.tenants import registry

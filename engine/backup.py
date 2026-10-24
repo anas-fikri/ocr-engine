@@ -43,10 +43,13 @@ DEFAULTS: dict[str, Any] = {
     "s3_prefix": "",
     "s3_access_key": "",
     "s3_addressing_style": "path",
-    "include_upload_originals": True,  # foto asli dari kurir (bucket upload engine)
-    "include_app_originals": False,  # foto asli di bucket aplikasi (biasanya sudah dibackup tim infra)
-    "include_processed": True,  # foto pengiriman yang diterima (link `stored`)
-    "include_thumbs": False,  # bisa dibuat ulang, biasanya tidak perlu
+    # foto pengiriman yang disimpan aplikasi di SILO (lokasinya dilaporkan lewat object_key / polling); engine hanya
+    # membaca dan menyalin ke NAS
+    "include_photos": True,
+    # data versi lama (sebelum engine berhenti menulis ke SILO): salinan di bucket engine
+    "include_upload_originals": True,
+    "include_processed": True,
+    "include_thumbs": False,
     "include_database": True,
     "photo_interval_minutes": 15,
     "db_interval_hours": 24,
@@ -285,7 +288,8 @@ def make_target(cfg: dict[str, Any]) -> FolderTarget | S3Target:
 
 def _pending_query():
     return (select(Photo).outerjoin(BackupItem, BackupItem.photo_id == Photo.id)
-            .where(BackupItem.photo_id.is_(None), Photo.status.in_(("done", "error"))))
+            .where(BackupItem.photo_id.is_(None), Photo.status.in_(("done", "error")),
+                   Photo.bucket != ""))  # "" = tidak disimpan aplikasi: tidak ada file untuk disalin
 
 
 def pending_count() -> int:
@@ -296,9 +300,10 @@ def pending_count() -> int:
 
 def _files_for(row: dict, cfg: dict, owned: set[str]) -> list[tuple[str, str, str]]:
     files = []
-    original_owned = row["bucket"] in owned
-    if (original_owned and cfg["include_upload_originals"]) or (not original_owned and cfg["include_app_originals"]):
-        files.append(("original", row["bucket"], row["object_key"]))
+    if row["bucket"]:  # "" = foto upload yang tidak disimpan aplikasi (ditolak / lokasi belum dilaporkan)
+        legacy_upload = row["bucket"] in owned
+        if cfg["include_upload_originals"] if legacy_upload else cfg.get("include_photos", True):
+            files.append(("original", row["bucket"], row["object_key"]))
     if cfg["include_processed"] and row["processed_key"]:
         files.append(("processed", row["processed_bucket"], row["processed_key"]))
     if cfg["include_thumbs"] and row["thumb_key"]:
@@ -540,9 +545,8 @@ def test(overrides: dict[str, Any] | None = None, storage=None) -> dict:
             checks.append({"check": "Ruang kosong NAS", "ok": free["free"] > 1024**3,
                            "detail": f"{free['free'] / 1024**3:.1f} GB kosong dari {free['total'] / 1024**3:.1f} GB"})
     st = storage or get_storage()
-    sources = (("foto asli (upload)", st.s.engine_bucket_upload), ("foto pengiriman", st.s.engine_bucket_processed))
-    for label, b in sources:
-        run(f"Baca bucket {label} '{b}'", lambda b=b: st.ping(b) and "bisa diakses")
+    b = st.s.aws_bucket
+    run(f"Baca bucket foto aplikasi '{b}'", lambda: st.ping(b) and "bisa diakses")
     if cfg.get("include_database"):
         def db_check() -> str:
             from sqlalchemy.engine import make_url

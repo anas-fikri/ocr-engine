@@ -165,7 +165,7 @@ def test_storage_settings_page_api(client, admin_headers, env, monkeypatch):
     assert get_storage().s.aws_secret_access_key == "rahasia-baru"  # berlaku tanpa restart
 
     t = client.post("/v1/admin/settings/storage/test", json={}, headers=admin_headers).json()
-    assert t["ok"] is True and len(t["checks"]) == 4
+    assert t["ok"] is True and len(t["checks"]) == 2  # hanya baca: engine tidak menulis ke SILO
     bad = client.post("/v1/admin/settings/storage/test", json={"endpoint": "http://127.0.0.1:9"},
                       headers=admin_headers).json()
     assert bad["ok"] is False
@@ -205,19 +205,25 @@ def test_trial_page_endpoints(client, admin_headers, samples):
                         files={"file": ("a.jpg", big, "image/jpeg")}).json()
     assert "output_image" not in plain
 
-    # simulasi aplikasi kurir: simpan, lalu ambil file lewat engine (HP tidak perlu akses ke SILO)
-    r = client.post("/v1/analyze", params={"tenant": "test-app", "sync": True}, headers=admin_headers,
-                    files={"file": ("besar.jpg", big, "image/jpeg")}, data={"awb": "UJI1"})
-    pid = r.json()["id"]
+    # simulasi aplikasi kurir: engine mengembalikan foto, aplikasi menyimpannya ke SILO (object_key), lalu Web UI
+    # mengambil file lewat engine (HP tidak perlu akses ke SILO)
+    from engine.storage import get_storage
+
+    r = client.post("/v1/analyze", params={"tenant": "test-app"}, headers=admin_headers,
+                    files={"file": ("besar.jpg", big, "image/jpeg")},
+                    data={"awb": "UJI1", "object_key": "pod/UJI1.jpg"})
+    body = r.json()
+    pid, out = body["id"], body["output_image"]
+    assert out["optimized"] and base64.b64decode(out["base64"])[:2] == b"\xff\xd8" and out["bytes"] < len(big)
+    assert body["object"] == {"bucket": "app-photos", "key": "pod/UJI1.jpg"}
+    get_storage().put("app-photos", "pod/UJI1.jpg", base64.b64decode(out["base64"]), out["content_type"],
+                      allow_foreign=True)
     for variant in ("processed", "original", "thumbnail"):
         f = client.get(f"/v1/photos/{pid}/file", params={"variant": variant}, headers=admin_headers)
         assert f.status_code == 200, (variant, f.text)
         assert f.headers["content-type"].startswith("image/")
         Image.open(io.BytesIO(f.content)).verify()
-    processed = client.get(f"/v1/photos/{pid}/file", headers=admin_headers).content
-    assert len(processed) < len(big)  # versi kompres, bukan original
-    stored = r.json()["stored"]  # link permanen = versi optimasi, bukan original
-    assert stored["bucket"] == "photos-processed" and stored["key"].endswith(".jpg")
+    assert len(client.get(f"/v1/photos/{pid}/file", headers=admin_headers).content) == out["bytes"]
     assert client.get(f"/v1/photos/{pid}/file", params={"variant": "lain"}, headers=admin_headers).status_code == 422
     assert client.get("/v1/photos/tidak-ada/file", headers=admin_headers).status_code == 404
 
@@ -269,19 +275,18 @@ def test_reject_blocks_status_update_and_enhance_is_opt_in(client, admin_headers
 
     ok = analyze("pass_sharp_large", awb="AWB901")  # pertama, sebelum ada foto mirip (cek duplikat)
     assert ok["verdict"] == "PASS" and ok["allow_status_update"] is True and ok["courier_message"] is None
-    # "scan dulu": foto diterima -> engine sudah menyimpannya di SILO dan memberi link permanen
-    assert ok["stored"]["url"].endswith(f"/{ok['stored']['bucket']}/{ok['stored']['key']}")
-    assert ok["stored"]["bucket"] == "photos-processed"  # foto kecil pun tidak diberi link ke bucket upload
+    # foto diterima -> engine mengembalikan foto untuk disimpan APLIKASI (foto kecil: apa adanya, tidak dikompres)
+    assert ok["output_image"]["optimized"] is False and ok["output_image"]["bytes"] == len(samples["pass_sharp_large"])
     rej = analyze("reject_blur_severe", awb="AWB900")
     assert rej["action"] == "reject" and rej["allow_status_update"] is False and rej["retake_required"] is True
-    assert rej["stored"] is None  # ditolak: tidak diberi link foto pengiriman
+    assert rej["output_image"] is None  # ditolak: tidak ada foto untuk disimpan sebagai foto pengiriman
     assert rej["courier_message"] == ("Wajib foto ulang. Foto buram. "
                                       "Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang.")
     warn = analyze("warn_blur_mild", awb="AWB902")
     assert warn["action"] == "notify" and warn["allow_status_update"] is True
     assert warn["courier_message"] == "Foto buram. Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang."
 
-    # foto BESAR yang ditolak: tidak dibuatkan versi foto pengiriman di bucket hasil
+    # foto BESAR yang ditolak: tidak ada foto hasil, dan engine tidak menulis apa pun ke SILO
     import io
 
     import numpy as np
@@ -296,11 +301,11 @@ def test_reject_blocks_status_update_and_enhance_is_opt_in(client, admin_headers
     r = client.post("/v1/analyze", params={"tenant": "test-app", "sync": True}, headers=admin_headers,
                     files={"file": ("gelap-besar.jpg", buf.getvalue(), "image/jpeg")}, data={"awb": "AWB906"})
     big_rej = r.json()
-    assert big_rej["verdict"] == "REJECT" and big_rej["stored"] is None and big_rej["allow_status_update"] is False
+    assert big_rej["verdict"] == "REJECT" and big_rej["allow_status_update"] is False
+    assert big_rej["output_image"] is None
     detail = client.get(f"/v1/photos/{big_rej['id']}", headers=admin_headers).json()
-    assert detail["compression"]["passthrough"] is False and detail["urls"]["processed"] is None
-    processed_keys = [o.key for o in get_storage().list("photos-processed")]
-    assert not any(big_rej["id"] in k for k in processed_keys) and all("AWB906" not in k for k in processed_keys)
+    assert detail["object"] is None and detail["urls"]["processed"] is None
+    assert not any(list(get_storage().list(b)) for b in ("photos-processed", "photos-thumb", "photos-upload"))
 
     # file rusak = foto tidak layak: di mode enforce juga menahan status
     r = client.post("/v1/analyze", params={"tenant": "test-app", "sync": True}, headers=admin_headers,
@@ -329,3 +334,18 @@ def test_reject_blocks_status_update_and_enhance_is_opt_in(client, admin_headers
     fixed = analyze("reject_dark", awb="AWB904")
     detail = client.get(f"/v1/photos/{fixed['id']}", headers=admin_headers).json()
     assert detail["enhancement"]["applied"] is True and fixed["allow_status_update"] is True
+
+
+def test_version_is_visible(client, admin_headers):
+    """Versi engine terlihat di healthz, /v1/me, header setiap respons, dan CLI."""
+    import subprocess
+    import sys
+
+    from engine import __version__
+
+    assert client.get("/healthz").json()["version"] == __version__
+    r = client.get("/v1/me", headers=admin_headers)
+    assert r.json()["version"] == __version__ and r.headers["X-PQE-Version"] == __version__
+    assert client.get("/v1/photos/tidak-ada", headers=admin_headers).headers["X-PQE-Version"] == __version__
+    out = subprocess.run([sys.executable, "-m", "engine.cli", "--version"], capture_output=True, text=True)
+    assert out.stdout.strip() == f"pqe {__version__}"

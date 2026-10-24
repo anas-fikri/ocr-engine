@@ -57,6 +57,12 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "PUT", "DELETE"],
                            allow_headers=["X-API-Key", "Authorization", "Content-Type", "Accept-Language"])
 
+    @app.middleware("http")
+    async def version_header(request: Request, call_next):
+        resp = await call_next(request)
+        resp.headers["X-PQE-Version"] = __version__  # versi engine yang menjawab (cek setelah upgrade/rollback)
+        return resp
+
     @app.exception_handler(HTTPException)
     async def http_error(_: Request, exc: HTTPException):
         detail = exc.detail if isinstance(exc.detail, dict) else {"code": "ERROR", "message": str(exc.detail)}
@@ -95,7 +101,7 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
             checks["database"] = f"error: {type(e).__name__}"
         try:
             st = get_storage()
-            st.ping(st.s.engine_bucket_processed)
+            st.ping(st.s.aws_bucket)  # engine hanya membaca bucket aplikasi
             checks["storage"] = "ok"
         except Exception as e:
             checks["storage"] = f"error: {type(e).__name__}"

@@ -14,7 +14,7 @@ function storedKey() { try { return localStorage.getItem(KEY_STORE); } catch { r
 function saveKey(k) { try { k ? localStorage.setItem(KEY_STORE, k) : localStorage.removeItem(KEY_STORE); } catch { /* abaikan */ } }
 
 async function api(path, opts = {}) {
-  const headers = { "X-API-Key": storedKey() || "", "Accept-Language": navigator.language || "id", ...(opts.headers || {}) };
+  const headers = { "X-API-Key": storedKey() || "", "Accept-Language": "id", ...(opts.headers || {}) };
   let body = opts.body;
   if (body && !(body instanceof FormData) && typeof body !== "string") { body = JSON.stringify(body); headers["Content-Type"] = "application/json"; }
   const r = await fetch(path, { ...opts, headers, body });
@@ -35,6 +35,38 @@ async function viaEngine(img) {
   } catch { /* biarkan kosong */ }
 }
 
+// Thumbnail tidak disimpan di SILO: engine membuatnya saat diminta (butuh API key, jadi diambil lewat fetch).
+const thumbObserver = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+  for (const e of entries) if (e.isIntersecting) { thumbObserver.unobserve(e.target); loadThumb(e.target); }
+}, { rootMargin: "200px" }) : null;
+async function loadThumb(img) {
+  try {
+    const r = await fetch(`/v1/photos/${img.dataset.photo}/file?variant=thumbnail`, { headers: { "X-API-Key": storedKey() || "" } });
+    if (r.ok) img.src = URL.createObjectURL(await r.blob());
+    else img.replaceWith(Object.assign(document.createElement("div"), { className: "thumb none", textContent: "tidak ada file" }));
+  } catch { /* biarkan kosong */ }
+}
+function loadThumbs(root = document) {
+  root.querySelectorAll("img.thumb[data-photo]:not([src])").forEach((img) => (thumbObserver ? thumbObserver.observe(img) : loadThumb(img)));
+}
+
+// Judul halaman yang seragam: judul, penjelasan singkat, tombol/aksi di kanan.
+const head = (title, desc = "", actions = "") =>
+  `<div class="page-head"><div><h1>${title}</h1>${desc ? `<p class="muted">${desc}</p>` : ""}</div>${actions ? `<div class="actions">${actions}</div>` : ""}</div>`;
+
+// Setiap halaman menandai field utamanya dengan data-autofocus; kursor langsung di sana.
+function focusPage(root = $("#main")) {
+  const el = root.querySelector("[data-autofocus]");
+  if (el && !matchMedia("(hover: none)").matches) el.focus({ preventScroll: true }); // HP: jangan munculkan keyboard
+}
+
+async function loadVersion() {
+  try {
+    const v = (await (await fetch("/healthz")).json()).version;
+    document.querySelectorAll("[data-version]").forEach((el) => (el.textContent = `v${v}`));
+  } catch { /* abaikan */ }
+}
+
 function toast(msg, err = false) {
   const t = $("#toast");
   t.textContent = msg; t.className = "toast" + (err ? " err" : "");
@@ -43,6 +75,7 @@ function toast(msg, err = false) {
 
 function showLogin(msg = "") {
   $("#app").classList.add("hidden"); $("#login").classList.remove("hidden"); $("#login-error").textContent = msg;
+  $("#login-key").focus();
 }
 
 async function boot() {
@@ -51,16 +84,21 @@ async function boot() {
   if (!["admin", "ops", "viewer"].includes(state.me.role)) { saveKey(null); return showLogin(`Role ${state.me.role} tidak bisa memakai Web UI.`); }
   $("#login").classList.add("hidden"); $("#app").classList.remove("hidden");
   $("#who").textContent = `${state.me.name} (${state.me.role})`;
-  document.querySelectorAll("[data-role=admin]").forEach((a) => a.classList.toggle("hidden", state.me.role !== "admin"));
+  document.querySelectorAll("#nav [data-role=admin]").forEach((a) => a.classList.toggle("hidden", state.me.role !== "admin"));
   try { state.tenants = await api("/v1/admin/tenants"); } catch { state.tenants = []; }
   route();
 }
 
-$("#login-form").addEventListener("submit", (e) => { e.preventDefault(); saveKey($("#login-key").value.trim()); boot(); });
+$("#login-form").addEventListener("submit", (e) => { e.preventDefault(); saveKey($("#login-key").value.trim()); loadVersion();
+boot(); });
 $("#logout").addEventListener("click", () => { saveKey(null); showLogin(); });
 $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") closeDrawer(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeDrawer(); toggleSide(false); } });
 window.addEventListener("hashchange", route);
+const toggleSide = (open) => { $("#side").classList.toggle("open", open); $("#side-backdrop").classList.toggle("hidden", !open); };
+$("#menu").addEventListener("click", () => toggleSide(!$("#side").classList.contains("open")));
+$("#side-backdrop").addEventListener("click", () => toggleSide(false));
 
 const pages = { dashboard, review, photos, evidence, test: testPhoto, tenants, keys, silo, nas, system };
 function route() {
@@ -69,9 +107,12 @@ function route() {
   const params = Object.fromEntries(new URLSearchParams(query || ""));
   if (page === "photos" && query) photos.f = params; // contoh: #/photos?awb=AWB123&id=<photo_id>
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === page));
+  const link = $(`#nav a[data-page="${page}"]`);
+  $("#crumb").textContent = link ? link.textContent : "";
+  toggleSide(false);
   const fn = pages[page] || dashboard;
   $("#main").innerHTML = `<div class="empty">Memuat...</div>`;
-  fn().then(() => { if (params.id) openPhoto(params.id); })
+  fn().then(() => { focusPage(); loadThumbs(); if (params.id) openPhoto(params.id); })
     .catch((e) => { if (e.message !== "unauthorized") $("#main").innerHTML = `<div class="card error">${esc(e.message)}</div>`; });
 }
 
@@ -90,11 +131,9 @@ async function dashboard() {
   const max = Math.max(1, ...s.daily.map((d) => d.PASS + d.WARN + d.REJECT + d.pending));
   const bar = (n, color) => `<span style="height:${(100 * n) / max}%;background:${color}" title="${n}"></span>`;
   const list = (rows, key) => rows.length ? `<table>${rows.map((r) => `<tr><td>${esc(r[key])}</td><td style="text-align:right">${r.count}</td></tr>`).join("")}</table>` : `<p class="muted">Belum ada data.</p>`;
-  $("#main").innerHTML = `
-    <div class="filters">
-      <label>Tenant<select id="f-tenant">${tenantOptions(f.tenant)}</select></label>
-      <label>Periode<select id="f-days">${[1, 7, 14, 30, 90].map((d) => `<option ${d == f.days ? "selected" : ""} value="${d}">${d} hari</option>`).join("")}</select></label>
-    </div>
+  $("#main").innerHTML = head("Dashboard", "Ringkasan kualitas foto yang dinilai engine.", `
+      <label>Tenant<select id="f-tenant" data-autofocus>${tenantOptions(f.tenant)}</select></label>
+      <label>Periode<select id="f-days">${[1, 7, 14, 30, 90].map((d) => `<option ${d == f.days ? "selected" : ""} value="${d}">${d} hari</option>`).join("")}</select></label>`) + `
     <div class="grid cols-4">
       <div class="card kpi"><div class="v">${total}</div><div class="l">Foto diterima</div></div>
       <div class="card kpi"><div class="v" style="color:var(--pass)">${pct(v.PASS)}%</div><div class="l">Layak (PASS) - ${v.PASS || 0}</div></div>
@@ -102,13 +141,13 @@ async function dashboard() {
       <div class="card kpi"><div class="v" style="color:var(--reject)">${pct(v.REJECT)}%</div><div class="l">Tidak layak (REJECT) - ${v.REJECT || 0}</div></div>
       <div class="card kpi"><div class="v"><a href="#/review">${s.review_open}</a></div><div class="l">Menunggu review ops</div></div>
     </div>
-    <div class="card" style="margin-top:16px">
+    <div class="card">
       <h2>Tren harian</h2>
       <div class="legend"><span><i class="dot" style="background:var(--pass)"></i>PASS</span><span><i class="dot" style="background:var(--warn)"></i>WARN</span><span><i class="dot" style="background:var(--reject)"></i>REJECT</span><span><i class="dot" style="background:#cbd2db"></i>diproses</span></div>
       ${s.daily.length ? `<div class="chart">${s.daily.map((d) => `<div class="col">${bar(d.PASS, "var(--pass)")}${bar(d.WARN, "var(--warn)")}${bar(d.REJECT, "var(--reject)")}${bar(d.pending, "#cbd2db")}</div>`).join("")}</div>
       <div class="chart-labels">${s.daily.map((d) => `<span>${esc(d.date.slice(5))}</span>`).join("")}</div>` : `<p class="muted">Belum ada foto pada periode ini.</p>`}
     </div>
-    <div class="grid cols-2" style="margin-top:16px">
+    <div class="grid cols-2">
       <div class="card"><h2>Alasan terbanyak</h2>${s.top_reasons.length ? `<table>${s.top_reasons.map((r) => `<tr><td><a href="#/photos" data-reason="${esc(r.code)}">${esc(r.code)}</a></td><td style="text-align:right">${r.count}</td></tr>`).join("")}</table>` : `<p class="muted">Belum ada data.</p>`}</div>
       <div class="card"><h2>Kurir dengan foto bermasalah terbanyak</h2>${list(s.top_couriers, "courier_id")}</div>
       <div class="card"><h2>Cabang dengan foto bermasalah terbanyak</h2>${list(s.top_branches, "branch")}</div>
@@ -120,47 +159,53 @@ async function dashboard() {
 
 /* ---------------- Daftar foto (dipakai Review & Cari) ---------------- */
 function photoTable(items) {
-  if (!items.length) return `<div class="empty">Tidak ada foto.</div>`;
-  return `<table><thead><tr><th></th><th>Resi</th><th>Tenant / jenis</th><th>Kurir</th><th>Verdict</th><th>Alasan utama</th><th>Review</th><th>Diterima</th></tr></thead><tbody>
+  if (!items.length) return `<div class="empty">Tidak ada foto yang cocok dengan filter.</div>`;
+  return `<div class="table-wrap"><table><thead><tr><th></th><th>Resi</th><th class="hide-sm">Tenant / jenis</th><th class="hide-sm">Kurir</th><th>Verdict</th><th>Alasan utama</th><th class="hide-sm">Review</th><th class="hide-sm">Diterima</th></tr></thead><tbody>
     ${items.map((p) => {
       const main = (p.reasons || []).find((r) => r.severity !== "info");
       return `<tr class="clickable" data-id="${esc(p.id)}">
-        <td>${p.urls && p.urls.thumbnail ? `<img class="thumb" loading="lazy" src="${esc(p.urls.thumbnail)}" data-photo="${esc(p.id)}" data-variant="thumbnail" onerror="viaEngine(this)" alt="">` : `<div class="thumb"></div>`}</td>
+        <td>${p.object ? `<img class="thumb" data-photo="${esc(p.id)}" alt="">` : `<div class="thumb none" title="Ditolak, atau aplikasi belum melaporkan lokasi SILO">tidak disimpan</div>`}</td>
         <td><b>${esc(p.awb || "-")}</b><div class="muted small">${esc(p.external_id || "")}</div></td>
-        <td>${esc(p.tenant)}<div class="muted small">${esc(p.photo_type || "-")}</div></td>
-        <td>${esc(p.courier_id || "-")}<div class="muted small">${esc(p.branch || "")}</div></td>
+        <td class="hide-sm">${esc(p.tenant)}<div class="muted small">${esc(p.photo_type || "-")}</div></td>
+        <td class="hide-sm">${esc(p.courier_id || "-")}<div class="muted small">${esc(p.branch || "")}</div></td>
         <td>${p.status === "error" ? badge("REJECT", "ERROR") : badge(p.verdict)}${p.retake_required ? `<div class="small" style="color:var(--reject)">foto ulang</div>` : ""}</td>
         <td>${main ? `${esc(main.message)}<div class="muted small">${esc(main.code)}</div>` : `<span class="muted">-</span>`}</td>
-        <td>${badge(p.review.status, REVIEW_LABEL[p.review.status])}</td>
-        <td class="small">${fmtDate(p.received_at)}</td></tr>`;
-    }).join("")}</tbody></table>`;
+        <td class="hide-sm">${badge(p.review.status, REVIEW_LABEL[p.review.status])}</td>
+        <td class="small hide-sm">${fmtDate(p.received_at)}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
 }
 
-async function listPage(title, f, extraFilters, fixed) {
+async function listPage(title, desc, f, extraFilters, fixed) {
   const params = { limit: 50, offset: f.offset || 0, ...fixed };
   for (const k of ["tenant", "awb", "courier_id", "branch", "verdict", "status", "review_status", "reason", "date_from", "date_to"]) if (f[k]) params[k] = f[k];
   const data = await api("/v1/photos?" + new URLSearchParams(params));
   const sel = (id, label, opts) => `<label>${label}<select id="${id}">${opts.map(([v, l]) => `<option value="${v}" ${f[id.slice(2)] === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>`;
-  $("#main").innerHTML = `<h1>${title}</h1>
-    <div class="filters">
+  $("#main").innerHTML = head(title, desc) + `
+    <form class="filters card" id="f-form">
+      <label class="primary">Resi<input id="f-awb" value="${esc(f.awb || "")}" placeholder="AWB..." data-autofocus></label>
       <label>Tenant<select id="f-tenant">${tenantOptions(f.tenant)}</select></label>
-      <label>Resi<input id="f-awb" value="${esc(f.awb || "")}" placeholder="AWB..."></label>
       <label>Kurir<input id="f-courier_id" value="${esc(f.courier_id || "")}"></label>
       <label>Cabang<input id="f-branch" value="${esc(f.branch || "")}"></label>
       ${sel("f-verdict", "Verdict", [["", "Semua"], ["PASS", "PASS"], ["WARN", "WARN"], ["REJECT", "REJECT"]])}
       <label>Kode alasan<input id="f-reason" value="${esc(f.reason || "")}" placeholder="BLURRY"></label>
       ${extraFilters}
-      <button id="f-apply">Terapkan</button>
-    </div>
+      <div class="actions"><button type="submit">Terapkan</button><button type="button" class="secondary" id="f-reset">Reset</button>
+        <button type="button" class="secondary only-sm" id="f-more">Filter lainnya</button></div>
+    </form>
     <div class="card">${photoTable(data.items)}
       <div class="pager"><button class="secondary" id="prev" ${!params.offset ? "disabled" : ""}>Sebelumnya</button>
       <span class="muted">${data.total ? `${params.offset + 1}-${Math.min(params.offset + 50, data.total)} dari ${data.total}` : "0"}</span>
       <button class="secondary" id="next" ${params.offset + 50 >= data.total ? "disabled" : ""}>Berikutnya</button></div></div>`;
-  const rerun = () => (location.hash.startsWith("#/review") ? review() : photos());
-  $("#f-apply").onclick = () => {
-    for (const el of document.querySelectorAll(".filters [id^=f-]")) f[el.id.slice(2)] = el.value.trim();
+  const rerun = () => (location.hash.startsWith("#/review") ? review() : photos()).then(() => { focusPage(); loadThumbs(); });
+  $("#f-form").onsubmit = (e) => {
+    e.preventDefault();
+    for (const el of document.querySelectorAll("#f-form [id^=f-]")) if (el.tagName !== "BUTTON") f[el.id.slice(2)] = el.value.trim();
     f.offset = 0; rerun();
   };
+  $("#f-reset").onclick = () => { for (const k of Object.keys(f)) delete f[k]; rerun(); };
+  const more = Object.keys(f).some((k) => !["awb", "offset"].includes(k) && f[k]);
+  $("#f-form").classList.toggle("expanded", more);
+  $("#f-more").onclick = () => $("#f-form").classList.toggle("expanded");
   $("#prev").onclick = () => { f.offset = Math.max(0, params.offset - 50); rerun(); };
   $("#next").onclick = () => { f.offset = params.offset + 50; rerun(); };
   document.querySelectorAll("tr[data-id]").forEach((tr) => tr.addEventListener("click", () => openPhoto(tr.dataset.id, rerun)));
@@ -168,7 +213,7 @@ async function listPage(title, f, extraFilters, fixed) {
 
 async function review() {
   const f = review.f || (review.f = {});
-  await listPage("Antrean review", f, "", { needs_review: true });
+  await listPage("Antrean review", "Foto yang perlu keputusan ops. Klik baris untuk melihat foto dan memutuskan.", f, "", { needs_review: true });
 }
 
 async function photos() {
@@ -177,7 +222,7 @@ async function photos() {
     <label>Status review<select id="f-review_status">${[["", "Semua"], ["none", "belum direview"], ["approved", "disetujui"], ["retake_requested", "minta foto ulang"], ["fraud", "kecurangan"]].map(([v, l]) => `<option value="${v}" ${f.review_status === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
     <label>Dari<input type="date" id="f-date_from" value="${esc(f.date_from || "")}"></label>
     <label>Sampai<input type="date" id="f-date_to" value="${esc(f.date_to || "")}"></label>`;
-  await listPage("Cari foto", f, extra, {});
+  await listPage("Cari foto", "Cari berdasarkan resi, kurir, cabang, verdict, atau alasan.", f, extra, {});
 }
 
 /* ---------------- Detail foto ---------------- */
@@ -207,9 +252,8 @@ async function openPhoto(id, onChange) {
     <div class="grid cols-2">
       <div class="images">
         ${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank"><img src="${esc(p.urls.processed)}" data-photo="${esc(p.id)}" data-variant="processed" onerror="viaEngine(this)" alt="foto"></a>`
-          : p.urls.original ? `<a href="${esc(p.urls.original)}" target="_blank"><img src="${esc(p.urls.original)}" data-photo="${esc(p.id)}" data-variant="original" onerror="viaEngine(this)" alt="foto asli"></a><div class="small muted">Foto asli (tidak ada versi pengiriman${p.verdict === "REJECT" ? ", karena ditolak" : ""})</div>`
-          : `<div class="empty">Tidak ada pratinjau</div>`}
-        <div class="small"><a href="${esc(p.urls.original)}" target="_blank">Buka original</a>${p.urls.processed ? ` · <a href="${esc(p.urls.processed)}" target="_blank">Buka versi kompres</a>` : ""}${p.awb ? ` · <a href="#" data-evidence="${esc(p.awb)}">Evidence PDF resi ini</a>` : ""}</div>
+          : `<div class="empty card">Foto tidak disimpan di SILO${p.verdict === "REJECT" ? " (ditolak, kurir diminta foto ulang)" : " (aplikasi belum melaporkan lokasinya)"}.<div class="small">Engine hanya memproses foto; penyimpanan dikerjakan aplikasi.</div></div>`}
+        <div class="small">${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank">Buka foto</a>` : ""}${p.awb ? `${p.urls.processed ? " · " : ""}<a href="#" data-evidence="${esc(p.awb)}">Evidence PDF resi ini</a>` : ""}</div>
       </div>
       <div>
         ${p.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">${esc(p.retake_message || "")}</div></div>` : ""}
@@ -219,7 +263,7 @@ async function openPhoto(id, onChange) {
         <h3>Catatan</h3>${reasonsHtml(p.reasons)}
         ${p.error ? `<div class="reason reject"><b>${esc(p.error.code)}</b><div class="small">${esc(p.error.message)}</div></div>` : ""}
         ${canReview ? `<h3>Keputusan ops</h3>
-          <textarea id="rv-note" rows="2" style="width:100%" placeholder="Catatan (opsional)">${esc(p.review.note || "")}</textarea>
+          <textarea id="rv-note" rows="2" style="width:100%" placeholder="Catatan (opsional)" data-autofocus>${esc(p.review.note || "")}</textarea>
           <div class="actions">
             <button data-act="approve">Setujui (layak tagih)</button>
             <button class="secondary" data-act="request_retake">Minta foto ulang</button>
@@ -232,14 +276,16 @@ async function openPhoto(id, onChange) {
     <h3>Data pengiriman</h3>${kv([["Kurir", esc(p.courier_id)], ["Cabang", esc(p.branch)], ["Pelanggan", esc(p.customer_id)], ["ID eksternal", esc(p.external_id)],
       ["Waktu foto", fmtDate(p.captured_at)], ["Diterima", fmtDate(p.received_at)], ["Dianalisis", fmtDate(p.analyzed_at)],
       ["Lokasi", p.location ? `<a target="_blank" href="https://maps.google.com/?q=${p.location.lat},${p.location.lng}">${p.location.lat}, ${p.location.lng}</a>` : "-"],
-      ["Sumber", esc(p.ingest_source)], ["Objek", `<code>${esc(p.object.bucket)}/${esc(p.object.key)}</code>`]])}
+      ["Sumber", esc(p.ingest_source)], ["Lokasi di SILO", p.object ? `<code>${esc(p.object.bucket)}/${esc(p.object.key)}</code>` : "tidak disimpan / belum dilaporkan aplikasi"]])}
     <h3>Gambar & kompresi</h3>${kv([["Format", esc((p.image || {}).format)], ["Dimensi", p.image && p.image.width ? `${p.image.width} × ${p.image.height}` : "-"],
-      ["Ukuran", `${kb(c.original_bytes)} → ${kb(c.output_bytes)} ${c.passthrough ? "(tidak dikompres)" : `(quality ${c.quality}, SSIM ${c.ssim})`}`],
+      ["Ukuran", c.original_bytes ? `${kb(c.original_bytes)} → ${kb(c.output_bytes)} ${c.passthrough ? "(tidak perlu dikompres)" : `(quality ${c.quality}, SSIM ${c.ssim})`}` : "-"],
       ["SHA-256", `<code class="small">${esc(p.sha256)}</code>`]])}
     <h3>EXIF</h3>${Object.keys(p.exif || {}).length ? kv(Object.entries(p.exif).map(([k, v]) => [k, esc(v)])) : `<p class="muted">Tidak ada EXIF.</p>`}
     <h3>Riwayat review</h3><div id="rv-history" class="muted">Memuat...</div>
     <details><summary class="muted">Metrik mentah</summary><pre class="json">${esc(JSON.stringify(p.metrics, null, 2))}</pre></details>`;
   $("#drawer").classList.remove("hidden");
+  focusPage($("#drawer-body"));
+  if (!$("#drawer-body [data-autofocus]")) $("#drawer-close").focus();
   api(`/v1/photos/${id}/reviews`).then((rows) => {
     $("#rv-history").innerHTML = rows.length ? rows.map((r) => `<div>${fmtDate(r.at)} · <b>${esc(r.action)}</b> oleh ${esc(r.actor)} ${r.note ? `- ${esc(r.note)}` : ""}</div>`).join("") : "Belum ada.";
   }).catch(() => { $("#rv-history").textContent = "-"; });
@@ -257,14 +303,13 @@ async function openPhoto(id, onChange) {
 /* ---------------- Uji foto (preview, tidak disimpan) ---------------- */
 async function testPhoto() {
   const builtin = await api("/v1/admin/profiles/builtin").catch(() => ({}));
-  $("#main").innerHTML = `<h1>Uji foto</h1>
-    <p class="muted">Analisis foto tanpa menyimpan apa pun. Pakai untuk mencoba threshold atau melatih tim.</p>
-    <div class="card"><div class="filters">
+  $("#main").innerHTML = head("Uji foto", "Analisis foto tanpa mencatat atau menyimpan apa pun. Untuk mencoba threshold atau melatih tim.") + `
+    <form class="filters card" id="t-form">
+      <label class="span-all">File foto<input id="t-file" type="file" accept="image/*" data-autofocus required></label>
       <label>Tenant<select id="t-tenant"><option value="">(profile bawaan)</option>${tenantOptions("", false)}</select></label>
       <label>Jenis foto / profile<select id="t-type">${Object.keys(builtin).map((p) => `<option>${esc(p)}</option>`).join("")}</select></label>
-      <label>File foto<input id="t-file" type="file" accept="image/*"></label>
-      <button id="t-run">Analisis</button>
-    </div><div id="t-out"></div></div>`;
+      <div class="actions"><button type="submit" id="t-run">Analisis</button></div>
+    </form><div id="t-out"></div>`;
   $("#t-tenant").onchange = async (e) => {
     let names = Object.keys(builtin);
     if (e.target.value) {
@@ -272,7 +317,9 @@ async function testPhoto() {
     }
     $("#t-type").innerHTML = names.map((p) => `<option>${esc(p)}</option>`).join("");
   };
-  $("#t-run").onclick = async () => {
+  $("#t-file").onchange = () => $("#t-form").requestSubmit();
+  $("#t-form").onsubmit = async (e) => {
+    e.preventDefault();
     const file = $("#t-file").files[0];
     if (!file) return toast("Pilih file dulu", true);
     const fd = new FormData(); fd.append("file", file);
@@ -281,7 +328,7 @@ async function testPhoto() {
     try {
       const r = await api("/v1/analyze/preview?" + q, { method: "POST", body: fd });
       const c = r.compression || {};
-      $("#t-out").innerHTML = `<div class="grid cols-2"><div><img src="${URL.createObjectURL(file)}" style="max-width:100%;border-radius:6px"></div><div>
+      $("#t-out").innerHTML = `<div class="card grid cols-2"><div><img src="${URL.createObjectURL(file)}" style="max-width:100%;border-radius:6px"></div><div>
         <h2>${badge(r.verdict)} <span class="muted small">profile ${esc(r.profile)} · mode ${esc(r.mode)} · aksi ${esc(r.action)}</span></h2>
         ${r.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">${esc(r.retake_message || "")}</div></div>` : ""}
         ${r.enhancement && r.enhancement.applied ? `<div class="reason info"><b>Diperbaiki otomatis</b> <span class="small">(${esc(r.enhancement.operations.join(", "))}; sebelum: ${esc(r.enhancement.before.verdict)})</span></div>` : ""}
@@ -299,7 +346,6 @@ name: Aplikasi Baru
 default_lang: id
 timezone: Asia/Jakarta
 retention_days: 1095
-store_mode: processed
 default_profile: default
 sources:
   - type: s3_poll
@@ -317,14 +363,14 @@ profiles:
 
 async function tenants() {
   state.tenants = await api("/v1/admin/tenants");
-  $("#main").innerHTML = `<h1>Tenant</h1>
-    <p class="muted">Setiap aplikasi yang terhubung = satu tenant. Perubahan berlaku tanpa restart (maks. 5 detik). Referensi field: <code>docs/configuration.md</code>.</p>
-    <div class="card"><table><thead><tr><th>Kode</th><th>Nama</th><th>Versi</th><th>Source</th><th>Mode per profile</th><th>Status</th><th></th></tr></thead><tbody>
+  $("#main").innerHTML = head("Tenant", "Setiap aplikasi yang terhubung = satu tenant. Perubahan berlaku tanpa restart (maks. 5 detik). Referensi field: <code>docs/configuration.md</code>.",
+    `<button id="tn-new" data-autofocus>Tenant baru</button>`) + `
+    <div class="card"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th>Versi</th><th>Source</th><th>Mode per profile</th><th>Status</th><th></th></tr></thead><tbody>
     ${state.tenants.map((t) => `<tr><td><b>${esc(t.code)}</b></td><td>${esc(t.name)}</td><td>v${t.version}</td><td>${esc((t.sources || []).join(", ") || "API saja")}</td>
       <td class="small">${Object.entries(t.modes || {}).map(([k, v]) => `${esc(k)}: <b>${esc(v)}</b>`).join(" · ")}</td>
       <td>${t.enabled ? badge("PASS", "aktif") : badge("REJECT", "nonaktif")}</td>
       <td><button class="secondary" data-edit="${esc(t.code)}">Ubah</button></td></tr>`).join("")}
-    </tbody></table><div class="actions"><button id="tn-new">Tenant baru</button></div></div><div id="tn-editor"></div>`;
+    </tbody></table></div></div><div id="tn-editor"></div>`;
   document.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => editTenant(b.dataset.edit)));
   $("#tn-new").onclick = () => editTenant(null);
 }
@@ -354,23 +400,25 @@ async function editTenant(code) {
     };
   }
   $("#tn-editor").scrollIntoView({ behavior: "smooth" });
+  $("#tn-yaml").focus({ preventScroll: true });
 }
 
 /* ---------------- API key (admin) ---------------- */
 async function keys() {
   const rows = await api("/v1/admin/api-keys");
-  $("#main").innerHTML = `<h1>API key</h1>
-    <div class="card"><h2>Buat key baru</h2><div class="filters">
-      <label>Nama / pemakai<input id="k-name" placeholder="contoh: aplikasi-kurir-prod"></label>
+  $("#main").innerHTML = head("API key", "Satu key per orang atau aplikasi. Key hanya ditampilkan sekali saat dibuat.") + `
+    <div class="card"><h2>Buat key baru</h2><form class="filters" id="k-form">
+      <label>Nama / pemakai<input id="k-name" placeholder="contoh: aplikasi-kurir-prod" data-autofocus required></label>
       <label>Role<select id="k-role"><option value="app">app (aplikasi)</option><option value="ops">ops</option><option value="viewer">viewer</option><option value="customer">customer (pelanggan)</option><option value="admin">admin</option></select></label>
       <label>Tenant<select id="k-tenant"><option value="">-</option>${tenantOptions("", false)}</select></label>
       <label>Customer ID<input id="k-cust" placeholder="untuk role customer"></label>
-      <button id="k-create">Buat</button></div><div id="k-out"></div></div>
-    <div class="card" style="margin-top:16px"><table><thead><tr><th>Nama</th><th>Prefix</th><th>Role</th><th>Tenant</th><th>Customer</th><th>Dibuat</th><th>Terakhir dipakai</th><th></th></tr></thead><tbody>
+      <div class="actions"><button type="submit">Buat</button></div></form><div id="k-out"></div></div>
+    <div class="card"><div class="table-wrap"><table><thead><tr><th>Nama</th><th>Prefix</th><th>Role</th><th>Tenant</th><th>Customer</th><th>Dibuat</th><th>Terakhir dipakai</th><th></th></tr></thead><tbody>
     ${rows.map((k) => `<tr><td>${esc(k.name)}</td><td><code>${esc(k.prefix)}…</code></td><td>${esc(k.role)}</td><td>${esc(k.tenant || "-")}</td><td>${esc(k.customer_id || "-")}</td>
       <td class="small">${fmtDate(k.created_at)}</td><td class="small">${fmtDate(k.last_used_at)}</td>
-      <td>${k.revoked ? badge("REJECT", "dicabut") : `<button class="secondary" data-revoke="${esc(k.id)}">Cabut</button>`}</td></tr>`).join("")}</tbody></table></div>`;
-  $("#k-create").onclick = async () => {
+      <td>${k.revoked ? badge("REJECT", "dicabut") : `<button class="secondary" data-revoke="${esc(k.id)}">Cabut</button>`}</td></tr>`).join("")}</tbody></table></div></div>`;
+  $("#k-form").onsubmit = async (e) => {
+    e.preventDefault();
     try {
       const r = await api("/v1/admin/api-keys", { method: "POST", body: { name: $("#k-name").value, role: $("#k-role").value, tenant: $("#k-tenant").value || null, customer_id: $("#k-cust").value || null } });
       $("#k-out").innerHTML = `<div class="keybox"><b>Simpan sekarang, key ini tidak bisa dilihat lagi:</b><br><code>${esc(r.api_key)}</code></div>`;
@@ -391,10 +439,7 @@ const SILO_FIELDS = [
   ["secret_key", "Secret key", "", "Disimpan terenkripsi dan tidak pernah ditampilkan lagi. Kosongkan jika tidak ingin mengubah."],
   ["addressing_style", "Gaya alamat (path)", "", "auto | path | virtual. SILO/MinIO umumnya path (format mc: path \"on\")."],
   ["signature_version", "Signature (api)", "s3v4", "s3v4 (disarankan) atau s3 (v2, lama)."],
-  ["app_bucket", "Bucket foto aplikasi", "ekas-pcptransport", "Engine hanya MEMBACA bucket ini. Dijaga di kode: walau key punya akses penuh, engine tidak bisa menulis/menghapus di sini."],
-  ["processed_bucket", "Bucket hasil kompres", "photos-processed", "Engine membaca & menulis."],
-  ["thumb_bucket", "Bucket thumbnail", "photos-thumb", "Engine membaca & menulis."],
-  ["upload_bucket", "Bucket upload API", "photos-upload", "Untuk foto yang dikirim langsung ke API engine."],
+  ["app_bucket", "Bucket foto aplikasi", "ekas-pcptransport", "Tempat aplikasi menyimpan foto. Engine hanya MEMBACA (Web UI, evidence, backup NAS, polling); menulis/menghapus diblokir di kode."],
 ];
 const SOURCE_LABEL = { database: "dari halaman ini", env: "dari env server", default: "bawaan" };
 
@@ -402,16 +447,14 @@ async function silo() {
   const cfg = await api("/v1/admin/settings/storage");
   const f = cfg.fields;
   const val = (k) => (k === "secret_key" ? "" : f[k].value ?? "");
-  $("#main").innerHTML = `<h1>Pengaturan SILO</h1>
-    <p class="muted">Koneksi engine ke SILO (S3). Nilai di halaman ini menimpa env server dan berlaku tanpa restart (maks. 10 detik).
-      Rahasia disimpan terenkripsi. Engine hanya membaca bucket aplikasi.</p>
+  $("#main").innerHTML = head("Koneksi SILO", "Engine hanya memproses foto dan <b>tidak pernah menyimpan</b> ke SILO; penyimpanan dikerjakan aplikasi. Koneksi ini dipakai untuk <b>membaca</b> foto yang disimpan aplikasi. Berlaku tanpa restart (maks. 10 detik); rahasia disimpan terenkripsi.") + `
     ${cfg.secret_key_configured ? "" : `<div class="reason warn"><b>PQE_SECRET_KEY belum diisi di server.</b> Secret key tidak bisa disimpan lewat halaman ini sampai PQE_SECRET_KEY diisi (lihat docs/configuration.md). Field lain tetap bisa disimpan.</div>`}
     <div class="grid cols-2">
       <div class="card"><h2>Koneksi</h2>
         ${SILO_FIELDS.map(([k, label, ph, help]) => `<label style="margin-bottom:10px">${esc(label)}
           ${k === "addressing_style" ? `<select id="s-${k}">${["", "auto", "path", "virtual"].map((o) => `<option value="${o}" ${val(k) === o ? "selected" : ""}>${o || "(ikut env)"}</option>`).join("")}</select>`
             : k === "signature_version" ? `<select id="s-${k}">${["s3v4", "s3"].map((o) => `<option ${val(k) === o ? "selected" : ""}>${o}</option>`).join("")}</select>`
-            : `<input id="s-${k}" type="${k === "secret_key" ? "password" : "text"}" autocomplete="off" value="${esc(val(k))}" placeholder="${esc(k === "secret_key" ? (f.secret_key.value.set ? "•••••• (tersimpan)" : "belum diisi") : ph)}">`}
+            : `<input id="s-${k}" ${k === "endpoint" ? "data-autofocus" : ""} type="${k === "secret_key" ? "password" : "text"}" autocomplete="off" value="${esc(val(k))}" placeholder="${esc(k === "secret_key" ? (f.secret_key.value.set ? "•••••• (tersimpan)" : "belum diisi") : ph)}">`}
           <span class="small">${esc(help)} <i>Saat ini: ${esc(SOURCE_LABEL[f[k].source])}</i>${f[k].source === "database" ? ` · <a href="#" data-clear="${k}">kembalikan ke env</a>` : ""}</span></label>`).join("")}
         <div class="actions"><button class="secondary" id="s-test">Test koneksi</button><button id="s-save">Simpan</button></div>
         <div id="s-out"></div>
@@ -423,8 +466,8 @@ async function silo() {
         <h3>Permission minimal service account</h3>
         <pre class="json">${esc(JSON.stringify({ Version: "2012-10-17", Statement: [
           { Effect: "Allow", Action: ["s3:GetObject", "s3:ListBucket"], Resource: [`arn:aws:s3:::${val("app_bucket") || "ekas-pcptransport"}`, `arn:aws:s3:::${val("app_bucket") || "ekas-pcptransport"}/*`] },
-          { Effect: "Allow", Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"], Resource: ["processed_bucket", "thumb_bucket", "upload_bucket"].flatMap((k) => [`arn:aws:s3:::${val(k)}`, `arn:aws:s3:::${val(k)}/*`]) },
         ] }, null, 2))}</pre>
+        <p class="muted small">Cukup izin baca. Engine tidak butuh bucket sendiri.</p>
         <p class="muted small">Detail pembuatan service account: docs/operations.md bagian setup SILO produksi.</p>
       </div>
     </div>`;
@@ -476,14 +519,14 @@ async function evidencePdf(awbs) {
 }
 
 async function evidence() {
-  $("#main").innerHTML = `<h1>Evidence penagihan</h1>
-    <p class="muted">PDF bukti pengiriman untuk pelanggan: hanya foto layak (PASS/WARN), tanpa skor internal, dengan kode verifikasi keaslian.</p>
-    <div class="card" style="max-width:640px">
-      <label>Nomor resi (satu per baris, maks. 500)<textarea id="ev-awbs" class="code" style="min-height:180px" placeholder="AWB123&#10;AWB124"></textarea></label>
-      <div class="actions"><button id="ev-pdf">Buat PDF</button></div>
+  $("#main").innerHTML = head("Evidence penagihan", "PDF bukti pengiriman untuk pelanggan: hanya foto layak (PASS/WARN) yang disimpan aplikasi di SILO, tanpa skor internal, dengan kode verifikasi keaslian.") + `
+    <form class="card" style="max-width:640px" id="ev-form">
+      <label>Nomor resi (satu per baris, maks. 500)<textarea id="ev-awbs" class="code" style="min-height:180px" placeholder="AWB123&#10;AWB124" data-autofocus></textarea></label>
+      <div class="actions"><button type="submit">Buat PDF</button></div>
       <p class="muted small">Satu resi = PDF per resi; banyak resi = satu PDF gabungan (misal per periode invoice). Resi tanpa foto layak tidak muncul di PDF; jika tidak ada satu pun, PDF berisi keterangan itu.</p>
-    </div>`;
-  $("#ev-pdf").onclick = () => {
+    </form>`;
+  $("#ev-form").onsubmit = (e) => {
+    e.preventDefault();
     const awbs = [...new Set($("#ev-awbs").value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean))];
     if (!awbs.length) return toast("Isi minimal satu nomor resi", true);
     if (awbs.length > 500) return toast("Maksimal 500 resi per PDF", true);
@@ -502,15 +545,13 @@ const gb = (n) => (n == null ? "-" : (n / 1024 ** 3).toFixed(1) + " GB");
 async function nas() {
   const d = await api("/v1/admin/settings/backup");
   const c = d.config, s = d.state || {};
-  const chk = (k, label, help) => `<label class="check" style="flex-direction:row;align-items:flex-start;gap:8px;color:var(--text);margin-bottom:8px">
-    <input type="checkbox" id="b-${k}" ${c[k] ? "checked" : ""} style="margin-top:3px"><span><b>${esc(label)}</b><br><span class="small muted">${esc(help)}</span></span></label>`;
+  const chk = (k, label, help) => `<label class="check">
+    <input type="checkbox" id="b-${k}" ${c[k] ? "checked" : ""}><span><b>${esc(label)}</b><br><span class="small muted">${esc(help)}</span></span></label>`;
   const inp = (k, label, ph, help, type = "text") => `<label style="margin-bottom:10px">${esc(label)}
     <input id="b-${k}" type="${type}" autocomplete="off" value="${esc(type === "password" ? "" : c[k] ?? "")}" placeholder="${esc(ph)}">${help ? `<span class="small">${esc(help)}</span>` : ""}</label>`;
-  $("#main").innerHTML = `<h1>Backup NAS</h1>
-    <p class="muted">Engine menyalin foto dan database ke NAS secara terjadwal. Backup hanya <b>menyalin</b>: file di NAS tidak pernah dihapus engine
-      (kecuali dump database lama sesuai jumlah simpan). Foto asli kurir dan foto pengiriman hanya ada di SILO, jadi backup ini <b>wajib</b> di production.</p>
+  $("#main").innerHTML = head("Backup NAS", "Engine menyalin database dan foto yang disimpan aplikasi di SILO ke NAS secara terjadwal. Hanya <b>menyalin</b>: file di NAS tidak pernah dihapus engine (kecuali dump database lama sesuai jumlah simpan).") + `
     ${d.secret_key_configured ? "" : `<div class="reason warn"><b>PQE_SECRET_KEY belum diisi di server.</b> Secret key NAS S3 tidak bisa disimpan sampai PQE_SECRET_KEY diisi. Tujuan folder tetap bisa dipakai.</div>`}
-    <div class="grid cols-4" style="margin-bottom:16px">
+    <div class="grid cols-4">
       <div class="card kpi"><div class="v">${c.enabled ? "Aktif" : "Mati"}</div><div class="l">Status jadwal</div></div>
       <div class="card kpi"><div class="v">${d.pending}</div><div class="l">Foto belum tersalin</div></div>
       <div class="card kpi"><div class="v">${d.backed_up}</div><div class="l">Foto sudah tersalin</div></div>
@@ -521,7 +562,7 @@ async function nas() {
       <div class="card"><h2>Tujuan</h2>
         ${chk("enabled", "Aktifkan backup terjadwal", "Jika mati, backup tetap bisa dijalankan manual dengan tombol di bawah.")}
         <label style="margin-bottom:10px">Jenis NAS
-          <select id="b-target"><option value="folder" ${c.target === "folder" ? "selected" : ""}>Folder (NAS di-mount lewat SMB/NFS)</option>
+          <select id="b-target" data-autofocus><option value="folder" ${c.target === "folder" ? "selected" : ""}>Folder (NAS di-mount lewat SMB/NFS)</option>
           <option value="s3" ${c.target === "s3" ? "selected" : ""}>NAS S3-compatible (Synology/QNAP/MinIO)</option></select></label>
         <div id="b-folder">${inp("folder_path", "Folder di dalam container", "/backup", "Bawaan /backup = folder NAS_MOUNT di server (docker-compose). Mount share NAS ke folder itu di server.")}</div>
         <div id="b-s3">
@@ -537,11 +578,13 @@ async function nas() {
         <div id="b-out"></div>
       </div>
       <div class="card"><h2>Yang dibackup</h2>
-        ${chk("include_upload_originals", "Foto asli dari kurir", "Bucket upload engine (alur scan dulu). Bukti keaslian: wajib.")}
-        ${chk("include_processed", "Foto pengiriman yang diterima", "Versi yang link-nya disimpan aplikasi (stored.url). Wajib.")}
         ${chk("include_database", "Database engine", "Hasil analisis, review, config. Wajib.")}
-        ${chk("include_app_originals", "Foto asli di bucket aplikasi", "Biasanya sudah dibackup tim infra. Aktifkan jika belum.")}
-        ${chk("include_thumbs", "Thumbnail", "Bisa dibuat ulang, biasanya tidak perlu.")}
+        ${chk("include_photos", "Foto pengiriman di SILO aplikasi", "Dibaca dari lokasi yang disimpan aplikasi (object_key) lalu disalin ke NAS. Matikan jika tim infra sudah mem-backup bucket aplikasi.")}
+        <details><summary class="small muted">Data versi lama</summary>
+          ${chk("include_upload_originals", "Foto asli di bucket upload engine", "Hanya foto dari versi sebelum engine berhenti menyimpan ke SILO.")}
+          ${chk("include_processed", "Foto hasil kompres di bucket engine", "Hanya foto dari versi lama.")}
+          ${chk("include_thumbs", "Thumbnail di bucket engine", "Bisa dibuat ulang, biasanya tidak perlu.")}
+        </details>
         <h3>Jadwal</h3>
         <div class="filters">
           <label>Foto setiap (menit)<input id="b-photo_interval_minutes" type="number" min="1" max="1440" value="${c.photo_interval_minutes}"></label>
@@ -567,7 +610,7 @@ async function nas() {
   $("#b-target").onchange = toggle; toggle();
   const form = () => {
     const out = { target: $("#b-target").value };
-    for (const k of ["enabled", "include_upload_originals", "include_processed", "include_database", "include_app_originals", "include_thumbs"]) out[k] = $(`#b-${k}`).checked;
+    for (const k of ["enabled", "include_photos", "include_upload_originals", "include_processed", "include_database", "include_thumbs"]) out[k] = $(`#b-${k}`).checked;
     for (const k of ["photo_interval_minutes", "db_interval_hours", "db_keep"]) out[k] = Number($(`#b-${k}`).value);
     for (const k of ["folder_path", "s3_endpoint", "s3_bucket", "s3_prefix", "s3_region", "s3_access_key", "s3_secret_key", "s3_addressing_style"]) {
       const v = $(`#b-${k}`).value.trim(); if (v || k !== "s3_secret_key") out[k] = v;
@@ -605,33 +648,33 @@ async function system() {
   const [jobs, sources, hooks] = await Promise.all([api("/v1/admin/jobs?status=dead"), api("/v1/admin/sources"), api("/v1/admin/webhooks?status=dead")]);
   const audit = state.me.role === "admin" ? await api("/v1/admin/audit?limit=50").catch(() => []) : [];
   const st = jobs.stats;
-  $("#main").innerHTML = `<h1>Sistem</h1>
+  $("#main").innerHTML = head("Sistem", "Antrean analisis, kesiapan production, kegagalan, dan aktivitas.") + `
     <div class="grid cols-4">
       <div class="card kpi"><div class="v">${st.queued}</div><div class="l">Antre</div></div>
       <div class="card kpi"><div class="v">${st.running}</div><div class="l">Diproses</div></div>
       <div class="card kpi"><div class="v">${st.done}</div><div class="l">Selesai</div></div>
       <div class="card kpi"><div class="v" style="color:${st.dead ? "var(--reject)" : "inherit"}">${st.dead}</div><div class="l">Gagal permanen (dead)</div></div>
     </div>
-    ${state.me.role === "admin" ? `<div class="card" style="margin-top:16px"><h2>Kesiapan production (preflight)</h2>
-      <p class="muted small">Memeriksa secret, database, koneksi & izin SILO, pagar pengaman, mode tenant, backup NAS, worker, dan OCR.
-        Sama dengan perintah <code>pqe preflight</code>. Uji SILO menulis lalu menghapus file kecil di bucket engine.</p>
-      <div class="actions"><button id="pf-run">Jalankan preflight</button></div><div id="pf-out"></div></div>` : ""}
-    <div class="card" style="margin-top:16px"><h2>Job gagal permanen</h2>
+    ${state.me.role === "admin" ? `<div class="card"><h2>Kesiapan production (preflight)</h2>
+      <p class="muted small">Memeriksa secret, database, koneksi SILO (hanya baca), mode tenant, backup NAS, worker, dan OCR.
+        Sama dengan perintah <code>pqe preflight</code>.</p>
+      <div class="actions"><button id="pf-run" data-autofocus>Jalankan preflight</button></div><div id="pf-out"></div></div>` : ""}
+    <div class="card"><h2>Job gagal permanen</h2>
       ${jobs.items.length ? `<table><thead><tr><th>ID</th><th>Tenant</th><th>Objek</th><th>Percobaan</th><th>Error terakhir</th><th></th></tr></thead><tbody>
       ${jobs.items.map((j) => `<tr><td>${j.id}</td><td>${esc(j.tenant)}</td><td><code class="small">${esc(j.object_key)}</code></td><td>${j.attempts}</td><td class="small">${esc(j.last_error)}</td>
         <td>${state.me.role === "admin" ? `<button class="secondary" data-retry="${j.id}">Ulangi</button>` : ""}</td></tr>`).join("")}</tbody></table>
       ${state.me.role === "admin" ? `<div class="actions"><button id="retry-all">Ulangi semua</button></div>` : ""}` : `<p class="muted">Tidak ada. Bagus.</p>`}
     </div>
-    <div class="card" style="margin-top:16px"><h2>Webhook gagal permanen</h2>
+    <div class="card"><h2>Webhook gagal permanen</h2>
       ${hooks.length ? `<table><thead><tr><th>ID</th><th>Tenant</th><th>Event</th><th>URL</th><th>Percobaan</th><th>Error terakhir</th></tr></thead><tbody>
       ${hooks.map((h) => `<tr><td>${h.id}</td><td>${esc(h.tenant)}</td><td>${esc(h.event)}</td><td class="small">${esc(h.url)}</td><td>${h.attempts}</td><td class="small">${esc(h.last_error)}</td></tr>`).join("")}</tbody></table>
       ${state.me.role === "admin" ? `<div class="actions"><button id="retry-hooks">Kirim ulang semua</button></div>` : ""}` : `<p class="muted">Tidak ada.</p>`}
     </div>
-    <div class="card" style="margin-top:16px"><h2>Source ingest</h2>
+    <div class="card"><h2>Source ingest</h2>
       ${sources.length ? `<table><thead><tr><th>Source</th><th>Terakhir jalan</th><th>Foto baru</th><th>Reconcile terakhir</th><th>Error</th></tr></thead><tbody>
       ${sources.map((s) => `<tr><td><code>${esc(s.id)}</code></td><td class="small">${fmtDate(s.last_run_at)}</td><td>${s.last_found}</td><td class="small">${fmtDate(s.last_reconcile_at)}</td><td class="small error">${esc(s.last_error || "")}</td></tr>`).join("")}</tbody></table>` : `<p class="muted">Belum ada source yang berjalan.</p>`}
     </div>
-    ${audit.length ? `<div class="card" style="margin-top:16px"><h2>Audit log</h2><table>${audit.map((a) => `<tr><td class="small">${fmtDate(a.at)}</td><td>${esc(a.actor)}</td><td><b>${esc(a.action)}</b></td><td>${esc(a.target || "")}</td></tr>`).join("")}</table></div>` : ""}
+    ${audit.length ? `<div class="card"><h2>Audit log</h2><table>${audit.map((a) => `<tr><td class="small">${fmtDate(a.at)}</td><td>${esc(a.actor)}</td><td><b>${esc(a.action)}</b></td><td>${esc(a.target || "")}</td></tr>`).join("")}</table></div>` : ""}
     <p class="muted small">Metrik Prometheus: <a href="/metrics" target="_blank">/metrics</a> · Dokumentasi API: <a href="/docs" target="_blank">/docs</a></p>`;
   document.querySelectorAll("[data-retry]").forEach((b) => (b.onclick = async () => { await api(`/v1/admin/jobs/${b.dataset.retry}/retry`, { method: "POST" }); toast("Job diantrekan ulang"); system(); }));
   const rh = $("#retry-hooks");

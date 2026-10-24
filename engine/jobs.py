@@ -16,7 +16,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from engine.db import Job, Photo, session_scope, utcnow
+from engine.db import Job, Photo, new_id, session_scope, utcnow
 from engine.settings import get_settings
 
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
@@ -100,6 +100,27 @@ def enqueue_object(
         return EnqueueResult(existing.id if existing else "", False, False)
     s.add(Job(photo_id=p.id))
     return EnqueueResult(p.id, True, False)
+
+
+UNSTORED_BUCKET = ""  # foto upload: belum/tidak disimpan aplikasi ke SILO (lihat processor.bind_location)
+
+
+def record_upload(tenant_code: str, *, fields: dict[str, Any], mapped: dict[str, Any] | None = None,
+                  retention_days: int | None = None, tz: str = "Asia/Jakarta") -> str:
+    """Catat foto yang dikirim langsung oleh aplikasi (tanpa job: dianalisis di request itu juga).
+
+    Engine tidak menyimpan file-nya. Lokasi sementara `""/unstored/<id>` diganti bucket/key tempat aplikasi
+    menyimpan foto (field `object_key` atau `POST /v1/photos/{id}/stored`).
+    """
+    with session_scope() as s:
+        pid = new_id()
+        p = Photo(id=pid, tenant_code=tenant_code, bucket=UNSTORED_BUCKET, object_key=f"unstored/{pid}",
+                  ingest_source="upload", meta=dict(fields or {}))
+        apply_mapped(p, mapped or fields or {}, tz)
+        if retention_days:
+            p.expires_at = utcnow() + timedelta(days=retention_days)
+        s.add(p)
+        return pid
 
 
 def requeue_photo(photo_id: str, session: Session) -> None:

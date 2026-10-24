@@ -43,10 +43,10 @@ $photo = function (array $extra): array {
 };
 $dReject = PhotoQualityClient::toDecision($photo(['allow_status_update' => false, 'courier_message' => 'Wajib foto ulang. Foto buram.', 'retake_required' => true]));
 check('REJECT enforce -> status ditahan + pesan', $dReject['allow_status_update'] === false && $dReject['decided'] && $dReject['message'] === 'Wajib foto ulang. Foto buram.' && $dReject['retake_required']);
-$dPass = PhotoQualityClient::toDecision($photo(['verdict' => 'PASS', 'action' => 'log', 'allow_status_update' => true, 'courier_message' => null, 'stored' => ['bucket' => 'b', 'key' => 'k.jpg', 'url' => 'https://s3/b/k.jpg']]));
-check('PASS -> status boleh, tanpa pesan, ada link', $dPass['allow_status_update'] === true && $dPass['message'] === null && $dPass['stored']['url'] === 'https://s3/b/k.jpg');
-check('REJECT -> tanpa link', $dReject['stored'] === null);
-check('engine mati -> tanpa link (simpan sendiri)', $dDown['stored'] === null);
+$dPass = PhotoQualityClient::toDecision($photo(['verdict' => 'PASS', 'action' => 'log', 'allow_status_update' => true, 'courier_message' => null, 'output_image' => ['content_type' => 'image/jpeg', 'bytes' => 3, 'optimized' => true, 'sha256' => 'x', 'base64' => base64_encode("\xff\xd8\xff")]]));
+check('PASS -> status boleh, tanpa pesan, ada foto untuk disimpan', $dPass['allow_status_update'] === true && $dPass['message'] === null && $dPass['image']['data'] === "\xff\xd8\xff" && $dPass['image']['content_type'] === 'image/jpeg');
+check('REJECT -> tanpa foto', $dReject['image'] === null);
+check('engine mati -> tanpa foto (simpan foto asli)', $dDown['image'] === null);
 $dPending = PhotoQualityClient::toDecision(['ok' => true, 'status' => 202, 'data' => ['id' => 'p2', 'status' => 'pending']]);
 check('lewat 3 detik (pending) -> fail-open', $dPending['allow_status_update'] === true && $dPending['decided'] === false && $dPending['photo_id'] === 'p2');
 
@@ -55,11 +55,16 @@ $key = getenv('PQE_API_KEY');
 $sample = getenv('PQE_SAMPLE');
 if ($url && $key && $sample) {
     $pqe = new PhotoQualityClient($url, $key, 5000, 'id');
-    $res = $pqe->analyzeFile($sample, ['awb' => 'PHP-TEST', 'source' => 'camera'], true);
-    check('analyzeFile sync', $res['ok'] && !empty($res['data']['verdict']),
+    $res = $pqe->analyzeFile($sample, ['awb' => 'PHP-TEST', 'source' => 'camera']);
+    check('analyzeFile', $res['ok'] && !empty($res['data']['verdict']),
         $res['ok'] ? $res['data']['verdict'] . ' ' . ($res['data']['reasons'][0]['message'] ?? '') : $res['error']);
     $d = $pqe->checkFile($sample, ['awb' => 'PHP-TEST-2', 'source' => 'camera']);
-    check('checkFile', $d['decided'] === true && is_bool($d['allow_status_update']), json_encode($d));
+    check('checkFile', $d['decided'] === true && is_bool($d['allow_status_update']), $d['verdict']);
+    if ($d['allow_status_update'] && $d['photo_id']) {
+        check('foto untuk disimpan', $d['image'] !== null && strlen($d['image']['data']) > 0);
+        $rep = $pqe->reportStored($d['photo_id'], 'php-test/PHP-TEST-2.jpg');
+        check('reportStored', $rep['ok'] && $rep['data']['object']['key'] === 'php-test/PHP-TEST-2.jpg');
+    }
     if ($res['ok']) {
         $got = $pqe->getPhoto($res['data']['id']);
         check('getPhoto', $got['ok'] && $got['data']['id'] === $res['data']['id']);

@@ -10,47 +10,62 @@ atau versi interaktif di `<server-engine>/ui/guide.html` (tanpa login).
 
 Kotlin (Android), Swift (iOS), Dart (Flutter), dan Python: contoh kode ada di panduan integrasi.
 
-## Cara tercepat: `checkFile` (scan dulu, baru simpan)
+## Cara tercepat: `checkFile` (kirim foto, terima keputusan)
 
-Satu panggilan, satu keputusan. File foto dikirim langsung ke engine; engine memeriksa dulu, lalu **hanya foto yang
-diterima** disimpan ke SILO dan linknya dikembalikan di `stored`. Foto ditolak tidak disimpan sebagai foto pengiriman.
-Tunggu maks. 3 detik, **tidak pernah throw**, dan fail-open: engine mati, lambat, error, atau lewat batas waktu =
-`stored` null, aplikasi menyimpan foto ke SILO sendiri (kode lama) dan status boleh diupdate.
+Satu panggilan, satu keputusan. Engine **hanya memproses gambar** dan tidak pernah menyimpan ke SILO: file foto dikirim
+ke engine, engine memeriksa dan mengoptimasi, lalu mengembalikan keputusan + foto hasil (`image`) untuk foto yang
+diterima. **Aplikasi yang menyimpan** foto itu ke SILO. Foto ditolak: `image` null, jangan disimpan. Tunggu maks.
+3 detik, **tidak pernah throw**, dan fail-open: engine mati, lambat, error, atau lewat batas waktu = `image` null,
+aplikasi menyimpan foto asli dan status boleh diupdate.
+
+Kirim juga `objectKey` (key SILO yang akan dipakai aplikasi) supaya Web UI, evidence, dan backup NAS engine bisa
+membaca fotonya. Jika key baru diketahui setelah menyimpan, pakai `reportStored(photoId, objectKey)`.
 
 ```ts
 // TypeScript / Node
 const pqe = new PhotoQualityClient({ baseUrl: process.env.PQE_URL!, apiKey: process.env.PQE_API_KEY!, lang: "id" });
-const d = await pqe.checkFile(photoBlob, "foto.jpg", { awb, photo_type: "pod_recipient", source: "camera" });
-if (!d.allowStatusUpdate) return kirimKeKurir(d.message);              // ditolak: tidak disimpan, minta foto ulang
-const link = d.stored?.url ?? (await uploadKeSiloSendiri(photoBlob));   // null = engine tidak menjawab (fail-open)
-await updateStatusPengiriman(link);                                     // tampilkan d.message jika tidak null
+const key = `pod/2026/10/24/${awb}.jpg`;
+const d = await pqe.checkFile(photoBlob, "foto.jpg", { awb, photo_type: "pod_recipient", source: "camera" }, { objectKey: key });
+if (!d.allowStatusUpdate) return kirimKeKurir(d.message);              // ditolak: jangan simpan, minta foto ulang
+await simpanKeSilo(key, d.image?.data ?? photoBlob);                    // image null = engine tidak menjawab -> foto asli
+await updateStatusPengiriman(key);                                      // tampilkan d.message jika tidak null
 ```
 
 ```php
 // PHP / Laravel
 $pqe = new PhotoQualityClient(env('PQE_URL'), env('PQE_API_KEY'), 5000, 'id');
-$d = $pqe->checkFile($pathFoto, ['awb' => $awb, 'photo_type' => 'pod_recipient', 'source' => 'camera']);
-if (!$d['allow_status_update']) { /* ditolak: tidak disimpan, kirim $d['message'] ke kurir, minta foto ulang */ }
-$link = $d['stored']['url'] ?? simpanKeSiloSendiri($pathFoto);   // null = engine tidak menjawab (fail-open)
-/* update status pengiriman + simpan $link; tampilkan $d['message'] jika tidak null */
+$key = "pod/2026/10/24/{$awb}.jpg";
+$d = $pqe->checkFile($pathFoto, ['awb' => $awb, 'photo_type' => 'pod_recipient', 'source' => 'camera'], 3000, $key);
+if (!$d['allow_status_update']) { /* ditolak: jangan simpan, kirim $d['message'] ke kurir, minta foto ulang */ }
+$isi = $d['image']['data'] ?? file_get_contents($pathFoto);   // image null = engine tidak menjawab -> foto asli
+Storage::disk('s3')->put($key, $isi);                          // simpan ke SILO dengan kode aplikasi
+/* update status pengiriman; tampilkan $d['message'] jika tidak null */
 ```
 
-Foto sudah terlanjur disimpan ke SILO? Pakai `checkObject(objectKey, fields)` (kirim key objek). Keputusannya sama,
-tetapi foto yang ditolak sudah ada di bucket aplikasi.
+Foto sudah terlanjur disimpan ke SILO? Pakai `checkObject(objectKey, fields)` (kirim key objek, engine hanya
+membacanya). Keputusannya sama, tetapi foto yang ditolak sudah ada di bucket aplikasi.
 
 | TypeScript | PHP | Arti |
 |---|---|---|
-| `allowStatusUpdate` | `allow_status_update` | `false` = foto ditolak (`REJECT` di mode `enforce`): **jangan** update status pengiriman, minta foto ulang |
+| `allowStatusUpdate` | `allow_status_update` | `false` = foto ditolak (`REJECT` di mode `enforce`): **jangan** simpan, **jangan** update status pengiriman, minta foto ulang |
 | `message` | `message` | Kalimat siap tampil untuk kurir, `null` = tidak perlu menampilkan apa pun |
-| `stored` | `stored` | `{bucket, key, url}` lokasi permanen foto yang diterima di SILO (simpan `url` di database Anda). `null` = ditolak, atau engine tidak menjawab (simpan sendiri) |
+| `image` | `image` | Foto yang disimpan aplikasi ke SILO. TS: `{data: Uint8Array, contentType, optimized, sha256}`; PHP: `['data' => isi file, 'content_type', 'optimized', 'sha256']`. `optimized: false` = foto asli sudah memenuhi syarat. `null` = ditolak, atau engine tidak menjawab (simpan foto asli) |
 | `retakeRequired` | `retake_required` | Kualitas tidak memenuhi syarat (verdict `REJECT`) |
-| `decided` | `decided` | `false` = belum ada keputusan (engine mati/lambat/error/`202`) → fail-open: simpan foto sendiri, status boleh diupdate |
-| `photoId`, `verdict` | `photo_id`, `verdict` | Untuk disimpan/dilacak |
+| `decided` | `decided` | `false` = belum ada keputusan (engine mati/lambat/error/`202`) → fail-open: simpan foto asli, status boleh diupdate |
+| `photoId`, `verdict` | `photo_id`, `verdict` | Untuk disimpan/dilacak (misal untuk `reportStored`) |
 | `error` (opsional) | `error` (opsional) | Pesan error jika engine tidak memberi hasil |
 
-Status pengiriman milik aplikasi pengiriman; engine tidak pernah mengubahnya. Butuh seluruh hasil? Pakai
-`analyzeObject` / `analyzeFile` (objek foto lengkap di `r.photo` / `$r['data']`, termasuk `allow_status_update`,
-`courier_message`, `stored`, `retake_required`, `reasons`), lalu `toDecision(...)` untuk keputusan yang sama.
+| Method | TypeScript | PHP |
+|---|---|---|
+| Kirim file (utama) | `checkFile(file, filename, fields, { timeoutMs, objectKey, bucket })` | `checkFile($path, $fields, $timeoutMs = 3000, $objectKey = null, $bucket = null)` |
+| Foto sudah di SILO | `checkObject(objectKey, fields, { timeoutMs, bucket })` | `checkObject($objectKey, $fields, $timeoutMs = 3000, $bucket = null)` |
+| Laporkan lokasi SILO | `reportStored(photoId, objectKey, bucket?)` | `reportStored($photoId, $objectKey, $bucket = null)` |
+| Hasil lengkap | `analyzeFile(file, filename, fields, { timeoutMs, objectKey, bucket })`, `analyzeObject(...)` | `analyzeFile($path, $fields, $syncTimeoutMs = 3000, $objectKey = null, $bucket = null)`, `analyzeObject(...)` |
+
+Status pengiriman dan penyimpanan foto milik aplikasi pengiriman; engine tidak pernah mengubahnya. Butuh seluruh
+hasil? Pakai `analyzeObject` / `analyzeFile` (objek foto lengkap di `r.photo` / `$r['data']`, termasuk
+`allow_status_update`, `courier_message`, `output_image`, `object`, `retake_required`, `reasons`), lalu
+`toDecision(...)` untuk keputusan yang sama.
 
 ## Kenapa versi minimal ini?
 

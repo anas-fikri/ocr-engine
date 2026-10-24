@@ -303,7 +303,10 @@ def cmd_migrate_legacy(a) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    from engine import __version__
+
     ap = argparse.ArgumentParser(prog="pqe", description="Photo Quality Engine")
+    ap.add_argument("--version", action="version", version=f"pqe {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def add(name, fn, help_):

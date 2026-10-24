@@ -81,7 +81,7 @@ function setMode(m) {
   });
   $("#sim-fields").classList.toggle("hidden", m !== "sim");
   $("#mode-desc").innerHTML = m === "sim"
-    ? `Sama seperti aplikasi asli ("scan dulu"): foto dikirim ke engine, diperiksa, lalu hanya yang diterima disimpan ke SILO. Kurir menunggu maks. ${SYNC_TIMEOUT_MS / 1000} detik. Foto muncul di Web UI dan evidence resi uji.`
+    ? `Sama seperti aplikasi asli: foto dikirim ke engine, diperiksa dan dioptimasi, lalu engine mengembalikan keputusan + foto hasil. Kurir menunggu maks. ${SYNC_TIMEOUT_MS / 1000} detik. Di aplikasi asli, <b>aplikasi</b> yang menyimpan foto ke SILO; halaman ini tidak menyimpan foto ke mana pun (hasil analisis tetap tercatat di Web UI).`
     : `Hanya dianalisis, <b>tidak disimpan</b> ke mana pun. Cocok untuk mencoba banyak foto dengan cepat.` +
       (canSim ? "" : ` <br>${!$("#tenant").value ? "Pilih tenant untuk simulasi." : "Role viewer hanya bisa uji cepat."}`);
 }
@@ -192,12 +192,13 @@ async function runSim(run, source) {
     ...(pos ? { lat: pos.lat, lng: pos.lng } : {}) };
   for (const [k, v] of Object.entries(fields)) if (v !== "" && v != null) fd.append(k, v);
   run.awb = fields.awb;
-  const q = new URLSearchParams({ tenant: run.tenant, sync: "true", timeout_ms: String(SYNC_TIMEOUT_MS), lang: $("#lang").value });
+  const q = new URLSearchParams({ tenant: run.tenant, timeout_ms: String(SYNC_TIMEOUT_MS), lang: $("#lang").value });
   const t0 = performance.now();
   const first = await api("/v1/analyze?" + q, { method: "POST", body: fd });
   run.waitMs = performance.now() - t0;
   run.timedOut = first.status === 202;
   let p = first.data;
+  const out = p.output_image; // foto yang akan disimpan aplikasi ke SILO (null = ditolak / engine belum menjawab)
   const deadline = Date.now() + 60000;
   while (p.status === "pending" && Date.now() < deadline) { // hasil menyusul (aplikasi asli: lewat webhook)
     $("#result").querySelector(".busy").innerHTML = `<div class="spinner"></div>Engine belum selesai dalam ${SYNC_TIMEOUT_MS / 1000} dtk. Aplikasi asli sudah lanjut (fail-open); menunggu hasil untuk ditampilkan...`;
@@ -209,10 +210,8 @@ async function runSim(run, source) {
   run.r = d; run.photoId = d.id;
   run.compression = d.compression; run.enhancement = d.enhancement; run.image = d.image; run.exif = d.exif;
   run.serverMs = d.duration_ms;
-  try { // lewat engine, karena HP belum tentu bisa menjangkau host SILO
-    const res = await api(`/v1/photos/${d.id}/file?variant=processed`, { raw: true });
-    run.outUrl = URL.createObjectURL(await res.blob());
-  } catch { run.outUrl = null; }
+  run.output = out || null;
+  run.outUrl = out ? `data:${out.content_type};base64,${out.base64}` : null;
 }
 
 /* ---------------- tampilan ---------------- */
@@ -255,8 +254,9 @@ function courierScreen(run) {
       (r.verdict !== "PASS" ? `<p class="note">Mode shadow: engine mencatat ${esc(r.verdict)}, tetapi kurir tidak melihat pesan apa pun.</p>` : "");
   }
   const saved = run.mode === "quick" ? "Uji cepat: foto tidak disimpan ke mana pun."
-    : allow ? (r.stored ? "Foto disimpan engine ke SILO, link dikirim ke aplikasi." : "Foto disimpan aplikasi ke SILO (fail-open).")
-      : "Foto TIDAK disimpan sebagai foto pengiriman.";
+    : allow ? (run.output ? "Aplikasi menyimpan foto hasil engine ke SILO, lalu mengupdate status."
+      : "Engine tidak menjawab: aplikasi menyimpan foto asli ke SILO (fail-open).")
+      : "Foto TIDAK disimpan; kurir diminta foto ulang.";
   const status = allow
     ? `<div class="msg ok" style="padding:8px 12px"><span>Status pengiriman: <b>diupdate</b> oleh aplikasi pengiriman.<br><span class="small">${esc(saved)}</span></span></div>`
     : `<div class="msg reject" style="padding:8px 12px"><span>Status pengiriman: <b>TIDAK diupdate</b> sampai foto ulang diterima.<br><span class="small">${esc(saved)}</span></span></div>`;
@@ -275,9 +275,9 @@ function render(run) {
   const r = run.r, c = run.compression || {}, en = run.enhancement || {}, img = run.image || {}, ex = run.exif || {};
   const reasons = (r.reasons || []).map((x) => `<div class="reason ${esc(x.severity)}"><b>${esc(x.message || x.code)}</b> <span class="muted small">${esc(x.code)} · ${esc(x.severity)}${x.score != null ? ` · skor ${Math.round(x.score)}` : ""}</span>${x.suggestion ? `<div class="small">${esc(x.suggestion)}</div>` : ""}</div>`).join("") || `<p class="muted">Tidak ada catatan.</p>`;
   const outCaption = run.outUrl
-    ? `Hasil engine (yang disimpan &amp; dipakai evidence): ${kb(c.output_bytes)}${c.width ? `, ${c.width}×${c.height}` : ""}${en.applied ? " · diperbaiki otomatis" : ""}`
-    : run.mode === "sim" && !r.stored ? "Ditolak: tidak dibuat versi foto pengiriman, tidak disimpan sebagai foto pengiriman."
-      : (c.passthrough ? "Foto sudah kecil, disimpan apa adanya tanpa kompresi." : "Versi hasil tidak tersedia.");
+    ? `Hasil engine (yang disimpan aplikasi ke SILO): ${kb(run.output ? run.output.bytes : c.output_bytes)}${c.width ? `, ${c.width}×${c.height}` : ""}${run.output && !run.output.optimized ? " · foto asli, sudah memenuhi syarat" : ""}${en.applied ? " · diperbaiki otomatis" : ""}`
+    : run.mode === "sim" && !run.timedOut ? "Ditolak: engine tidak mengembalikan foto untuk disimpan."
+      : (c.passthrough ? "Foto sudah kecil, dipakai apa adanya tanpa kompresi." : "Versi hasil tidak tersedia.");
   const evid = r.evidence_eligible == null ? null : r.evidence_eligible;
   $("#result").innerHTML = `<h2><span class="num">3</span> Hasil ${badge(r.verdict)}</h2>
     <h3>Yang dilihat kurir</h3>${courierScreen(run)}
@@ -291,7 +291,7 @@ function render(run) {
       <div class="fact"><div class="l">Proses engine</div><div class="v">${ms(run.serverMs)}</div></div>
       <div class="fact"><div class="l">Ukuran</div><div class="v">${kb(img.bytes || run.file.size)} → ${kb(c.output_bytes)}</div></div>
       ${evid == null ? "" : `<div class="fact"><div class="l">Masuk evidence</div><div class="v">${evid ? "Ya" : "Tidak"}</div></div>`}
-      ${run.mode === "sim" ? `<div class="fact"><div class="l">Link SILO (stored)</div><div class="v small" style="word-break:break-all">${r.stored ? esc(r.stored.bucket + "/" + r.stored.key) : "tidak ada (ditolak)"}</div></div>` : ""}
+      ${run.mode === "sim" ? `<div class="fact"><div class="l">Foto untuk disimpan aplikasi</div><div class="v small">${run.output ? `${kb(run.output.bytes)} ${run.output.optimized ? "(dioptimasi)" : "(asli)"}` : run.timedOut ? "engine belum menjawab: foto asli" : "tidak ada (ditolak)"}</div></div>` : ""}
     </div>
     ${r.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">Kualitas tidak memenuhi syarat. Engine tidak memanipulasi gambar, jadi foto harus diambil ulang.</div></div>` : ""}
     ${en.applied ? `<div class="reason info"><b>Diperbaiki otomatis (tanpa AI)</b><div class="small">${esc((en.operations || []).join(", "))}. Sebelum: ${esc(en.before && en.before.verdict)} → sesudah: ${esc(r.verdict)}. Terverifikasi: hanya kurva pencahayaan global, tidak ada teks/angka yang berubah.</div></div>`
@@ -306,20 +306,13 @@ function render(run) {
       : c.quality == null ? "Sudah di bawah target; hasil perbaikan disimpan sebagai file JPEG baru (foto asli tetap utuh)."
       : `Quality ${esc(c.quality)}, SSIM ${esc(c.ssim)}, ${c.target_met ? "target tercapai" : "target belum tercapai"}.`}</p>
     <h3>EXIF</h3><p class="small">${ex.make || ex.model ? `${esc(ex.make || "")} ${esc(ex.model || "")}` : "Tidak ada data kamera"}${ex.datetime_original ? ` · diambil ${esc(new Date(ex.datetime_original).toLocaleString("id-ID"))}` : ""}${ex.gps_lat != null ? " · ada GPS" : ""}${!ex.make ? " <span class='muted'>(wajar untuk kamera langsung di browser, screenshot, atau file hasil edit)</span>" : ""}</p>
-    ${run.photoId ? `<div class="actions"><a class="btn" href="./#/photos?awb=${encodeURIComponent(run.awb || "")}&id=${encodeURIComponent(run.photoId)}" target="_blank">Buka di Web UI</a>
-      <button class="secondary" id="btn-pdf">Evidence PDF resi ini</button></div>` : ""}
-    <details style="margin-top:12px"><summary class="muted">JSON lengkap (respons API)</summary><pre class="json">${esc(JSON.stringify({ ...r, output_image: r.output_image ? "(data URL)" : r.output_image }, null, 2))}</pre></details>`;
+    ${run.photoId ? `<div class="actions"><a class="btn" href="./#/photos?awb=${encodeURIComponent(run.awb || "")}&id=${encodeURIComponent(run.photoId)}" target="_blank">Buka di Web UI</a></div>
+      <p class="muted small">Di Web UI foto uji tampil tanpa gambar, karena halaman ini tidak menyimpan foto ke SILO (di aplikasi asli, aplikasi yang menyimpan).</p>` : ""}
+    <details style="margin-top:12px"><summary class="muted">JSON lengkap (respons API)</summary><pre class="json">${esc(JSON.stringify({ ...r, output_image: run.output ? { ...run.output, base64: `(${run.output.bytes} byte base64)` } : r.output_image ? "(data URL)" : null }, null, 2))}</pre></details>`;
   $("#result").querySelectorAll("[data-act]").forEach((b) => (b.onclick = () => {
     if (b.dataset.act === "retake") return $("#btn-native").click();
     toast("Di aplikasi asli: foto diterima, aplikasi pengiriman mengupdate status pengiriman.");
   }));
-  const pdf = $("#btn-pdf");
-  if (pdf) pdf.onclick = async () => {
-    try {
-      const res = await api(`/v1/evidence/${encodeURIComponent(run.awb)}/pdf`, { raw: true });
-      window.open(URL.createObjectURL(await res.blob()), "_blank");
-    } catch (e) { toast(r.evidence_eligible ? e.message : "Foto ini tidak masuk evidence (REJECT), jadi PDF resi ini kosong / tidak tersedia.", true); }
-  };
 }
 
 function renderHistory() {
@@ -334,4 +327,5 @@ $("#logout").onclick = () => { saveKey(null); showLogin(); };
 $("#tenant").onchange = async () => { setMode(state.mode); await loadProfiles(); };
 document.querySelectorAll("#mode-seg button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
 window.addEventListener("pagehide", stopStream);
+fetch("/healthz").then((r) => r.json()).then((h) => document.querySelectorAll("[data-version]").forEach((el) => (el.textContent = `v${h.version}`))).catch(() => {});
 boot();

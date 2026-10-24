@@ -279,8 +279,8 @@ class BackupSettingsIn(BaseModel):
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
     s3_addressing_style: Literal["auto", "path", "virtual"] | None = None
+    include_photos: bool | None = None
     include_upload_originals: bool | None = None
-    include_app_originals: bool | None = None
     include_processed: bool | None = None
     include_thumbs: bool | None = None
     include_database: bool | None = None
@@ -370,7 +370,6 @@ def put_storage_settings(body: StorageSettingsIn, principal: Admin):
 
 @router.post("/settings/storage/test", summary="Uji koneksi SILO (dengan nilai form, sebelum disimpan)")
 def test_storage_settings(body: StorageSettingsIn, _: Admin):
-    import uuid as _uuid
 
     from botocore.exceptions import ClientError
 
@@ -399,14 +398,13 @@ def test_storage_settings(body: StorageSettingsIn, _: Admin):
         return f"bisa di-list ({len(sample)} objek contoh)"
 
     run(f"Baca bucket aplikasi '{settings.aws_bucket}'", read_check)
-    probe = f"_pqe_connection_test/{_uuid.uuid4().hex}.txt"
 
-    def write_check():
-        st.put(settings.engine_bucket_processed, probe, b"ok", "text/plain")
-        st.delete(settings.engine_bucket_processed, probe)
-        return "tulis & hapus berhasil"
+    def get_check():
+        first = next(iter(st.list(settings.aws_bucket)), None)
+        if first is None:
+            return "bucket kosong, tidak ada foto untuk dicoba"
+        st.head(settings.aws_bucket, first.key)
+        return "bisa diunduh (Web UI, evidence, backup NAS)"
 
-    run(f"Tulis bucket hasil kompres '{settings.engine_bucket_processed}'", write_check)
-    for label, b in (("thumbnail", settings.engine_bucket_thumb), ("upload", settings.engine_bucket_upload)):
-        run(f"Akses bucket {label} '{b}'", lambda b=b: st.ping(b) and "ada & bisa diakses")
+    run("Baca isi foto", get_check)
     return {"ok": all(c["ok"] for c in checks), "endpoint": settings.aws_endpoint, "checks": checks}

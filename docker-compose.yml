@@ -70,7 +70,7 @@ services:
       PQE_ENV: development
       PQE_BOOTSTRAP_ADMIN_KEY: ${PQE_BOOTSTRAP_ADMIN_KEY:-pqe_local_admin_change_me}
       PQE_S3_EVENT_TOKEN: ${PQE_S3_EVENT_TOKEN:-local-event-token}
-      # kunci enkripsi rahasia yang disimpan lewat Web UI (Pengaturan SILO). Ganti di server!
+      # kunci enkripsi rahasia yang disimpan lewat Web UI (Koneksi SILO). Ganti di server!
       PQE_SECRET_KEY: ${PQE_SECRET_KEY:-local-secret-key-change-me}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
       PQE_WORKER_CONCURRENCY: ${PQE_WORKER_CONCURRENCY:-2}

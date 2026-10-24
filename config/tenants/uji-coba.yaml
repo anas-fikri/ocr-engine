@@ -7,7 +7,6 @@ name: Uji Coba (halaman kamera)
 default_lang: id
 timezone: Asia/Jakarta
 retention_days: 30            # data percobaan cukup disimpan 30 hari
-store_mode: processed
 review_required: false
 default_profile: pod_recipient
 

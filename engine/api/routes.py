@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import concurrent.futures
-import posixpath
+import json
 import time
-import uuid
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal
 
@@ -21,12 +21,13 @@ from engine.api.common import api_error, request_lang
 from engine.db import AuditLog, Photo, Review, session_scope, utcnow
 from engine.evidence import build_pdf, eligible_photos, evidence_item
 from engine.i18n import all_reason_codes, courier_message, localize_reasons, reason_text, retake_text
-from engine.imaging.loader import UnreadableImage
+from engine.imaging.compressor import thumbnail
+from engine.imaging.loader import UnreadableImage, load_image
 from engine.ingestor import handle_s3_event
-from engine.jobs import claim_photo_job, enqueue_object, requeue_photo
+from engine.jobs import UNSTORED_BUCKET, claim_photo_job, enqueue_object, record_upload, requeue_photo
 from engine.mapping import map_metadata
 from engine.pipeline import analyze
-from engine.processor import execute_job, queue_photo_event
+from engine.processor import bind_location, execute_job, process_upload, queue_photo_event
 from engine.serializers import photo_to_dict
 from engine.settings import get_settings
 from engine.storage import ObjectNotFound, get_storage
@@ -36,7 +37,6 @@ from engine.tenants import TenantNotFound, registry
 router = APIRouter(prefix="/v1")
 _sync_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="sync-analyze")
 
-ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp"}
 
 
 class PhotoFields(BaseModel):
@@ -131,16 +131,20 @@ async def analyze_upload(
     lng: Annotated[float | None, Form()] = None,
     source: Annotated[str | None, Form()] = None,
     external_id: Annotated[str | None, Form()] = None,
+    object_key: Annotated[str | None, Form(description="Key SILO tempat APLIKASI akan menyimpan foto ini jika "
+                                                       "diterima (opsional, untuk Web UI & evidence)")] = None,
+    bucket: Annotated[str | None, Form(description="Bucket untuk object_key (default: AWS_BUCKET)")] = None,
 ):
     """Dua cara pemakaian:
 
-    1. **Upload file** (`multipart/form-data`, field `file` + metadata opsional). File disimpan engine ke
-       bucket upload tenant lalu dianalisis.
-    2. **Referensi objek** (`application/json`, lihat `AnalyzeObjectRequest`): aplikasi sudah upload ke
-       SILO, engine cukup diberi `object_key`. Paling hemat kuota data kurir.
+    Engine **hanya memproses gambar**: tidak pernah menyimpan ke SILO. Penyimpanan dikerjakan aplikasi.
 
-    Default async: respons `202` + `poll_url`. Dengan `sync=true`, engine menunggu hasil hingga
-    `timeout_ms` (default 3000). Jika lewat, respons tetap `202` (fail-open) dan hasil menyusul.
+    1. **Upload file** (`multipart/form-data`, field `file` + metadata opsional). Selalu dianalisis langsung
+       (paling lama `timeout_ms`, default 3000). Foto diterima -> `output_image` berisi foto yang disimpan
+       aplikasi ke SILO (base64). Foto ditolak -> `output_image: null`. Lewat batas waktu -> `202`,
+       `allow_status_update: true` (fail-open), aplikasi menyimpan foto aslinya.
+    2. **Referensi objek** (`application/json`, lihat `AnalyzeObjectRequest`): foto sudah disimpan aplikasi
+       di SILO, engine hanya membacanya. Default async (`202` + `poll_url`); `sync=true` menunggu hasil.
     """
     st = get_settings()
     code = _resolve_tenant(principal, tenant)
@@ -163,30 +167,41 @@ async def analyze_upload(
                            mapped=map_metadata(cfg.mapping, body.object_key, head["metadata"], fields),
                            retention_days=cfg.retention_days, tz=cfg.timezone)
     elif file is not None:
-        data = await file.read()
-        if len(data) > st.max_upload_mb * 1024 * 1024:
-            raise api_error(413, "FILE_TOO_LARGE", f"maksimal {st.max_upload_mb} MB")
-        if not data:
-            raise api_error(422, "EMPTY_FILE", "file kosong")
-        ext = posixpath.splitext(file.filename or "")[1].lower()
-        ext = ext if ext in ALLOWED_EXT else ".jpg"
-        fields = PhotoFields(awb=awb, photo_type=photo_type, courier_id=courier_id, customer_id=customer_id,
-                             branch=branch, captured_at=captured_at, lat=lat, lng=lng,
-                             source=source if source in ("camera", "gallery") else None,
-                             external_id=external_id).as_fields()
-        bucket = cfg.upload_bucket or get_storage().s.engine_bucket_upload
-        key = f"{code}/{utcnow():%Y/%m/%d}/{uuid.uuid4().hex}{ext}"
-        get_storage().put(bucket, key, data, file.content_type or "application/octet-stream",
-                          {k.replace("_", "-"): v for k, v in fields.items()})
-        r = enqueue_object(code, bucket, key, ingest_source="upload", fields=fields,
-                           mapped=map_metadata(cfg.mapping, key, None, fields),
-                           retention_days=cfg.retention_days, tz=cfg.timezone)
+        return await _analyze_file(code, cfg, file, timeout_ms or st.sync_timeout_ms,
+                                   request_lang(request, lang), PhotoFields(
+            awb=awb, photo_type=photo_type, courier_id=courier_id, customer_id=customer_id, branch=branch,
+            captured_at=captured_at, lat=lat, lng=lng, source=source if source in ("camera", "gallery") else None,
+            external_id=external_id).as_fields(), object_key, bucket)
     else:
         raise api_error(422, "NO_INPUT", "kirim file (multipart) atau JSON berisi object_key")
 
     if sync:
         _run_sync(r.photo_id, timeout_ms or st.sync_timeout_ms)
     return _photo_response(r.photo_id, request_lang(request, lang))
+
+
+async def _analyze_file(code: str, cfg, file: UploadFile, timeout_ms: int, lang: str,
+                        fields: dict[str, Any], object_key: str | None, bucket: str | None) -> JSONResponse:
+    st = get_settings()
+    data = await file.read()
+    if len(data) > st.max_upload_mb * 1024 * 1024:
+        raise api_error(413, "FILE_TOO_LARGE", f"maksimal {st.max_upload_mb} MB")
+    if not data:
+        raise api_error(422, "EMPTY_FILE", "file kosong")
+    if object_key:
+        fields = {**fields, "object_key": object_key.lstrip("/"), **({"bucket": bucket} if bucket else {})}
+    photo_id = record_upload(code, fields=fields, mapped=map_metadata(cfg.mapping, object_key or "", None, fields),
+                             retention_days=cfg.retention_days, tz=cfg.timezone)
+    fut = _sync_pool.submit(process_upload, photo_id, data, file.content_type)
+    output = None
+    try:
+        _, output = await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(fut)), timeout_ms / 1000)
+    except TimeoutError:
+        pass  # tetap selesai di background; aplikasi lanjut menyimpan foto aslinya (fail-open)
+    resp = _photo_response(photo_id, lang)
+    body = json.loads(resp.body)
+    body["output_image"] = output.to_dict() if output else None
+    return JSONResponse(body, status_code=resp.status_code)
 
 
 @router.post("/analyze/preview", summary="Coba analisis tanpa menyimpan apa pun (kalibrasi & onboarding)")
@@ -313,31 +328,61 @@ class ReviewRequest(BaseModel):
 REVIEW_STATUS = {"approve": "approved", "request_retake": "retake_requested", "mark_fraud": "fraud", "reset": "none"}
 
 
-@router.get("/photos/{photo_id}/file", summary="Unduh file foto lewat engine (tanpa akses langsung ke SILO)")
+@router.get("/photos/{photo_id}/file", summary="Lihat foto lewat engine (dibaca dari SILO aplikasi)")
 def get_photo_file(
     photo_id: str,
     principal: Annotated[Principal, Depends(require("admin", "ops", "viewer", "app"))],
     variant: Annotated[Literal["original", "processed", "thumbnail"], Query()] = "processed",
 ):
-    """Berguna jika browser/HP tidak bisa menjangkau host SILO (presigned URL). Foto yang tidak perlu
-    dikompres (`passthrough`) memakai file original sebagai `processed`."""
+    """Engine tidak menyimpan foto. File dibaca dari lokasi SILO tempat aplikasi menyimpannya (`object`);
+    `thumbnail` dibuat saat diminta. Foto lama (sebelum versi ini) yang punya salinan di bucket engine tetap
+    bisa dibuka. Foto ditolak / belum dilaporkan lokasinya -> 404."""
     with session_scope() as s:
         p = _get_photo_for(principal, photo_id, s)
-        passthrough = bool((p.compression or {}).get("passthrough"))
+        original = (p.bucket, p.object_key) if p.bucket != UNSTORED_BUCKET else (None, None)
         loc = {
-            "original": (p.bucket, p.object_key),
-            "processed": (p.processed_bucket, p.processed_key) if p.processed_key else
-                         ((p.bucket, p.object_key) if passthrough else (None, None)),
-            "thumbnail": (p.thumb_bucket, p.thumb_key),
+            "original": original,
+            "processed": (p.processed_bucket, p.processed_key) if p.processed_key else original,
+            "thumbnail": (p.thumb_bucket, p.thumb_key) if p.thumb_key else original,
         }[variant]
+        make_thumb = variant == "thumbnail" and not p.thumb_key
+        profile = registry.get(p.tenant_code).config.resolve_profile(p.profile)[1] if make_thumb else None
     if not loc[1]:
-        raise api_error(404, "FILE_NOT_FOUND", f"foto ini tidak punya versi {variant}")
+        raise api_error(404, "FILE_NOT_FOUND", "foto ini tidak disimpan di SILO (ditolak, atau aplikasi belum "
+                                               "melaporkan lokasinya)")
     try:
         obj = get_storage().get(*loc)
     except ObjectNotFound as e:
-        raise api_error(404, "FILE_NOT_FOUND", f"file {variant} tidak ada di SILO") from e
+        raise api_error(404, "FILE_NOT_FOUND", f"file tidak ada di SILO ({loc[0]}/{loc[1]})") from e
+    if make_thumb:
+        try:
+            return Response(thumbnail(load_image(obj.data), profile.thumbnail), media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=3600"})
+        except UnreadableImage as e:
+            raise api_error(422, "UNREADABLE_FILE", str(e)) from e
     return Response(obj.data, media_type=obj.content_type or "application/octet-stream",
                     headers={"Cache-Control": "private, max-age=300"})
+
+
+class StoredLocation(BaseModel):
+    object_key: str = Field(..., description="Key tempat aplikasi menyimpan foto di SILO")
+    bucket: str | None = Field(None, description="Default: AWS_BUCKET")
+
+
+@router.post("/photos/{photo_id}/stored", summary="Laporkan lokasi SILO tempat aplikasi menyimpan foto")
+def report_stored(
+    photo_id: str,
+    body: StoredLocation,
+    principal: Annotated[Principal, Depends(require("app", "admin", "ops"))],
+    lang: Annotated[str | None, Query(pattern="^(id|en)$")] = None,
+    request: Request = None,
+):
+    """Opsional, jika `object_key` belum diketahui saat memanggil `/v1/analyze`. Dipakai Web UI, evidence, dan
+    backup NAS untuk membaca foto (read-only). Engine tidak memeriksa atau mengubah file di SILO."""
+    with session_scope() as s:
+        p = _get_photo_for(principal, photo_id, s)
+        bind_location(s, p, body.bucket or get_storage().s.aws_bucket, body.object_key.lstrip("/"))
+    return _photo_response(photo_id, request_lang(request, lang))
 
 
 @router.post("/photos/{photo_id}/review", summary="Keputusan ops atas foto")
@@ -364,6 +409,9 @@ def review_photo(
 def reprocess_photo(photo_id: str, principal: Annotated[Principal, Depends(require("admin", "ops"))]):
     with session_scope() as s:
         p = _get_photo_for(principal, photo_id, s)
+        if p.bucket == UNSTORED_BUCKET:
+            raise api_error(409, "NOT_STORED", "foto ini tidak disimpan di SILO (ditolak, atau aplikasi belum "
+                                               "melaporkan lokasinya), jadi tidak bisa dianalisis ulang")
         requeue_photo(p.id, s)
         s.add(AuditLog(actor=principal.actor, action="photo.reprocess", target=p.id))
     return {"id": photo_id, "status": "pending"}
@@ -544,5 +592,7 @@ def meta_profiles(
 
 @router.get("/me", summary="Info API key yang sedang dipakai")
 def me(principal: Annotated[Principal, Depends(current_principal)]):
+    from engine import __version__
+
     return {"name": principal.name, "role": principal.role, "tenant": principal.tenant_code,
-            "customer_id": principal.customer_id}
+            "customer_id": principal.customer_id, "version": __version__}

@@ -41,10 +41,10 @@ check("checkObject engine mati -> status boleh diupdate", dDown.allowStatusUpdat
 const photo = (extra: Record<string, unknown>) => ({ ok: true as const, status: 200, data: { id: "p1", status: "done", verdict: "REJECT", action: "reject", reasons: [], scores: {}, awb: null, photo_type: null, verdict_text: null, ...extra } as any });
 const dReject = toDecision(photo({ allow_status_update: false, courier_message: "Wajib foto ulang. Foto buram.", retake_required: true }));
 check("REJECT enforce -> status ditahan + pesan", !dReject.allowStatusUpdate && dReject.decided && dReject.message === "Wajib foto ulang. Foto buram." && dReject.retakeRequired);
-const dPass = toDecision(photo({ verdict: "PASS", action: "log", allow_status_update: true, courier_message: null, stored: { bucket: "b", key: "k.jpg", url: "https://s3/b/k.jpg" } }));
-check("PASS -> status boleh, tanpa pesan, ada link", dPass.allowStatusUpdate && dPass.message === null && dPass.stored?.url === "https://s3/b/k.jpg");
-check("REJECT -> tanpa link", dReject.stored === null);
-check("engine mati -> tanpa link (simpan sendiri)", dDown.stored === null);
+const dPass = toDecision(photo({ verdict: "PASS", action: "log", allow_status_update: true, courier_message: null, output_image: { content_type: "image/jpeg", bytes: 3, optimized: true, sha256: "x", base64: "/9j/" } }));
+check("PASS -> status boleh, tanpa pesan, ada foto untuk disimpan", dPass.allowStatusUpdate && dPass.message === null && dPass.image?.contentType === "image/jpeg" && dPass.image.data.length === 3 && dPass.image.data[0] === 0xff);
+check("REJECT -> tanpa foto", dReject.image === null);
+check("engine mati -> tanpa foto (simpan foto asli)", dDown.image === null);
 const dPending = toDecision({ ok: true, status: 202, data: { id: "p2", status: "pending" } as any });
 check("lewat 3 detik (pending) -> fail-open", dPending.allowStatusUpdate && !dPending.decided && dPending.photoId === "p2");
 
@@ -52,10 +52,15 @@ const { PQE_URL, PQE_API_KEY, PQE_SAMPLE } = process.env;
 if (PQE_URL && PQE_API_KEY && PQE_SAMPLE) {
   const pqe = new PhotoQualityClient({ baseUrl: PQE_URL, apiKey: PQE_API_KEY, lang: "id" });
   const file = new Blob([readFileSync(PQE_SAMPLE)], { type: "image/jpeg" });
-  const res = await pqe.analyzeFile(file, "sample.jpg", { awb: "TS-TEST", source: "camera" }, { sync: true });
-  check("analyzeFile sync", res.ok && !!res.photo?.verdict, res.ok ? `${res.photo?.verdict} ${res.photo?.reasons[0]?.message ?? ""}` : res.error);
+  const res = await pqe.analyzeFile(file, "sample.jpg", { awb: "TS-TEST", source: "camera" });
+  check("analyzeFile", res.ok && !!res.photo?.verdict, res.ok ? `${res.photo?.verdict} ${res.photo?.reasons[0]?.message ?? ""}` : res.error);
   const d = await pqe.checkFile(file, "sample2.jpg", { awb: "TS-TEST-2", source: "camera" });
-  check("checkFile", d.decided && typeof d.allowStatusUpdate === "boolean", JSON.stringify(d));
+  check("checkFile", d.decided && typeof d.allowStatusUpdate === "boolean", String(d.verdict));
+  if (d.allowStatusUpdate && d.photoId) {
+    check("foto untuk disimpan", !!d.image && d.image.data.length > 0);
+    const rep = await pqe.reportStored(d.photoId, "ts-test/TS-TEST-2.jpg");
+    check("reportStored", rep.ok && (rep.photo?.object as any)?.key === "ts-test/TS-TEST-2.jpg");
+  }
   if (res.ok) {
     const got = await pqe.getPhoto(res.photo!.id);
     check("getPhoto", got.ok && got.photo?.id === res.photo!.id);

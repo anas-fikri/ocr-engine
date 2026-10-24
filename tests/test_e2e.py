@@ -58,12 +58,13 @@ def test_polling_flow_end_to_end(client, admin_headers, samples, hooks):
     assert r.status_code == 200, r.text
     good = r.json()["items"][0]
     assert good["verdict"] == "PASS" and good["courier_id"] == "K1" and good["photo_type"] == "pod_recipient"
-    assert good["urls"]["processed"] and good["urls"]["thumbnail"]
-
-    detail = client.get(f"/v1/photos/{good['id']}", headers=admin_headers).json()
-    assert detail["compression"]["output_bytes"] <= 1_000_000 < detail["compression"]["original_bytes"]
-    processed = httpx.get(detail["urls"]["processed"])
-    assert processed.status_code == 200 and len(processed.content) == detail["compression"]["output_bytes"]
+    # polling hanya membaca SILO aplikasi: tidak ada salinan di bucket engine, foto dibuka dari lokasi aslinya
+    assert good["urls"]["original"] == good["urls"]["processed"] and good["urls"]["thumbnail"] is None
+    assert httpx.get(good["urls"]["original"]).status_code == 200
+    for b in ("photos-processed", "photos-thumb", "photos-upload"):
+        assert not list(get_storage().list(b))
+    thumb = client.get(f"/v1/photos/{good['id']}/file", params={"variant": "thumbnail"}, headers=admin_headers)
+    assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/jpeg"
 
     bad = client.get("/v1/photos", params={"awb": "AWB200"}, headers={**admin_headers, "Accept-Language": "en"})
     bad = bad.json()["items"][0]
@@ -173,9 +174,29 @@ def test_api_upload_sync_and_object_reference(client, admin_headers, samples):
     assert r.status_code == 200, r.text
     assert r.json()["photo_type"] == "pod_document" and r.json()["external_id"] == "foto-77"
 
-    # async default -> 202 + poll_url
-    r = client.post("/v1/analyze", headers=app_h, files={"file": ("a.jpg", samples["pass_small_ok"], "image/jpeg")})
-    assert r.status_code == 202 and r.json()["poll_url"].startswith("/v1/photos/")
+    # upload file selalu dianalisis langsung (tanpa sync=true); engine tidak menulis apa pun ke SILO
+    before = {b: sum(1 for _ in get_storage().list(b)) for b in ("photos-upload", "photos-processed", "photos-thumb")}
+    r = client.post("/v1/analyze", headers=app_h, files={"file": ("a.jpg", samples["pass_huge_camera"], "image/jpeg")},
+                    data={"awb": "AWB602"})
+    assert r.status_code == 200, r.text
+    ok = r.json()
+    assert ok["allow_status_update"] is True and ok["object"] is None  # aplikasi belum melaporkan lokasinya
+    out = ok["output_image"]
+    assert out["optimized"] is True and out["bytes"] < 1024 * 1024 and out["content_type"].startswith("image/")
+    after = {b: sum(1 for _ in get_storage().list(b)) for b in before}
+    assert after == before
+    # aplikasi menyimpan foto ke SILO sendiri, lalu (opsional) melaporkan lokasinya
+    import base64
+
+    get_storage().put("app-photos", "pod/AWB602.jpg", base64.b64decode(out["base64"]), out["content_type"],
+                      allow_foreign=True)
+    r = client.post(f"/v1/photos/{ok['id']}/stored", headers=app_h, json={"object_key": "pod/AWB602.jpg"})
+    assert r.status_code == 200 and r.json()["object"] == {"bucket": "app-photos", "key": "pod/AWB602.jpg"}
+    thumb = client.get(f"/v1/photos/{ok['id']}/file", params={"variant": "thumbnail"}, headers=admin_headers)
+    assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/jpeg"
+    # foto yang tidak disimpan aplikasi: tidak ada file, tidak bisa dianalisis ulang
+    assert client.get(f"/v1/photos/{dark['id']}/file", headers=admin_headers).status_code == 404
+    assert client.post(f"/v1/photos/{dark['id']}/reprocess", headers=admin_headers).status_code == 409
 
     # app key tidak bisa mengakses tenant lain / endpoint admin
     assert client.post("/v1/analyze", params={"tenant": "lain"}, headers=app_h,

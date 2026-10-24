@@ -3,8 +3,8 @@
 #   cp .env.example .env        # isi AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY service account engine
 #   docker compose -f docker-compose.remote-silo.yml up -d --build
 #
-# Engine hanya MEMBACA bucket aplikasi (AWS_BUCKET) dan MENULIS ke bucket engine
-# (ENGINE_BUCKET_PROCESSED / ENGINE_BUCKET_THUMB / ENGINE_BUCKET_UPLOAD) yang dibuat tim infra.
+# Engine hanya MEMBACA bucket aplikasi (AWS_BUCKET); engine tidak pernah menyimpan foto ke SILO.
+# Service account cukup izin s3:GetObject + s3:ListBucket.
 
 name: photo-quality-engine-remote
 

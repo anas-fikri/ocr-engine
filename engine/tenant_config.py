@@ -114,11 +114,12 @@ class TenantConfig(_Strict):
     default_lang: Literal["id", "en"] = "id"
     timezone: str = "Asia/Jakarta"
     retention_days: int = 1095
+    # tidak dipakai lagi: engine tidak menyimpan apa pun ke SILO (ADR 0006); tetap diterima agar config lama valid
     store_mode: Literal["processed", "none"] = "processed"
     # false (default): foto PASS & WARN langsung masuk evidence, review ops opsional.
     # true: foto WARN baru masuk evidence setelah di-approve ops.
     review_required: bool = False
-    upload_bucket: str | None = None
+    upload_bucket: str | None = None  # tidak dipakai lagi (ADR 0006); data lama di bucket ini tetap bisa dibaca
     default_profile: str = "default"
     sources: list[Source] = []
     mapping: dict[str, list[str]] = {}
