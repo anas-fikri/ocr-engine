@@ -334,22 +334,23 @@ def get_photo_file(
     principal: Annotated[Principal, Depends(require("admin", "ops", "viewer", "app"))],
     variant: Annotated[Literal["original", "processed", "thumbnail"], Query()] = "processed",
 ):
-    """Engine tidak menyimpan foto. File dibaca dari lokasi SILO tempat aplikasi menyimpannya (`object`);
-    `thumbnail` dibuat saat diminta. Foto lama (sebelum versi ini) yang punya salinan di bucket engine tetap
-    bisa dibuka. Foto ditolak / belum dilaporkan lokasinya -> 404."""
+    """`processed` = arsip engine (bucket `ocr`), atau lokasi aplikasi (`object`) jika tidak ada arsip.
+    `original` = lokasi aplikasi, atau arsip jika aplikasi tidak menyimpan/melaporkan. `thumbnail` dibuat saat
+    diminta. Tidak ada file sama sekali -> 404."""
     with session_scope() as s:
         p = _get_photo_for(principal, photo_id, s)
-        original = (p.bucket, p.object_key) if p.bucket != UNSTORED_BUCKET else (None, None)
+        app = (p.bucket, p.object_key) if p.bucket != UNSTORED_BUCKET else (None, None)
+        archive = (p.processed_bucket, p.processed_key) if p.processed_key else (None, None)
         loc = {
-            "original": original,
-            "processed": (p.processed_bucket, p.processed_key) if p.processed_key else original,
-            "thumbnail": (p.thumb_bucket, p.thumb_key) if p.thumb_key else original,
+            "original": app if app[1] else archive,
+            "processed": archive if archive[1] else app,
+            "thumbnail": (p.thumb_bucket, p.thumb_key) if p.thumb_key else (archive if archive[1] else app),
         }[variant]
         make_thumb = variant == "thumbnail" and not p.thumb_key
         profile = registry.get(p.tenant_code).config.resolve_profile(p.profile)[1] if make_thumb else None
     if not loc[1]:
-        raise api_error(404, "FILE_NOT_FOUND", "foto ini tidak disimpan di SILO (ditolak, atau aplikasi belum "
-                                               "melaporkan lokasinya)")
+        raise api_error(404, "FILE_NOT_FOUND", "foto ini tidak punya file di SILO (arsip belum/tidak tersimpan dan "
+                                               "aplikasi tidak melaporkan lokasinya)")
     try:
         obj = get_storage().get(*loc)
     except ObjectNotFound as e:
@@ -409,9 +410,9 @@ def review_photo(
 def reprocess_photo(photo_id: str, principal: Annotated[Principal, Depends(require("admin", "ops"))]):
     with session_scope() as s:
         p = _get_photo_for(principal, photo_id, s)
-        if p.bucket == UNSTORED_BUCKET:
-            raise api_error(409, "NOT_STORED", "foto ini tidak disimpan di SILO (ditolak, atau aplikasi belum "
-                                               "melaporkan lokasinya), jadi tidak bisa dianalisis ulang")
+        if p.bucket == UNSTORED_BUCKET and not p.processed_key:
+            raise api_error(409, "NOT_STORED", "foto ini tidak punya file di SILO (arsip belum/tidak tersimpan dan "
+                                               "aplikasi tidak melaporkan lokasinya), jadi tidak bisa dianalisis ulang")
         requeue_photo(p.id, s)
         s.add(AuditLog(actor=principal.actor, action="photo.reprocess", target=p.id))
     return {"id": photo_id, "status": "pending"}

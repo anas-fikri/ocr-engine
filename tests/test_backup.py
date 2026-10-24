@@ -51,6 +51,9 @@ def _upload(client, admin_headers, data, awb):
     if body["output_image"]:
         out = body["output_image"]
         get_storage().put("app-photos", key, base64.b64decode(out["base64"]), out["content_type"], allow_foreign=True)
+    from engine.processor import wait_for_archives
+
+    wait_for_archives()
     return body
 
 
@@ -70,16 +73,17 @@ def test_backup_to_folder(client, admin_headers, samples, tmp_path):
     r = client.put("/v1/admin/settings/backup", json={"enabled": True, "target": "folder", "folder_path": str(nas)},
                    headers=admin_headers)
     assert r.status_code == 200, r.text
-    assert r.json()["pending"] == 1  # foto ditolak tidak disimpan aplikasi: tidak ada yang perlu disalin
+    assert r.json()["pending"] == 2  # keduanya ada di arsip engine (foto ditolak: foto asli untuk review)
     test = client.post("/v1/admin/settings/backup/test", json={}, headers=admin_headers).json()
     assert test["ok"], test
     assert not (nas / "_pqe_backup_test").exists()  # uji tidak meninggalkan sampah di NAS
 
     res = backup.maybe_run()
-    assert res["error"] is None and res["photos"] == {"photos": 1, "files": 1}
+    assert res["error"] is None and res["photos"] == {"photos": 2, "files": 2}
     files = sorted(p.relative_to(nas).as_posix() for p in nas.rglob("*") if p.is_file())
     photo_files = [f for f in files if f.startswith("photos/")]
-    assert photo_files == ["photos/app-photos/pod/BK1.jpg"]  # dibaca dari SILO aplikasi; foto ditolak tidak ada
+    # satu salinan per foto, dari arsip engine (tidak dobel dengan salinan aplikasi di app-photos)
+    assert len(photo_files) == 2 and all(f.startswith("photos/ocr/test-app/") for f in photo_files)
     assert any(f.startswith("database/pqe-") and f.endswith(".sqlite") for f in files)
 
     assert backup.maybe_run() is None  # belum waktunya (jadwal 15 menit), tidak ada permintaan
@@ -97,7 +101,7 @@ def test_backup_to_folder(client, admin_headers, samples, tmp_path):
     assert len(dumps) == 1 and dumps[0] != "pqe-20200101-000000.sqlite"
 
     status = client.get("/v1/admin/settings/backup", headers=admin_headers).json()
-    assert status["pending"] == 0 and status["backed_up"] == 1 and status["state"]["last_error"] is None
+    assert status["pending"] == 0 and status["backed_up"] == 2 and status["state"]["last_error"] is None
 
     # dianalisis ulang (misal threshold diubah) -> hasil baru harus disalin lagi
     from engine.worker import Worker
@@ -133,7 +137,7 @@ def test_backup_to_s3_nas_and_errors(client, admin_headers, samples, env, monkey
     res = backup.maybe_run()
     assert res["error"] is None and res["photos"]["files"] == 1
     keys = [o["Key"] for o in s3.list_objects_v2(Bucket="nas-backup", Prefix="pqe/photos/").get("Contents", [])]
-    assert keys == ["pqe/photos/app-photos/pod/BK3.jpg"]
+    assert len(keys) == 1 and keys[0].startswith("pqe/photos/ocr/test-app/")
 
     # NAS tidak bisa dijangkau -> dicatat sebagai error, foto tetap menunggu (tidak dianggap tersalin)
     _upload(client, admin_headers, samples["pass_small_ok"], "BK4")
@@ -157,7 +161,7 @@ def test_preflight_flags_unsafe_setup_then_passes(client, admin_headers, tmp_pat
     assert status["PQE_SECRET_KEY"] == "fail"  # belum diisi
     assert status["Jadwal backup"] == "fail"
     assert status["Baca bucket aplikasi 'app-photos'"] == "ok"
-    assert status["Engine hanya membaca SILO"] == "ok"
+    assert status["Bucket aplikasi hanya dibaca"] == "ok" and status["Tulis bucket arsip 'ocr'"] == "ok"
     with pytest.raises(SystemExit) as e:
         main(["preflight", "--no-silo"])
     assert e.value.code == 1

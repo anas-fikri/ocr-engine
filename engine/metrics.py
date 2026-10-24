@@ -5,6 +5,7 @@ from prometheus_client import Counter, Gauge, Histogram
 PHOTOS_INGESTED = Counter("pqe_photos_ingested_total", "Foto baru tercatat", ["tenant", "source"])
 PHOTOS_ANALYZED = Counter("pqe_photos_analyzed_total", "Foto selesai dianalisis", ["tenant", "verdict"])
 PHOTOS_FAILED = Counter("pqe_photos_failed_total", "Foto gagal diproses", ["tenant", "code"])
+ARCHIVE = Counter("pqe_archive_total", "Penyimpanan ke arsip engine (bucket ocr)", ["result"])  # ok|retry|failed|purged
 JOBS_DEAD = Counter("pqe_jobs_dead_total", "Job yang menyerah setelah semua retry")
 ANALYSIS_SECONDS = Histogram(
     "pqe_analysis_seconds", "Durasi proses satu foto", buckets=(0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 32)

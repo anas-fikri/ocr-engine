@@ -7,6 +7,7 @@ import hashlib
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -113,16 +114,17 @@ class OutputImage:
 
 
 def process_photo(photo_id: str, storage: Storage | None = None) -> str:
-    """Analisis foto yang sudah ada di SILO aplikasi (polling / event / object_key). Hanya MEMBACA SILO.
+    """Analisis foto yang sudah ada di SILO (polling / event / object_key / analisis ulang). Hanya MEMBACA.
 
-    Return status akhir foto: done | error. Raise untuk error sementara (akan di-retry).
+    Foto upload yang tidak disimpan aplikasi dianalisis ulang dari arsip engine. Return status akhir foto:
+    done | error. Raise untuk error sementara (akan di-retry).
     """
     storage = storage or get_storage()
     with session_scope() as s:
         p = s.get(Photo, photo_id)
         if p is None:
             return "error"
-        bucket, key = p.bucket, p.object_key
+        bucket, key = (p.bucket, p.object_key) if p.bucket != UNSTORED_BUCKET else (p.processed_bucket, p.processed_key)
     try:
         obj = storage.get(bucket, key)
     except ObjectNotFound:
@@ -138,8 +140,80 @@ def process_upload(photo_id: str, data: bytes, content_type: str | None) -> tupl
     Foto untuk disimpan hanya dikembalikan jika foto diterima (`allow_status_update`): versi optimasi, atau foto
     asli jika sudah memenuhi syarat ukuran. Foto ditolak -> None (aplikasi tidak menyimpannya sebagai foto
     pengiriman dan meminta kurir foto ulang).
+
+    Engine juga mengarsipkan salinannya sendiri di bucket arsip (ADR 0007), di belakang layar setelah keputusan
+    keluar: foto diterima = foto yang sama dengan `output_image`, foto ditolak = foto asli (untuk review & kalibrasi).
     """
-    return analyze_and_record(photo_id, data, content_type, None, None, want_output=True)
+    status, output = analyze_and_record(photo_id, data, content_type, None, None, want_output=True)
+    if status == "done":
+        if output is not None:
+            schedule_archive(photo_id, output.data, output.content_type)
+        else:
+            schedule_archive(photo_id, data, content_type or "image/jpeg")
+    return status, output
+
+
+_archive_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="archive")
+ARCHIVE_RETRY_SEC = (1, 4, 15)
+_EXT = {"image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic",
+        "image/heif": "heif"}
+
+
+def archive_bucket(tenant_code: str) -> str:
+    try:
+        b = registry.get(tenant_code).config.archive_bucket
+    except TenantNotFound:
+        b = None
+    return b or get_storage().s.engine_bucket_archive
+
+
+def schedule_archive(photo_id: str, data: bytes, content_type: str) -> None:
+    """Simpan ke arsip tanpa menahan respons ke aplikasi. Gagal -> dicoba ulang beberapa kali, lalu dicatat."""
+    fut = _archive_pool.submit(_archive_with_retry, photo_id, data, content_type)
+    _pending_archives.add(fut)
+    fut.add_done_callback(_pending_archives.discard)
+
+
+_pending_archives: set = set()
+
+
+def wait_for_archives(timeout: float = 30) -> None:
+    """Tunggu penyimpanan arsip yang masih berjalan (test, CLI, dan saat proses berhenti)."""
+    from concurrent.futures import wait
+
+    wait(list(_pending_archives), timeout=timeout)
+
+
+def _archive_with_retry(photo_id: str, data: bytes, content_type: str) -> None:
+    for i, wait in enumerate((0, *ARCHIVE_RETRY_SEC)):
+        if wait:
+            time.sleep(wait)
+        try:
+            archive_photo(photo_id, data, content_type)
+            metrics.ARCHIVE.labels(result="ok").inc()
+            return
+        except Exception as e:  # SILO lambat/mati: kurir tidak terpengaruh, coba lagi
+            last = i == len(ARCHIVE_RETRY_SEC)
+            metrics.ARCHIVE.labels(result="failed" if last else "retry").inc()
+            log.warning("arsip foto %s gagal (percobaan %s): %s", photo_id, i + 1, e)
+
+
+def archive_photo(photo_id: str, data: bytes, content_type: str, storage: Storage | None = None) -> None:
+    storage = storage or get_storage()
+    with session_scope() as s:
+        p = s.get(Photo, photo_id)
+        if p is None or p.processed_key:
+            return
+        tenant_code, verdict, sha = p.tenant_code, p.verdict, p.sha256
+        at = as_aware(p.received_at) or utcnow()
+    bucket = archive_bucket(tenant_code)
+    key = f"{tenant_code}/{at:%Y/%m/%d}/{photo_id}.{_EXT.get(content_type.lower(), 'jpg')}"
+    storage.put(bucket, key, data, content_type, {"photo-id": photo_id, "verdict": verdict, "sha256-original": sha})
+    with session_scope() as s:
+        p = s.get(Photo, photo_id)
+        if p is not None:
+            p.processed_bucket, p.processed_key = bucket, key
+            s.execute(delete(BackupItem).where(BackupItem.photo_id == photo_id))  # ada file baru: salin ke NAS
 
 
 def analyze_and_record(photo_id: str, data: bytes, content_type: str | None, obj_metadata: dict | None,

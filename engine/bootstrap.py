@@ -28,7 +28,8 @@ def bootstrap() -> None:
     if s.engine_create_buckets:
         st = get_storage()
         es = st.s
-        for b in {es.engine_bucket_processed, es.engine_bucket_thumb, es.engine_bucket_upload, es.aws_bucket}:
+        for b in {es.engine_bucket_archive, es.engine_bucket_processed, es.engine_bucket_thumb, es.engine_bucket_upload,
+                  es.aws_bucket}:
             try:
                 st.ensure_bucket(b)
             except Exception as e:  # SILO belum siap tidak boleh menggagalkan start

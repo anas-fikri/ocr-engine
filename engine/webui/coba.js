@@ -81,7 +81,7 @@ function setMode(m) {
   });
   $("#sim-fields").classList.toggle("hidden", m !== "sim");
   $("#mode-desc").innerHTML = m === "sim"
-    ? `Sama seperti aplikasi asli: foto dikirim ke engine, diperiksa dan dioptimasi, lalu engine mengembalikan keputusan + foto hasil. Kurir menunggu maks. ${SYNC_TIMEOUT_MS / 1000} detik. Di aplikasi asli, <b>aplikasi</b> yang menyimpan foto ke SILO; halaman ini tidak menyimpan foto ke mana pun (hasil analisis tetap tercatat di Web UI).`
+    ? `Sama seperti aplikasi asli: foto dikirim ke engine, diperiksa dan dioptimasi, lalu engine mengembalikan keputusan + foto hasil. Kurir menunggu maks. ${SYNC_TIMEOUT_MS / 1000} detik. Engine mengarsipkan foto di bucket <code>ocr</code> (bisa dibuka di Web UI dan evidence); di aplikasi asli, aplikasi juga menyimpan foto hasil ke bucket-nya sendiri.`
     : `Hanya dianalisis, <b>tidak disimpan</b> ke mana pun. Cocok untuk mencoba banyak foto dengan cepat.` +
       (canSim ? "" : ` <br>${!$("#tenant").value ? "Pilih tenant untuk simulasi." : "Role viewer hanya bisa uji cepat."}`);
 }
@@ -254,9 +254,9 @@ function courierScreen(run) {
       (r.verdict !== "PASS" ? `<p class="note">Mode shadow: engine mencatat ${esc(r.verdict)}, tetapi kurir tidak melihat pesan apa pun.</p>` : "");
   }
   const saved = run.mode === "quick" ? "Uji cepat: foto tidak disimpan ke mana pun."
-    : allow ? (run.output ? "Aplikasi menyimpan foto hasil engine ke SILO, lalu mengupdate status."
+    : allow ? (run.output ? "Aplikasi menyimpan foto hasil engine ke bucket-nya, lalu mengupdate status. Engine mengarsipkan salinannya di bucket ocr."
       : "Engine tidak menjawab: aplikasi menyimpan foto asli ke SILO (fail-open).")
-      : "Foto TIDAK disimpan; kurir diminta foto ulang.";
+      : "Aplikasi TIDAK menyimpan foto ini; kurir diminta foto ulang. Engine mengarsipkan foto asli di bucket ocr untuk review.";
   const status = allow
     ? `<div class="msg ok" style="padding:8px 12px"><span>Status pengiriman: <b>diupdate</b> oleh aplikasi pengiriman.<br><span class="small">${esc(saved)}</span></span></div>`
     : `<div class="msg reject" style="padding:8px 12px"><span>Status pengiriman: <b>TIDAK diupdate</b> sampai foto ulang diterima.<br><span class="small">${esc(saved)}</span></span></div>`;
@@ -307,7 +307,7 @@ function render(run) {
       : `Quality ${esc(c.quality)}, SSIM ${esc(c.ssim)}, ${c.target_met ? "target tercapai" : "target belum tercapai"}.`}</p>
     <h3>EXIF</h3><p class="small">${ex.make || ex.model ? `${esc(ex.make || "")} ${esc(ex.model || "")}` : "Tidak ada data kamera"}${ex.datetime_original ? ` · diambil ${esc(new Date(ex.datetime_original).toLocaleString("id-ID"))}` : ""}${ex.gps_lat != null ? " · ada GPS" : ""}${!ex.make ? " <span class='muted'>(wajar untuk kamera langsung di browser, screenshot, atau file hasil edit)</span>" : ""}</p>
     ${run.photoId ? `<div class="actions"><a class="btn" href="./#/photos?awb=${encodeURIComponent(run.awb || "")}&id=${encodeURIComponent(run.photoId)}" target="_blank">Buka di Web UI</a></div>
-      <p class="muted small">Di Web UI foto uji tampil tanpa gambar, karena halaman ini tidak menyimpan foto ke SILO (di aplikasi asli, aplikasi yang menyimpan).</p>` : ""}
+      <p class="muted small">Foto tersimpan di arsip engine (bucket <code>ocr</code>), jadi bisa dibuka di Web UI dan evidence resi uji.</p>` : ""}
     <details style="margin-top:12px"><summary class="muted">JSON lengkap (respons API)</summary><pre class="json">${esc(JSON.stringify({ ...r, output_image: run.output ? { ...run.output, base64: `(${run.output.bytes} byte base64)` } : r.output_image ? "(data URL)" : null }, null, 2))}</pre></details>`;
   $("#result").querySelectorAll("[data-act]").forEach((b) => (b.onclick = () => {
     if (b.dataset.act === "retake") return $("#btn-native").click();

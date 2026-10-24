@@ -72,6 +72,40 @@ def retention_sweep(storage: Storage, batch: int = 200) -> int:
     return len(ids)
 
 
+def archive_sweep(storage: Storage, batch: int = 200) -> int:
+    """Hapus file arsip engine yang melewati `archive_retention_days` tenant (bawaan 520 hari).
+
+    Catatan analisis tetap ada (sampai `retention_days`); hanya file di bucket arsip yang dihapus.
+    """
+    from engine.processor import archive_bucket
+    from engine.tenants import registry
+
+    total = 0
+    for t in registry.all(enabled_only=False):
+        bucket = archive_bucket(t.config.code)
+        cutoff = utcnow() - timedelta(days=t.config.archive_retention_days)
+        with session_scope() as s:
+            rows = s.execute(select(Photo.id, Photo.processed_key).where(
+                Photo.tenant_code == t.config.code, Photo.processed_bucket == bucket,
+                Photo.processed_key.is_not(None), Photo.received_at < cutoff).limit(batch)).all()
+        for pid, key in rows:
+            try:
+                storage.delete(bucket, key)
+            except Exception as e:  # sudah dihapus lifecycle SILO
+                log.debug("hapus arsip %s/%s gagal: %s", bucket, key, e)
+            with session_scope() as s:
+                p = s.get(Photo, pid)
+                if p is not None:
+                    p.processed_bucket = p.processed_key = None
+        if rows:
+            metrics.ARCHIVE.labels(result="purged").inc(len(rows))
+            with session_scope() as s:
+                s.add(AuditLog(actor="system:retention", action="archive.purge",
+                               detail={"tenant": t.config.code, "count": len(rows)}))
+        total += len(rows)
+    return total
+
+
 class Worker:
     def __init__(self, concurrency: int | None = None, storage: Storage | None = None) -> None:
         self.concurrency = concurrency or get_settings().worker_concurrency
@@ -107,6 +141,7 @@ class Worker:
                         log.warning("%d job macet dikembalikan ke antrean", n)
                     update_gauges()
                     retention_sweep(self.storage or get_storage())
+                    archive_sweep(self.storage or get_storage())
                     cleanup_webhook_history()
                     last_slow = now
             except Exception:

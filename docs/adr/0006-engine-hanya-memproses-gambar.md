@@ -1,6 +1,6 @@
 # ADR 0006: Engine hanya memproses gambar, penyimpanan dikerjakan aplikasi
 
-- **Status:** Diterima (24 Okt 2026). Menggantikan bagian "engine menulis ke bucket miliknya" di [ADR 0003](0003-engine-read-only-terhadap-sistem-lain.md).
+- **Status:** Diterima (24 Okt 2026), **diperbarui oleh [ADR 0007](0007-arsip-engine-di-bucket-ocr.md)**: engine kembali menyimpan arsipnya sendiri di bucket `ocr`; aplikasi tetap menyimpan foto pengirimannya. Menggantikan bagian "engine menulis ke bucket miliknya" di [ADR 0003](0003-engine-read-only-terhadap-sistem-lain.md).
 - **Terkait:** [integration-guide.md](../integration-guide.md#0-cara-tercepat-kirim-foto-terima-keputusan), [api-reference.md](../api-reference.md#analisis)
 
 ## Konteks

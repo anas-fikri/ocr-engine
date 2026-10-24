@@ -90,16 +90,19 @@ class Storage:
         }
 
     def owned_buckets(self) -> set[str]:
-        """Bucket yang boleh ditulis/dihapus engine: bucket engine + bucket upload yang diatur di config tenant.
+        """Bucket yang boleh ditulis/dihapus engine: bucket arsip (`ocr`), bucket versi lama, dan bucket yang diatur
+        di config tenant (`archive_bucket`, `upload_bucket`).
 
         Pagar pengaman: walaupun kredensial SILO yang dipakai punya akses penuh, engine tidak akan pernah
         menulis atau menghapus foto di bucket aplikasi (contoh AWS_BUCKET).
         """
-        owned = {self.s.engine_bucket_processed, self.s.engine_bucket_thumb, self.s.engine_bucket_upload}
+        owned = {self.s.engine_bucket_archive, self.s.engine_bucket_processed, self.s.engine_bucket_thumb,
+                 self.s.engine_bucket_upload}
         try:
             from engine.tenants import registry
 
-            owned |= {t.config.upload_bucket for t in registry.all(enabled_only=False) if t.config.upload_bucket}
+            for t in registry.all(enabled_only=False):
+                owned |= {b for b in (t.config.upload_bucket, t.config.archive_bucket) if b}
         except Exception:  # registry belum siap (misal CLI tanpa DB): pakai bucket engine saja
             pass
         return owned

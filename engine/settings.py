@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     aws_addressing_style: str | None = Field(None, alias="AWS_ADDRESSING_STYLE")
     aws_signature_version: str = Field("s3v4", alias="AWS_SIGNATURE_VERSION")
 
+    # arsip engine (ADR 0007): salinan foto yang dinilai engine, per tenant: <tenant>/<yyyy>/<mm>/<dd>/<id>.<ext>
+    engine_bucket_archive: str = Field("ocr", alias="ENGINE_BUCKET_ARCHIVE")
     engine_bucket_processed: str = Field("photos-processed", alias="ENGINE_BUCKET_PROCESSED")
     engine_bucket_thumb: str = Field("photos-thumb", alias="ENGINE_BUCKET_THUMB")
     engine_bucket_upload: str = Field("photos-upload", alias="ENGINE_BUCKET_UPLOAD")

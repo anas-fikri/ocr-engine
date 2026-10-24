@@ -6,6 +6,7 @@ untuk production; "warn" boleh jalan untuk uji coba tetapi sebaiknya dibereskan.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -62,7 +63,7 @@ def run(check_silo: bool = True) -> dict[str, Any]:
     cfg = st.s
     if not cfg.aws_access_key_id or not cfg.aws_secret_access_key:
         out.append(_item("SILO", "Kredensial", "fail", "access key / secret key belum diisi",
-                         "Web UI -> Pengaturan SILO: isi key, Test koneksi, Simpan."))
+                         "Web UI -> Koneksi SILO: isi key, Test koneksi, Simpan."))
     elif check_silo:
         def probe(name: str, fn, fix: str) -> None:
             try:
@@ -75,9 +76,18 @@ def run(check_silo: bool = True) -> dict[str, Any]:
             return "bisa dibaca" if first is not None else "bisa dibaca (kosong)"
 
         probe(f"Baca bucket aplikasi '{cfg.aws_bucket}'", read_app, "Cek endpoint, key, dan izin baca bucket aplikasi.")
-    out.append(_item("SILO", "Engine hanya membaca SILO", "ok",
-                     f"engine tidak menyimpan foto; bucket aplikasi '{cfg.aws_bucket}' "
-                     "tidak bisa ditulis/dihapus engine"))
+
+        def write_archive() -> str:
+            key = f"_pqe_preflight/{uuid.uuid4().hex}.txt"
+            st.put(cfg.engine_bucket_archive, key, b"ok", "text/plain")
+            st.delete(cfg.engine_bucket_archive, key)
+            return "tulis & hapus berhasil"
+
+        probe(f"Tulis bucket arsip '{cfg.engine_bucket_archive}'", write_archive,
+              f"Buat bucket {cfg.engine_bucket_archive} di SILO; beri key engine izin baca/tulis/hapus di bucket itu.")
+    out.append(_item("SILO", "Bucket aplikasi hanya dibaca", "ok",
+                     f"engine tidak bisa menulis/menghapus '{cfg.aws_bucket}'; engine hanya menulis ke arsip "
+                     f"'{cfg.engine_bucket_archive}'"))
 
     # ---- tenant
     from engine.tenants import registry

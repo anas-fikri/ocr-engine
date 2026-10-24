@@ -23,10 +23,10 @@ Engine bisa dipakai oleh aplikasi apa pun (Android, iOS, Flutter, web, Laravel, 
 | Indikasi keaslian | EXIF (kamera, waktu, GPS, software editing), foto lama, beda waktu/lokasi, foto identik/mirip dipakai ulang |
 | Multi-aplikasi & multi-jenis foto | Tenant per aplikasi, profile per jenis foto (POD penerima, resi, paket, lokasi, barang), semua lewat config |
 | Mode bertahap | `shadow` → `warn` → `enforce` per tenant/profile tanpa deploy ulang |
-| Integrasi tercepat: kirim foto, terima keputusan | Engine **hanya memproses gambar**. Aplikasi mengirim file foto ke engine (`POST /v1/analyze`, client `checkFile`, maks. 3 detik). Engine menjawab keputusan + foto hasil optimasi (`output_image`); aplikasi yang menyimpannya ke SILO lalu mengupdate status. Foto ditolak: tanpa foto hasil, pesan dikirim balik ke kurir. Engine mati → aplikasi menyimpan foto asli (fail-open). Alternatif: `checkObject` untuk foto yang sudah di SILO, atau tanpa ubah aplikasi (baca SILO / metadata saat upload) |
+| Integrasi tercepat: kirim foto, terima keputusan | Aplikasi mengirim file foto ke engine (`POST /v1/analyze`, client `checkFile`, maks. 3 detik). Engine menjawab keputusan + foto hasil optimasi (`output_image`); aplikasi menyimpannya ke bucket-nya sendiri lalu mengupdate status. Engine menyimpan arsipnya sendiri di bucket `ocr` (per aplikasi, 520 hari; foto ditolak = foto asli untuk review). Foto ditolak: tanpa foto hasil, pesan dikirim balik ke kurir. Engine mati → aplikasi menyimpan foto asli (fail-open). Alternatif: `checkObject` untuk foto yang sudah di SILO, atau tanpa ubah aplikasi (baca SILO / metadata saat upload) |
 | Web UI | Dashboard, antrean review ops (opsional), pencarian, **Evidence** (PDF penagihan per resi/invoice), uji foto, editor config tenant, API key, **Koneksi SILO** (hanya baca; impor JSON mc, tes koneksi), **Backup NAS**, status sistem + **preflight**. Bisa dibuka dari HP |
-| Engine tidak menulis ke SILO | Engine hanya membaca SILO (Web UI, evidence, backup NAS, polling); service account cukup izin baca. Penulisan ke bucket aplikasi diblokir di kode walau key punya akses penuh. `PQE_ENV=production` (bawaan) menolak perintah demo yang menulis foto sintetis |
-| Backup NAS | Salinan terjadwal database dan foto yang disimpan aplikasi di SILO ke NAS (folder SMB/NFS atau NAS S3-compatible), diatur di Web UI (test, jadwal, backup sekarang, status). Hanya menyalin, tidak pernah menghapus di NAS |
+| Bucket aplikasi hanya dibaca | Engine hanya menulis ke bucket arsipnya (`ocr`); penulisan ke bucket aplikasi diblokir di kode walau key punya akses penuh. `PQE_ENV=production` (bawaan) menolak perintah demo yang menulis foto sintetis |
+| Backup NAS | Salinan terjadwal database dan arsip foto ke NAS (folder SMB/NFS atau NAS S3-compatible), diatur di Web UI (test, jadwal, backup sekarang, status). Hanya menyalin, tidak pernah menghapus di NAS |
 | Panduan developer di browser | `/ui/guide.html`: panduan integrasi interaktif tanpa login, diagram alur (integrasi, penggunaan, keputusan di aplikasi pengiriman, proses engine), contoh kode curl/PHP/TS/Python/Kotlin dengan URL server terisi otomatis |
 | Uji coba tanpa aplikasi | `/ui/coba.html`: buka dari HP, ambil foto dengan kamera, lihat pesan yang tampil di layar kurir + detail analisis (simulasi penuh atau uji cepat) |
 | Evidence pelanggan | JSON/PDF per resi atau per invoice, hanya foto layak (bawaan: PASS + WARN; REJECT tidak pernah), dengan hash verifikasi keaslian |
@@ -76,7 +76,7 @@ Butuh Docker Desktop yang sedang berjalan (Mac Intel/Apple Silicon, Windows, Lin
 sengaja tanpa komentar `#` agar aman di-paste ke zsh (Mac).
 
 Integrasi tercepat dari aplikasi pengiriman: kirim foto, terima keputusan (satu panggilan). Engine hanya memproses;
-penyimpanan ke SILO tetap dikerjakan aplikasi:
+aplikasi menyimpan foto pengirimannya sendiri, engine menyimpan arsipnya di bucket `ocr`:
 
 ```php
 $d = $pqe->checkFile($pathFoto, ['awb' => $awb, 'photo_type' => 'pod_recipient'], 3000, $key);   // maks. 3 detik, fail-open

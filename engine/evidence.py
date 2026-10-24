@@ -11,7 +11,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fpdf import FPDF
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from engine.db import Photo, as_aware
 from engine.serializers import evidence_eligible
@@ -38,8 +38,9 @@ TEXT = {
 
 def eligible_photos(session, tenant_codes: list[str] | None, awbs: list[str],
                     customer_id: str | None = None) -> list[Photo]:
-    # hanya foto yang disimpan aplikasi di SILO (bucket "" = tidak disimpan / lokasi belum dilaporkan)
-    q = select(Photo).where(Photo.awb.in_(awbs), Photo.status == "done", Photo.bucket != "")
+    # hanya foto yang punya file: arsip engine, atau lokasi yang dilaporkan aplikasi
+    q = select(Photo).where(Photo.awb.in_(awbs), Photo.status == "done",
+                            or_(Photo.processed_key.is_not(None), Photo.bucket != ""))
     if tenant_codes is not None:
         q = q.where(Photo.tenant_code.in_(tenant_codes))
     if customer_id is not None:

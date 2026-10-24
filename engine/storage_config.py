@@ -1,6 +1,6 @@
 """Konfigurasi koneksi SILO yang bisa diubah lewat Web UI (menimpa nilai env).
 
-Urutan prioritas per field: database (halaman "Pengaturan SILO") > environment variable > bawaan.
+Urutan prioritas per field: database (halaman "Koneksi SILO") > environment variable > bawaan.
 Secret key disimpan terenkripsi (lihat secretbox.py). Semua proses (API, worker, ingestor)
 membaca perubahan paling lambat REFRESH_SEC detik, tanpa restart.
 """
@@ -28,6 +28,7 @@ FIELDS: dict[str, str] = {
     "addressing_style": "aws_addressing_style",
     "signature_version": "aws_signature_version",
     "app_bucket": "aws_bucket",
+    "archive_bucket": "engine_bucket_archive",
     "processed_bucket": "engine_bucket_processed",
     "thumb_bucket": "engine_bucket_thumb",
     "upload_bucket": "engine_bucket_upload",

@@ -165,7 +165,7 @@ def test_storage_settings_page_api(client, admin_headers, env, monkeypatch):
     assert get_storage().s.aws_secret_access_key == "rahasia-baru"  # berlaku tanpa restart
 
     t = client.post("/v1/admin/settings/storage/test", json={}, headers=admin_headers).json()
-    assert t["ok"] is True and len(t["checks"]) == 2  # hanya baca: engine tidak menulis ke SILO
+    assert t["ok"] is True and len(t["checks"]) == 3  # baca bucket aplikasi + tulis bucket arsip
     bad = client.post("/v1/admin/settings/storage/test", json={"endpoint": "http://127.0.0.1:9"},
                       headers=admin_headers).json()
     assert bad["ok"] is False
@@ -349,3 +349,53 @@ def test_version_is_visible(client, admin_headers):
     assert client.get("/v1/photos/tidak-ada", headers=admin_headers).headers["X-PQE-Version"] == __version__
     out = subprocess.run([sys.executable, "-m", "engine.cli", "--version"], capture_output=True, text=True)
     assert out.stdout.strip() == f"pqe {__version__}"
+
+
+def test_engine_archives_to_ocr_bucket(client, admin_headers, samples):
+    """ADR 0007: engine mengarsipkan foto di bucket `ocr` per tenant; aplikasi tetap menyimpan salinannya sendiri.
+
+    Diterima -> arsip = foto yang sama dengan output_image. Ditolak -> arsip = foto asli (review & kalibrasi).
+    Lewat archive_retention_days (bawaan 520) file arsip dihapus, catatan analisis tetap.
+    """
+    import base64
+    import hashlib
+    from datetime import timedelta
+
+    from engine.db import Photo, session_scope, utcnow
+    from engine.processor import wait_for_archives
+    from engine.storage import get_storage
+    from engine.worker import archive_sweep
+    from tests.conftest import TENANT_YAML
+
+    h = {**admin_headers, "Content-Type": "application/x-yaml"}
+    assert client.put("/v1/admin/tenants", content=TENANT_YAML.replace("mode: warn", "mode: enforce"),
+                      headers=h).status_code == 200
+
+    def send(sample, awb):
+        r = client.post("/v1/analyze", params={"tenant": "test-app"}, headers=admin_headers,
+                        files={"file": ("f.jpg", samples[sample], "image/jpeg")}, data={"awb": awb})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    ok, rej = send("pass_huge_camera", "AR1"), send("reject_blur_severe", "AR2")
+    wait_for_archives()
+    st = get_storage()
+    a_ok = client.get(f"/v1/photos/{ok['id']}", headers=admin_headers).json()["archive"]
+    a_rej = client.get(f"/v1/photos/{rej['id']}", headers=admin_headers).json()["archive"]
+    assert a_ok["bucket"] == "ocr" and a_ok["key"].startswith("test-app/") and a_ok["key"].endswith(f"{ok['id']}.jpg")
+    assert st.get("ocr", a_ok["key"]).data == base64.b64decode(ok["output_image"]["base64"])
+    assert hashlib.sha256(st.get("ocr", a_rej["key"]).data).hexdigest() == rej["sha256"]  # foto asli
+    assert rej["output_image"] is None and rej["allow_status_update"] is False
+    # Web UI & evidence memakai arsip walau aplikasi tidak melaporkan lokasinya
+    assert client.get(f"/v1/photos/{rej['id']}/file", params={"variant": "thumbnail"},
+                      headers=admin_headers).status_code == 200
+    assert client.get("/v1/evidence/AR1", headers=admin_headers).json()["count"] == 1
+    # bucket aplikasi tetap tidak tersentuh
+    assert not list(st.list("app-photos"))
+
+    with session_scope() as s:
+        s.get(Photo, ok["id"]).received_at = utcnow() - timedelta(days=521)
+    assert archive_sweep(st) == 1
+    assert client.get(f"/v1/photos/{ok['id']}", headers=admin_headers).json()["archive"] is None
+    assert not any(o.key == a_ok["key"] for o in st.list("ocr"))
+    assert client.get(f"/v1/photos/{rej['id']}", headers=admin_headers).json()["archive"] is not None

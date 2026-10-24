@@ -194,7 +194,15 @@ def test_api_upload_sync_and_object_reference(client, admin_headers, samples):
     assert r.status_code == 200 and r.json()["object"] == {"bucket": "app-photos", "key": "pod/AWB602.jpg"}
     thumb = client.get(f"/v1/photos/{ok['id']}/file", params={"variant": "thumbnail"}, headers=admin_headers)
     assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/jpeg"
-    # foto yang tidak disimpan aplikasi: tidak ada file, tidak bisa dianalisis ulang
+    # foto ditolak tetap bisa dilihat ops dari arsip engine (foto asli); tanpa arsip & tanpa lokasi -> tidak ada file
+    from engine.db import Photo, session_scope
+    from engine.processor import wait_for_archives
+
+    wait_for_archives()
+    assert client.get(f"/v1/photos/{dark['id']}/file", headers=admin_headers).status_code == 200
+    with session_scope() as s:
+        p = s.get(Photo, dark["id"])
+        p.processed_bucket = p.processed_key = None
     assert client.get(f"/v1/photos/{dark['id']}/file", headers=admin_headers).status_code == 404
     assert client.post(f"/v1/photos/{dark['id']}/reprocess", headers=admin_headers).status_code == 409
 

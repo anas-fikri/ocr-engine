@@ -164,7 +164,7 @@ function photoTable(items) {
     ${items.map((p) => {
       const main = (p.reasons || []).find((r) => r.severity !== "info");
       return `<tr class="clickable" data-id="${esc(p.id)}">
-        <td>${p.object ? `<img class="thumb" data-photo="${esc(p.id)}" alt="">` : `<div class="thumb none" title="Ditolak, atau aplikasi belum melaporkan lokasi SILO">tidak disimpan</div>`}</td>
+        <td>${p.object || p.archive ? `<img class="thumb" data-photo="${esc(p.id)}" alt="">` : `<div class="thumb none" title="Arsip belum tersimpan / lewat masa simpan, dan aplikasi tidak melaporkan lokasi">tidak ada file</div>`}</td>
         <td><b>${esc(p.awb || "-")}</b><div class="muted small">${esc(p.external_id || "")}</div></td>
         <td class="hide-sm">${esc(p.tenant)}<div class="muted small">${esc(p.photo_type || "-")}</div></td>
         <td class="hide-sm">${esc(p.courier_id || "-")}<div class="muted small">${esc(p.branch || "")}</div></td>
@@ -252,7 +252,8 @@ async function openPhoto(id, onChange) {
     <div class="grid cols-2">
       <div class="images">
         ${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank"><img src="${esc(p.urls.processed)}" data-photo="${esc(p.id)}" data-variant="processed" onerror="viaEngine(this)" alt="foto"></a>`
-          : `<div class="empty card">Foto tidak disimpan di SILO${p.verdict === "REJECT" ? " (ditolak, kurir diminta foto ulang)" : " (aplikasi belum melaporkan lokasinya)"}.<div class="small">Engine hanya memproses foto; penyimpanan dikerjakan aplikasi.</div></div>`}
+          : `<div class="empty card">Tidak ada file foto.<div class="small">Arsip engine belum tersimpan atau sudah lewat masa simpan, dan aplikasi tidak melaporkan lokasinya.</div></div>`}
+        ${p.urls.processed && p.archive && p.verdict === "REJECT" && !p.object ? `<div class="small muted">Foto asli yang ditolak (arsip engine, untuk review & kalibrasi). Tidak disimpan aplikasi.</div>` : ""}
         <div class="small">${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank">Buka foto</a>` : ""}${p.awb ? `${p.urls.processed ? " · " : ""}<a href="#" data-evidence="${esc(p.awb)}">Evidence PDF resi ini</a>` : ""}</div>
       </div>
       <div>
@@ -276,7 +277,8 @@ async function openPhoto(id, onChange) {
     <h3>Data pengiriman</h3>${kv([["Kurir", esc(p.courier_id)], ["Cabang", esc(p.branch)], ["Pelanggan", esc(p.customer_id)], ["ID eksternal", esc(p.external_id)],
       ["Waktu foto", fmtDate(p.captured_at)], ["Diterima", fmtDate(p.received_at)], ["Dianalisis", fmtDate(p.analyzed_at)],
       ["Lokasi", p.location ? `<a target="_blank" href="https://maps.google.com/?q=${p.location.lat},${p.location.lng}">${p.location.lat}, ${p.location.lng}</a>` : "-"],
-      ["Sumber", esc(p.ingest_source)], ["Lokasi di SILO", p.object ? `<code>${esc(p.object.bucket)}/${esc(p.object.key)}</code>` : "tidak disimpan / belum dilaporkan aplikasi"]])}
+      ["Sumber", esc(p.ingest_source)], ["Arsip engine", p.archive ? `<code>${esc(p.archive.bucket)}/${esc(p.archive.key)}</code>` : "-"],
+      ["Lokasi di aplikasi", p.object ? `<code>${esc(p.object.bucket)}/${esc(p.object.key)}</code>` : "tidak dilaporkan aplikasi"]])}
     <h3>Gambar & kompresi</h3>${kv([["Format", esc((p.image || {}).format)], ["Dimensi", p.image && p.image.width ? `${p.image.width} × ${p.image.height}` : "-"],
       ["Ukuran", c.original_bytes ? `${kb(c.original_bytes)} → ${kb(c.output_bytes)} ${c.passthrough ? "(tidak perlu dikompres)" : `(quality ${c.quality}, SSIM ${c.ssim})`}` : "-"],
       ["SHA-256", `<code class="small">${esc(p.sha256)}</code>`]])}
@@ -439,7 +441,8 @@ const SILO_FIELDS = [
   ["secret_key", "Secret key", "", "Disimpan terenkripsi dan tidak pernah ditampilkan lagi. Kosongkan jika tidak ingin mengubah."],
   ["addressing_style", "Gaya alamat (path)", "", "auto | path | virtual. SILO/MinIO umumnya path (format mc: path \"on\")."],
   ["signature_version", "Signature (api)", "s3v4", "s3v4 (disarankan) atau s3 (v2, lama)."],
-  ["app_bucket", "Bucket foto aplikasi", "ekas-pcptransport", "Tempat aplikasi menyimpan foto. Engine hanya MEMBACA (Web UI, evidence, backup NAS, polling); menulis/menghapus diblokir di kode."],
+  ["app_bucket", "Bucket foto aplikasi", "ekas-pcptransport", "Tempat aplikasi menyimpan foto. Engine hanya MEMBACA (polling, Web UI); menulis/menghapus diblokir di kode."],
+  ["archive_bucket", "Bucket arsip engine", "ocr", "Engine menyimpan salinan foto yang dinilai di sini, dipisah per aplikasi (prefix tenant). Diterima: foto hasil; ditolak: foto asli. Masa simpan 520 hari (atur per tenant: archive_retention_days)."],
 ];
 const SOURCE_LABEL = { database: "dari halaman ini", env: "dari env server", default: "bawaan" };
 
@@ -447,7 +450,7 @@ async function silo() {
   const cfg = await api("/v1/admin/settings/storage");
   const f = cfg.fields;
   const val = (k) => (k === "secret_key" ? "" : f[k].value ?? "");
-  $("#main").innerHTML = head("Koneksi SILO", "Engine hanya memproses foto dan <b>tidak pernah menyimpan</b> ke SILO; penyimpanan dikerjakan aplikasi. Koneksi ini dipakai untuk <b>membaca</b> foto yang disimpan aplikasi. Berlaku tanpa restart (maks. 10 detik); rahasia disimpan terenkripsi.") + `
+  $("#main").innerHTML = head("Koneksi SILO", "Engine menyimpan arsipnya sendiri di <b>bucket arsip</b> (bawaan <code>ocr</code>) dan hanya <b>membaca</b> bucket aplikasi. Aplikasi tetap menyimpan foto pengirimannya lewat jalurnya sendiri. Berlaku tanpa restart (maks. 10 detik); rahasia disimpan terenkripsi.") + `
     ${cfg.secret_key_configured ? "" : `<div class="reason warn"><b>PQE_SECRET_KEY belum diisi di server.</b> Secret key tidak bisa disimpan lewat halaman ini sampai PQE_SECRET_KEY diisi (lihat docs/configuration.md). Field lain tetap bisa disimpan.</div>`}
     <div class="grid cols-2">
       <div class="card"><h2>Koneksi</h2>
@@ -466,8 +469,9 @@ async function silo() {
         <h3>Permission minimal service account</h3>
         <pre class="json">${esc(JSON.stringify({ Version: "2012-10-17", Statement: [
           { Effect: "Allow", Action: ["s3:GetObject", "s3:ListBucket"], Resource: [`arn:aws:s3:::${val("app_bucket") || "ekas-pcptransport"}`, `arn:aws:s3:::${val("app_bucket") || "ekas-pcptransport"}/*`] },
+          { Effect: "Allow", Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"], Resource: [`arn:aws:s3:::${val("archive_bucket") || "ocr"}`, `arn:aws:s3:::${val("archive_bucket") || "ocr"}/*`] },
         ] }, null, 2))}</pre>
-        <p class="muted small">Cukup izin baca. Engine tidak butuh bucket sendiri.</p>
+        <p class="muted small">Baca saja di bucket aplikasi; baca, tulis, hapus di bucket arsip (hapus untuk membersihkan arsip lewat 520 hari).</p>
         <p class="muted small">Detail pembuatan service account: docs/operations.md bagian setup SILO produksi.</p>
       </div>
     </div>`;
@@ -519,7 +523,7 @@ async function evidencePdf(awbs) {
 }
 
 async function evidence() {
-  $("#main").innerHTML = head("Evidence penagihan", "PDF bukti pengiriman untuk pelanggan: hanya foto layak (PASS/WARN) yang disimpan aplikasi di SILO, tanpa skor internal, dengan kode verifikasi keaslian.") + `
+  $("#main").innerHTML = head("Evidence penagihan", "PDF bukti pengiriman untuk pelanggan: hanya foto layak (PASS/WARN), diambil dari arsip engine, tanpa skor internal, dengan kode verifikasi keaslian.") + `
     <form class="card" style="max-width:640px" id="ev-form">
       <label>Nomor resi (satu per baris, maks. 500)<textarea id="ev-awbs" class="code" style="min-height:180px" placeholder="AWB123&#10;AWB124" data-autofocus></textarea></label>
       <div class="actions"><button type="submit">Buat PDF</button></div>
@@ -549,7 +553,7 @@ async function nas() {
     <input type="checkbox" id="b-${k}" ${c[k] ? "checked" : ""}><span><b>${esc(label)}</b><br><span class="small muted">${esc(help)}</span></span></label>`;
   const inp = (k, label, ph, help, type = "text") => `<label style="margin-bottom:10px">${esc(label)}
     <input id="b-${k}" type="${type}" autocomplete="off" value="${esc(type === "password" ? "" : c[k] ?? "")}" placeholder="${esc(ph)}">${help ? `<span class="small">${esc(help)}</span>` : ""}</label>`;
-  $("#main").innerHTML = head("Backup NAS", "Engine menyalin database dan foto yang disimpan aplikasi di SILO ke NAS secara terjadwal. Hanya <b>menyalin</b>: file di NAS tidak pernah dihapus engine (kecuali dump database lama sesuai jumlah simpan).") + `
+  $("#main").innerHTML = head("Backup NAS", "Engine menyalin database dan foto (arsip engine di bucket <code>ocr</code>, atau foto di bucket aplikasi untuk foto polling) ke NAS secara terjadwal. Hanya <b>menyalin</b>: file di NAS tidak pernah dihapus engine (kecuali dump database lama sesuai jumlah simpan).") + `
     ${d.secret_key_configured ? "" : `<div class="reason warn"><b>PQE_SECRET_KEY belum diisi di server.</b> Secret key NAS S3 tidak bisa disimpan sampai PQE_SECRET_KEY diisi. Tujuan folder tetap bisa dipakai.</div>`}
     <div class="grid cols-4">
       <div class="card kpi"><div class="v">${c.enabled ? "Aktif" : "Mati"}</div><div class="l">Status jadwal</div></div>
@@ -579,10 +583,10 @@ async function nas() {
       </div>
       <div class="card"><h2>Yang dibackup</h2>
         ${chk("include_database", "Database engine", "Hasil analisis, review, config. Wajib.")}
-        ${chk("include_photos", "Foto pengiriman di SILO aplikasi", "Dibaca dari lokasi yang disimpan aplikasi (object_key) lalu disalin ke NAS. Matikan jika tim infra sudah mem-backup bucket aplikasi.")}
+        ${chk("include_photos", "Foto", "Satu salinan per foto: arsip engine (bucket ocr) bila ada, selain itu foto di bucket aplikasi (foto polling). Wajib.")}
         <details><summary class="small muted">Data versi lama</summary>
           ${chk("include_upload_originals", "Foto asli di bucket upload engine", "Hanya foto dari versi sebelum engine berhenti menyimpan ke SILO.")}
-          ${chk("include_processed", "Foto hasil kompres di bucket engine", "Hanya foto dari versi lama.")}
+          ${chk("include_processed", "Foto hasil kompres di bucket photos-processed", "Hanya foto dari versi lama.")}
           ${chk("include_thumbs", "Thumbnail di bucket engine", "Bisa dibuat ulang, biasanya tidak perlu.")}
         </details>
         <h3>Jadwal</h3>
@@ -656,7 +660,7 @@ async function system() {
       <div class="card kpi"><div class="v" style="color:${st.dead ? "var(--reject)" : "inherit"}">${st.dead}</div><div class="l">Gagal permanen (dead)</div></div>
     </div>
     ${state.me.role === "admin" ? `<div class="card"><h2>Kesiapan production (preflight)</h2>
-      <p class="muted small">Memeriksa secret, database, koneksi SILO (hanya baca), mode tenant, backup NAS, worker, dan OCR.
+      <p class="muted small">Memeriksa secret, database, koneksi SILO (baca bucket aplikasi, tulis & hapus file uji di bucket arsip), mode tenant, backup NAS, worker, dan OCR.
         Sama dengan perintah <code>pqe preflight</code>.</p>
       <div class="actions"><button id="pf-run" data-autofocus>Jalankan preflight</button></div><div id="pf-out"></div></div>` : ""}
     <div class="card"><h2>Job gagal permanen</h2>

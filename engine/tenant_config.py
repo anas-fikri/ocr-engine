@@ -120,6 +120,9 @@ class TenantConfig(_Strict):
     # true: foto WARN baru masuk evidence setelah di-approve ops.
     review_required: bool = False
     upload_bucket: str | None = None  # tidak dipakai lagi (ADR 0006); data lama di bucket ini tetap bisa dibaca
+    # arsip engine (ADR 0007). Kosong = ENGINE_BUCKET_ARCHIVE (bawaan "ocr"), dipisah per tenant lewat prefix.
+    archive_bucket: str | None = None
+    archive_retention_days: int = Field(520, ge=1, le=3650)  # lewat ini file arsip dihapus (catatan analisis tetap)
     default_profile: str = "default"
     sources: list[Source] = []
     mapping: dict[str, list[str]] = {}

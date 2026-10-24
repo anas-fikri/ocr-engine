@@ -84,10 +84,13 @@ def env(tmp_path, s3_endpoint, monkeypatch):
 
     bootstrap()
     st = storage.get_storage()  # bucket moto dipakai bersama antar test: kosongkan
-    for b in ("app-photos", "photos-processed", "photos-thumb", "photos-upload"):
+    for b in ("app-photos", "ocr", "photos-processed", "photos-thumb", "photos-upload"):
         for o in list(st.list(b)):
             st.delete(b, o.key, allow_foreign=True)
     yield values
+    from engine.processor import wait_for_archives
+
+    wait_for_archives()  # arsip di latar belakang selesai sebelum database test dibuang
     db.reset_engine()
     settings.reset_settings_cache()
     storage.reset_storage_cache()

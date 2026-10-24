@@ -15,13 +15,15 @@ Rilis pertama untuk live uji coba dan UAT.
 - Penilaian kualitas foto: ketajaman, resolusi/pecah, pencahayaan, kontras, EXIF, foto identik/mirip dipakai ulang, OCR resi.
 - Verdict `PASS`/`WARN`/`REJECT` dengan alasan + saran ID/EN, mode `shadow`/`warn`/`enforce` per tenant & profile.
 - Keputusan siap pakai: `allow_status_update`, `courier_message`, `retake_required`. Status pengiriman tetap milik aplikasi.
-- **Engine hanya memproses gambar** ([ADR 0006](docs/adr/0006-engine-hanya-memproses-gambar.md)): `POST /v1/analyze`
-  mengembalikan foto hasil optimasi (`output_image`, base64, < 1 MB) untuk disimpan aplikasi ke SILO. Engine tidak
-  pernah menulis ke SILO; foto ditolak tidak disimpan di mana pun.
+- `POST /v1/analyze` mengembalikan foto hasil optimasi (`output_image`, base64, < 1 MB) untuk disimpan aplikasi ke
+  bucket-nya sendiri ([ADR 0006](docs/adr/0006-engine-hanya-memproses-gambar.md)).
+- Arsip engine di bucket `ocr`, per aplikasi, masa simpan 520 hari ([ADR 0007](docs/adr/0007-arsip-engine-di-bucket-ocr.md)):
+  foto diterima = foto hasil, foto ditolak = foto asli untuk review & kalibrasi. Ditulis di belakang layar; bucket
+  aplikasi tetap hanya dibaca.
 - Optimasi tanpa manipulasi: hanya diperkecil proporsional + kompresi dinamis dengan pengaman SSIM.
-- Lokasi SILO foto dilaporkan aplikasi (`object_key` atau `POST /v1/photos/{id}/stored`) untuk Web UI, evidence, dan backup.
+- Lokasi SILO foto di aplikasi bisa dilaporkan (`object_key` atau `POST /v1/photos/{id}/stored`), opsional.
 - Evidence PDF per resi / per invoice dengan kode verifikasi keaslian.
-- Backup NAS terjadwal (folder SMB/NFS atau S3-compatible) untuk database dan foto di SILO aplikasi.
+- Backup NAS terjadwal (folder SMB/NFS atau S3-compatible) untuk database dan arsip foto.
 - `pqe preflight` dan `GET /v1/admin/preflight` untuk cek kesiapan production.
 - Fail-open: engine lambat/mati tidak pernah menahan kurir.
 

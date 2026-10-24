@@ -109,14 +109,17 @@ def photo_to_dict(
         "evidence_eligible": evidence_eligible(p),
         # lokasi foto di SILO aplikasi (dilaporkan aplikasi); null = tidak disimpan / belum dilaporkan
         "object": {"bucket": p.bucket, "key": p.object_key} if p.bucket else None,
+        # salinan engine di bucket arsip (ADR 0007); null = belum tersimpan, sudah lewat masa simpan, atau foto polling
+        "archive": {"bucket": p.processed_bucket, "key": p.processed_key} if p.processed_key else None,
         "sha256": p.sha256,
         "error": {"code": p.error_code, "message": p.error_message} if p.error_code else None,
     }
     if storage is not None:
-        original = storage.presign(p.bucket, p.object_key, ttl) if p.bucket else None
+        app = storage.presign(p.bucket, p.object_key, ttl) if p.bucket else None
+        archive = storage.presign(p.processed_bucket, p.processed_key, ttl) if p.processed_key else None
         out["urls"] = {
-            "original": original,
-            "processed": storage.presign(p.processed_bucket, p.processed_key, ttl) if p.processed_key else original,
+            "original": app or archive,
+            "processed": archive or app,
             # engine tidak menyimpan thumbnail; ambil lewat GET /v1/photos/{id}/file?variant=thumbnail
             "thumbnail": storage.presign(p.thumb_bucket, p.thumb_key, ttl) if p.thumb_key else None,
             "expires_in": ttl,

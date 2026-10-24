@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated, Literal
 
 import yaml
@@ -407,4 +408,12 @@ def test_storage_settings(body: StorageSettingsIn, _: Admin):
         return "bisa diunduh (Web UI, evidence, backup NAS)"
 
     run("Baca isi foto", get_check)
+
+    def archive_check():
+        key = f"_pqe_connection_test/{uuid.uuid4().hex}.txt"
+        st.put(settings.engine_bucket_archive, key, b"ok", "text/plain")
+        st.delete(settings.engine_bucket_archive, key)
+        return "tulis & hapus berhasil"
+
+    run(f"Tulis bucket arsip '{settings.engine_bucket_archive}'", archive_check)
     return {"ok": all(c["ok"] for c in checks), "endpoint": settings.aws_endpoint, "checks": checks}

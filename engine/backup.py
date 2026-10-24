@@ -22,7 +22,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from engine import metrics, secretbox
 from engine.db import AuditLog, BackupItem, Photo, Setting, as_aware, session_scope, utcnow
@@ -43,8 +43,7 @@ DEFAULTS: dict[str, Any] = {
     "s3_prefix": "",
     "s3_access_key": "",
     "s3_addressing_style": "path",
-    # foto pengiriman yang disimpan aplikasi di SILO (lokasinya dilaporkan lewat object_key / polling); engine hanya
-    # membaca dan menyalin ke NAS
+    # foto: arsip engine (bucket ocr) jika ada, selain itu foto di SILO aplikasi (polling / object_key)
     "include_photos": True,
     # data versi lama (sebelum engine berhenti menulis ke SILO): salinan di bucket engine
     "include_upload_originals": True,
@@ -289,7 +288,18 @@ def make_target(cfg: dict[str, Any]) -> FolderTarget | S3Target:
 def _pending_query():
     return (select(Photo).outerjoin(BackupItem, BackupItem.photo_id == Photo.id)
             .where(BackupItem.photo_id.is_(None), Photo.status.in_(("done", "error")),
-                   Photo.bucket != ""))  # "" = tidak disimpan aplikasi: tidak ada file untuk disalin
+                   or_(Photo.bucket != "", Photo.processed_key.is_not(None))))  # tanpa file: tidak ada yang disalin
+
+
+def archive_buckets(storage) -> set[str]:
+    out = {storage.s.engine_bucket_archive}
+    try:
+        from engine.tenants import registry
+
+        out |= {t.config.archive_bucket for t in registry.all(enabled_only=False) if t.config.archive_bucket}
+    except Exception:
+        pass
+    return out
 
 
 def pending_count() -> int:
@@ -298,13 +308,17 @@ def pending_count() -> int:
         return int(s.scalar(q) or 0)
 
 
-def _files_for(row: dict, cfg: dict, owned: set[str]) -> list[tuple[str, str, str]]:
+def _files_for(row: dict, cfg: dict, owned: set[str], archives: set[str]) -> list[tuple[str, str, str]]:
     files = []
-    if row["bucket"]:  # "" = foto upload yang tidak disimpan aplikasi (ditolak / lokasi belum dilaporkan)
+    archived = bool(row["processed_key"]) and row["processed_bucket"] in archives
+    if archived:
+        if cfg.get("include_photos", True):
+            files.append(("archive", row["processed_bucket"], row["processed_key"]))
+    elif row["bucket"]:  # "" = foto upload tanpa lokasi aplikasi
         legacy_upload = row["bucket"] in owned
         if cfg["include_upload_originals"] if legacy_upload else cfg.get("include_photos", True):
             files.append(("original", row["bucket"], row["object_key"]))
-    if cfg["include_processed"] and row["processed_key"]:
+    if not archived and cfg["include_processed"] and row["processed_key"]:  # salinan versi lama
         files.append(("processed", row["processed_bucket"], row["processed_key"]))
     if cfg["include_thumbs"] and row["thumb_key"]:
         files.append(("thumbnail", row["thumb_bucket"], row["thumb_key"]))
@@ -318,6 +332,7 @@ def run_photos(storage, cfg: dict, target, budget_sec: float = PHOTO_BUDGET_SEC,
     from engine.storage import ObjectNotFound
 
     owned = storage.owned_buckets()
+    archives = archive_buckets(storage)
     started, photos, files = time.monotonic(), 0, 0
     while time.monotonic() - started < budget_sec:
         with session_scope() as s:
@@ -329,7 +344,7 @@ def run_photos(storage, cfg: dict, target, budget_sec: float = PHOTO_BUDGET_SEC,
             break
         for row in rows:
             copied = 0
-            for kind, bucket, key in _files_for(row, cfg, owned):
+            for kind, bucket, key in _files_for(row, cfg, owned, archives):
                 rel = f"photos/{bucket}/{key}"
                 try:
                     obj = storage.get(bucket, key)
@@ -545,8 +560,8 @@ def test(overrides: dict[str, Any] | None = None, storage=None) -> dict:
             checks.append({"check": "Ruang kosong NAS", "ok": free["free"] > 1024**3,
                            "detail": f"{free['free'] / 1024**3:.1f} GB kosong dari {free['total'] / 1024**3:.1f} GB"})
     st = storage or get_storage()
-    b = st.s.aws_bucket
-    run(f"Baca bucket foto aplikasi '{b}'", lambda: st.ping(b) and "bisa diakses")
+    for label, b in (("arsip engine", st.s.engine_bucket_archive), ("foto aplikasi", st.s.aws_bucket)):
+        run(f"Baca bucket {label} '{b}'", lambda b=b: st.ping(b) and "bisa diakses")
     if cfg.get("include_database"):
         def db_check() -> str:
             from sqlalchemy.engine import make_url
