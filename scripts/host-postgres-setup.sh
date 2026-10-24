@@ -57,9 +57,24 @@ su - postgres -c "psql -qtAc \"SELECT 1 FROM pg_roles WHERE rolname='pqe'\"" | g
 su - postgres -c "psql -q" <<SQL
 ALTER ROLE pqe WITH LOGIN PASSWORD '$PW';
 SQL
-su - postgres -c "psql -qtAc \"SELECT 1 FROM pg_database WHERE datname='pqe'\"" | grep -q 1 \
-  || su - postgres -c "createdb -O pqe pqe"
-echo "• User & database pqe siap"
+# Selalu UTF8: di server dengan locale minimal, cluster bawaan bisa SQL_ASCII dan engine gagal start
+# ("cannot use a string pattern on a bytes-like object").
+CREATEDB="createdb -O pqe -E UTF8 -T template0 -l C pqe"
+if ! su - postgres -c "psql -qtAc \"SELECT 1 FROM pg_database WHERE datname='pqe'\"" | grep -q 1; then
+  su - postgres -c "$CREATEDB"
+else
+  ENC="$(su - postgres -c "psql -qtAc \"SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname='pqe'\"")"
+  if [ "$ENC" != "UTF8" ]; then
+    echo "• Database pqe ber-encoding $ENC, dibuat ulang sebagai UTF8 (isi disalin)"
+    docker compose -f docker-compose.prod.yml stop engine >/dev/null 2>&1 || true
+    DUMP="$(mktemp /tmp/pqe-reencode-XXXXXX.dump)"; chown postgres "$DUMP"
+    su - postgres -c "pg_dump -Fc -f $DUMP pqe"
+    su - postgres -c "dropdb pqe" && su - postgres -c "$CREATEDB"
+    su - postgres -c "pg_restore -d pqe --no-owner --role=pqe $DUMP"
+    rm -f "$DUMP"
+  fi
+fi
+echo "• User & database pqe siap (UTF8)"
 
 # Salin data dari container (jika masih jalan) ke host, hanya jika database host masih kosong.
 TABLES="$(su - postgres -c "psql -d pqe -qtAc \"SELECT count(*) FROM pg_tables WHERE schemaname='public'\"")"
