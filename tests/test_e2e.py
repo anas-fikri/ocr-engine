@@ -160,11 +160,15 @@ def test_api_upload_sync_and_object_reference(client, admin_headers, samples):
     assert body["action"] == "notify" and body["allow_status_update"] is True
     assert body["courier_message"].startswith("Wajib foto ulang. Foto buram.")
 
-    # bawaan: engine tidak memanipulasi gambar -> foto gelap tidak dikoreksi, langsung wajib foto ulang
+    # bawaan: pencahayaan tidak dikoreksi. Teks masih terbaca -> cukup WARN (text_first); tanpa OCR -> REJECT
+    from engine.analyzers.ocr import ocr_available
+
     r = client.post("/v1/analyze", params={"sync": True}, headers=app_h,
                     files={"file": ("gelap.jpg", samples["reject_dark"], "image/jpeg")}, data={"awb": "AWB601"})
     dark = r.json()
-    assert dark["verdict"] == "REJECT" and dark["retake_required"] is True
+    assert dark["verdict"] == ("WARN" if ocr_available() else "REJECT")
+    assert dark["retake_required"] is (dark["verdict"] == "REJECT")
+    assert any(x["code"] == "TOO_DARK" for x in dark["reasons"])
     detail = client.get(f"/v1/photos/{dark['id']}", headers=admin_headers).json()
     assert detail["enhancement"] == {"attempted": False, "applied": False}
 

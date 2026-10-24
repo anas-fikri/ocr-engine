@@ -258,7 +258,7 @@ async function openPhoto(id, onChange) {
       </div>
       <div>
         ${p.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">${esc(p.retake_message || "")}</div></div>` : ""}
-        ${p.enhancement && p.enhancement.applied ? `<div class="reason info"><b>Diperbaiki otomatis</b> <span class="small">(kurva pencahayaan global, terverifikasi tanpa perubahan isi: ${esc((p.enhancement.operations || []).join(", "))})</span>
+        ${p.enhancement && p.enhancement.applied ? `<div class="reason info"><b>Diperbaiki otomatis (tanpa AI)</b> <span class="small">(${esc((p.enhancement.operations || []).join(", "))}; hanya dipakai karena terbukti membuat teks lebih terbaca / pencahayaan lebih baik, isi tidak berubah)</span>
           <div class="small">Sebelum perbaikan: ${badge(p.enhancement.before.verdict)} ${esc((p.enhancement.before.codes || []).join(", "))}. Foto original tetap disimpan utuh.</div></div>` : ""}
         <h3>Skor</h3>${scoreBars(p.scores)}
         <h3>Catatan</h3>${reasonsHtml(p.reasons)}

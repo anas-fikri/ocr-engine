@@ -264,7 +264,8 @@ def test_reject_blocks_status_update_and_enhance_is_opt_in(client, admin_headers
     from tests.conftest import TENANT_YAML
 
     h = {**admin_headers, "Content-Type": "application/x-yaml"}
-    enforce = TENANT_YAML.replace("mode: warn", "mode: enforce")
+    # aturan lama (text_first: false) supaya foto gelap/pecah tetap REJECT; text_first diuji di test_analysis
+    enforce = TENANT_YAML.replace("mode: warn", "mode: enforce\n    text_first: false")
     assert client.put("/v1/admin/tenants", content=enforce, headers=h).status_code == 200
 
     def analyze(sample, **data):

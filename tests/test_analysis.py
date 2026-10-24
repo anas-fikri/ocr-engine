@@ -15,10 +15,11 @@ from engine.synth import base_scene, to_jpeg
 from engine.tenant_config import build_profile
 
 
-def ctx(profile="pod_recipient", enhance=False, **kw):
+def ctx(profile="pod_recipient", enhance=False, text_first=True, sharpen=False, **kw):
     """Default tanpa perbaikan otomatis agar deteksi masalah asli bisa diuji; perbaikan diuji terpisah."""
     p = build_profile(profile)
-    p = p.model_copy(update={"enhance": p.enhance.model_copy(update={"enabled": enhance})})
+    p = p.model_copy(update={"enhance": p.enhance.model_copy(update={"enabled": enhance, "sharpen_text": sharpen}),
+                             "text_first": text_first})
     return AnalysisContext(profile=p, received_at=datetime.now(UTC), **kw)
 
 
@@ -31,8 +32,11 @@ def test_synthetic_verdicts(samples, name):
     from engine.analyzers.ocr import ocr_available
 
     expected = name.split("_")[0].upper()
-    if name == "warn_pixelated_upscaled" and ocr_available():
-        expected = "REJECT"  # teks wajib terbaca: foto pecah yang teksnya tidak terbaca ditolak
+    if ocr_available():
+        if name == "warn_pixelated_upscaled":
+            expected = "REJECT"  # teks wajib terbaca: foto pecah yang teksnya tidak terbaca ditolak
+        if name in ("reject_dark", "reject_overexposed", "reject_low_contrast", "reject_heavy_jpeg"):
+            expected = "WARN"  # teks masih terbaca: masalah kejelasan foto cukup diberi tahu
     r = analyze(samples[name], ctx(), do_compress=False, do_thumbnail=False)
     assert r.verdict.verdict == expected, (name, r.verdict.scores, [x.code for x in r.verdict.reasons])
 
@@ -205,7 +209,7 @@ def test_jpeg_with_tiny_pixel_dimensions_rejected():
 
 @pytest.mark.parametrize("name", ["reject_dark", "reject_low_contrast"])
 def test_enhancement_fixes_lighting(samples, name):
-    r = analyze(samples[name], ctx(enhance=True))
+    r = analyze(samples[name], ctx(enhance=True, text_first=False))
     assert r.enhancement["applied"] is True
     assert r.enhancement["verified"] == "global_monotonic_curve"
     assert r.enhancement["before"]["verdict"] == "REJECT"
@@ -217,7 +221,7 @@ def test_enhancement_fixes_lighting(samples, name):
 
 @pytest.mark.parametrize("name", ["reject_blur_severe", "reject_heavy_jpeg", "reject_tiny", "reject_overexposed"])
 def test_unfixable_photos_require_retake(samples, name):
-    r = analyze(samples[name], ctx(enhance=True))
+    r = analyze(samples[name], ctx(enhance=True, text_first=False))
     assert r.verdict.verdict == "REJECT"
     assert r.retake_required is True
     assert r.to_dict()["retake_required"] is True
@@ -265,7 +269,10 @@ def test_text_must_be_readable_in_every_profile(samples, profile):
     ocr = next(c for c in good.checks if c.check == "ocr")
     assert ocr.score >= 65 and ocr.metrics["words"] >= 3
     bad = analyze(samples["reject_blur_severe"], ctx(profile), do_compress=False, do_thumbnail=False)
-    assert any(r.code in ("NO_TEXT_DETECTED", "TEXT_UNREADABLE") for r in bad.verdict.reasons)
+    # foto sangat buram: teks tidak terbaca (atau Tesseract kehabisan waktu -> OCR_TIMEOUT, tidak menghukum);
+    # foto tetap ditolak lewat ketajaman
+    assert bad.verdict.verdict == "REJECT"
+    assert any(r.code in ("NO_TEXT_DETECTED", "TEXT_UNREADABLE", "OCR_TIMEOUT") for r in bad.verdict.reasons)
 
 
 @ocr_only
@@ -292,12 +299,12 @@ def test_compression_keeps_text_readable(samples, monkeypatch):
     real = ocr_mod.readability
     calls = {"n": 0}
 
-    def fake(img, awb=None, regions=None, full_image=None):
+    def fake(img, awb=None, regions=None, full_image=None, **kw):
         if regions is not None:  # pemeriksaan ulang foto hasil kompres
             calls["n"] += 1
             if calls["n"] == 1:
-                return {**real(img, awb, regions, full_image), "score": 10.0}
-        return real(img, awb, regions, full_image)
+                return {**real(img, awb, regions, full_image, **kw), "score": 10.0}
+        return real(img, awb, regions, full_image, **kw)
 
     monkeypatch.setattr(ocr_mod, "readability", fake)
     r = analyze(samples["pass_huge_camera"], ctx())
@@ -305,3 +312,63 @@ def test_compression_keeps_text_readable(samples, monkeypatch):
     assert tg["raised"] is True and tg["steps"][0]["score"] == 10.0 and tg["after"] >= tg["before"] - 8
     assert r.compression.quality is None or r.compression.quality > tg["steps"][0]["quality"] \
         or max(r.compression.width, r.compression.height) > tg["steps"][0]["long_side"]
+    # storage tetap terkendali: tidak pernah melewati text_guard_max_bytes (bawaan 1,5 MB)
+    assert r.compression.size_bytes <= 1_500_000 and tg["max_bytes"] == 1_500_000
+
+
+@ocr_only
+def test_text_first_softens_other_rejects(samples):
+    """Teks terbaca -> gelap/terang/pudar/pecah cukup WARN (kurir diberi tahu, status boleh diupdate).
+    Teks tidak terbaca -> tetap REJECT. text_first: false -> aturan lama."""
+    r = analyze(samples["reject_dark"], ctx(), do_compress=False, do_thumbnail=False)
+    dark = next(x for x in r.verdict.reasons if x.code == "TOO_DARK")
+    assert r.verdict.verdict == "WARN" and dark.severity == "warn" and dark.detail["softened"] == "text_readable"
+    assert analyze(samples["reject_blur_severe"], ctx(), do_compress=False, do_thumbnail=False).verdict.verdict \
+        == "REJECT"
+    assert analyze(samples["reject_dark"], ctx(text_first=False), do_compress=False,
+                   do_thumbnail=False).verdict.verdict == "REJECT"
+
+
+def _tilted_card(angle: float) -> bytes:
+    """Foto besar kartu/resi yang dipegang miring (kasus nyata dari uji coba)."""
+    import numpy as np
+    from PIL import ImageDraw, ImageFilter
+
+    from engine.synth import _font
+
+    rng = np.random.default_rng(3)
+    img = Image.fromarray(rng.normal(90, 25, (3000, 2250, 3)).clip(0, 255).astype(np.uint8)).filter(
+        ImageFilter.GaussianBlur(6))
+    card = Image.new("RGB", (1100, 1700), (245, 245, 245))
+    d = ImageDraw.Draw(card)
+    d.rectangle([0, 0, 1100, 330], fill=(200, 20, 40))
+    d.text((80, 100), "PCP EXPRESS", font=_font(140), fill=(255, 255, 255))
+    d.text((90, 1080), "ANAS FIKRI MASYKURI", font=_font(72), fill=(20, 20, 20))
+    d.text((90, 1190), "PT PCP EXPRESS INDONESIA", font=_font(52), fill=(60, 60, 60))
+    card = card.rotate(angle, expand=True, fillcolor=(0, 0, 0))
+    img.paste(card, (350, 450), card.convert("L").point(lambda v: 255 if v > 5 else 0))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
+@ocr_only
+@pytest.mark.parametrize("angle", [-12, 20])
+def test_tilted_text_is_straightened_before_reading(angle):
+    from engine.analyzers.ocr import readability
+
+    r = readability(load_image(_tilted_card(angle)))
+    assert r["score"] >= 65 and r["words"] >= 5 and abs(abs(r["skew"]) - abs(angle)) <= 3
+
+
+@ocr_only
+def test_text_sharpener_only_when_it_helps(samples):
+    """Penajam teks (unsharp mask, tanpa AI) dipakai hanya jika keterbacaan naik; hash foto asli tetap."""
+    r = analyze(samples["warn_pixelated_upscaled"], ctx(sharpen=True))
+    info = r.enhancement["sharpen_text"]
+    assert info["attempted"] is True and info["operation"].startswith("unsharp_mask")
+    if info["applied"]:
+        assert info["after"] >= info["before"] + 5 and r.output_image is not r.image
+    assert r.image.sha256 == load_image(samples["warn_pixelated_upscaled"]).sha256
+    clear = analyze(samples["pass_sharp_large"], ctx(sharpen=True), do_compress=False, do_thumbnail=False)
+    assert "sharpen_text" not in clear.enhancement  # teks sudah terbaca: tidak disentuh

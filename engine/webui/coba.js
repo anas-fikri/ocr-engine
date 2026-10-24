@@ -294,7 +294,7 @@ function render(run) {
       ${run.mode === "sim" ? `<div class="fact"><div class="l">Foto untuk disimpan aplikasi</div><div class="v small">${run.output ? `${kb(run.output.bytes)} ${run.output.optimized ? "(dioptimasi)" : "(asli)"}` : run.timedOut ? "engine belum menjawab: foto asli" : "tidak ada (ditolak)"}</div></div>` : ""}
     </div>
     ${r.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">Kualitas tidak memenuhi syarat. Engine tidak memanipulasi gambar, jadi foto harus diambil ulang.</div></div>` : ""}
-    ${en.applied ? `<div class="reason info"><b>Diperbaiki otomatis (tanpa AI)</b><div class="small">${esc((en.operations || []).join(", "))}. Sebelum: ${esc(en.before && en.before.verdict)} → sesudah: ${esc(r.verdict)}. Terverifikasi: hanya kurva pencahayaan global, tidak ada teks/angka yang berubah.</div></div>`
+    ${en.applied ? `<div class="reason info"><b>Diperbaiki otomatis (tanpa AI)</b><div class="small">${esc((en.operations || []).join(", "))}. Sebelum: ${esc(en.before && en.before.verdict)} → sesudah: ${esc(r.verdict)}. Tanpa AI: kurva pencahayaan global dan/atau penajam teks (unsharp mask), dipakai hanya jika terbukti membantu; tidak ada teks/angka yang berubah.</div></div>`
       : en.attempted ? `<div class="reason"><b>Perbaikan otomatis dicoba, tidak dipakai</b> <span class="small muted">(${esc(en.reason || "-")})</span></div>` : ""}
     <div class="compare">
       <figure><img src="${run.origUrl}" alt="asli"><figcaption>Foto asli dari HP: ${kb(img.bytes || run.file.size)}${img.width ? `, ${img.width}×${img.height}` : ""}</figcaption></figure>

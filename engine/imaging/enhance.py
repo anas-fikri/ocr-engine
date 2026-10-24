@@ -74,6 +74,26 @@ def verify_tonal_only(src: np.ndarray, out: np.ndarray) -> bool:
     return True
 
 
+SHARPEN_SIGMA = 1.2
+SHARPEN_AMOUNT = 1.0
+
+
+def sharpen_text(img: LoadedImage) -> LoadedImage:
+    """Penajam teks klasik (unsharp mask), tanpa AI: hasil = foto + amount x (foto - foto_diblur).
+
+    Filter linear yang sama untuk seluruh foto: hanya mempertegas tepi yang SUDAH ada (huruf, garis),
+    tidak bisa menambah atau mengubah huruf/angka. Dipakai hanya jika keterbacaan teks terbukti naik
+    (pipeline), dan hanya untuk versi yang disimpan; foto asli & hash-nya tidak berubah.
+    """
+    import cv2
+
+    src = np.ascontiguousarray(np.asarray(img.pil, dtype=np.uint8))
+    blur = cv2.GaussianBlur(src, (0, 0), SHARPEN_SIGMA)
+    out = cv2.addWeighted(src, 1 + SHARPEN_AMOUNT, blur, -SHARPEN_AMOUNT, 0)  # jenuh otomatis 0-255
+    ok, enc = cv2.imencode(".jpg", cv2.cvtColor(out, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 95])
+    return load_image(enc.tobytes())
+
+
 def enhance(img: LoadedImage) -> tuple[EnhanceResult | None, dict]:
     """Return (hasil, info). Hasil None jika tidak ada yang perlu diubah atau verifikasi gagal."""
     src = np.ascontiguousarray(np.asarray(img.pil, dtype=np.uint8))

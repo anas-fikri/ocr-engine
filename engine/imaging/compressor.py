@@ -55,10 +55,14 @@ class CompressionResult:
         }
 
 
-def _encode(img: Image.Image, fmt: str, quality: int) -> bytes:
+def _encode(img: Image.Image, fmt: str, quality: int, fast: bool = False) -> bytes:
+    """fast=True untuk pencarian quality (tanpa optimasi Huffman/progressive: ±2x lebih cepat, file sedikit lebih
+    besar, jadi aman: yang muat dalam mode cepat pasti muat setelah dioptimasi)."""
     buf = io.BytesIO()
     if fmt == "webp":
-        img.save(buf, "WEBP", quality=quality, method=4)
+        img.save(buf, "WEBP", quality=quality, method=2 if fast else 4)
+    elif fast:
+        img.save(buf, "JPEG", quality=quality, subsampling="4:2:0")
     else:
         img.save(buf, "JPEG", quality=quality, optimize=True, progressive=True, subsampling="4:2:0")
     return buf.getvalue()
@@ -112,11 +116,13 @@ def compress(src: LoadedImage, cfg: Compression) -> CompressionResult:
         lo, hi, found = cfg.min_quality, cfg.max_quality, None
         while lo <= hi:  # quality tertinggi yang ukurannya muat target
             q = (lo + hi) // 2
-            data = _encode(img, cfg.format, q)
+            data = _encode(img, cfg.format, q, fast=True)
             if len(data) <= cfg.target_max_bytes:
                 found, lo = (data, q), q + 1
             else:
                 hi = q - 1
+        if found is not None:
+            found = (_encode(img, cfg.format, found[1]), found[1])  # versi final teroptimasi (lebih kecil)
         if found is None:
             data = _encode(img, cfg.format, cfg.min_quality)
             s = ssim(ref, _gray_for_ssim(img_from(data)))
@@ -152,6 +158,27 @@ def passthrough_of(src: LoadedImage, cfg: Compression) -> CompressionResult:
         return CompressionResult(None, f"image/{src.format.lower()}", src.width, src.height, None, None,
                                  src.size_bytes <= cfg.target_max_bytes, True, src.size_bytes)
     return encode_at(src, cfg, max(src.width, src.height), 95)
+
+
+def encode_fit(src: LoadedImage, cfg: Compression, long_side: int, max_bytes: int, min_q: int, max_q: int
+               ) -> CompressionResult | None:
+    """Quality tertinggi (min_q..max_q) pada ukuran tertentu yang muat max_bytes. None jika tidak ada."""
+    img = _resize(src.pil, long_side)
+    lo, hi, found = min_q, max_q, None
+    while lo <= hi:
+        q = (lo + hi) // 2
+        data = _encode(img, cfg.format, q, fast=True)
+        if len(data) <= max_bytes:
+            found, lo = (data, q), q + 1
+        else:
+            hi = q - 1
+    if found is None:
+        return None
+    q = found[1]
+    data = _encode(img, cfg.format, q)
+    s = ssim(_gray_for_ssim(src.pil), _gray_for_ssim(img_from(data)))
+    return CompressionResult(data, "image/webp" if cfg.format == "webp" else "image/jpeg", img.width, img.height, q,
+                             round(s, 4), len(data) <= cfg.target_max_bytes, False, src.size_bytes)
 
 
 def encode_at(src: LoadedImage, cfg: Compression, long_side: int, quality: int) -> CompressionResult:

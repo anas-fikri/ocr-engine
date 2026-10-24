@@ -9,6 +9,7 @@ from engine.tenant_config import Profile
 
 PASS, WARN, REJECT = "PASS", "WARN", "REJECT"
 _RANK = {PASS: 0, WARN: 1, REJECT: 2}
+TEXT_FIRST_SOFTEN = {"sharpness", "resolution", "exposure"}  # diturunkan ke WARN jika teks terbaca
 
 
 @dataclass
@@ -66,6 +67,18 @@ def decide(profile: Profile, results: list[CheckResult]) -> Verdict:
         for f in r.findings:
             if f.severity == "info":
                 reasons.append(Reason(f.code, r.check, "info", None, f.detail))
+
+    # Target utama: teks terbaca. Jika teks terbaca, kejelasan foto (target berikutnya: paket terlihat jelas)
+    # cukup diberi tahu ke kurir (WARN), tidak menahan status pengiriman.
+    t_ocr = profile.thresholds.get("ocr")
+    if (profile.text_first and t_ocr is not None and scores.get("ocr") is not None
+            and scores["ocr"] >= (t_ocr.warn if t_ocr.warn is not None else t_ocr.reject or 0)):
+        for r in reasons:
+            if r.severity == "reject" and r.check in TEXT_FIRST_SOFTEN:
+                r.severity = "warn"
+                r.detail = {**r.detail, "softened": "text_readable"}
+        if level == REJECT and not any(r.severity == "reject" for r in reasons):
+            level = WARN
 
     auth, risks = authenticity_score(results)
     if auth is not None:

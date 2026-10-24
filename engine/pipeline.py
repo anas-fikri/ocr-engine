@@ -111,6 +111,10 @@ def analyze(
         t_e = time.perf_counter()
         _try_enhance(result, ctx)
         timings["enhance"] = int((time.perf_counter() - t_e) * 1000)
+    if ctx.profile.enhance.sharpen_text and "ocr" in ctx.profile.checks:
+        t_s = time.perf_counter()
+        if time.perf_counter() - t0 < SHARPEN_MAX_ELAPSED and _try_sharpen_text(result, ctx):
+            timings["sharpen_text"] = int((time.perf_counter() - t_s) * 1000)
     out = result.output_image
     if do_compress:
         t1 = time.perf_counter()
@@ -131,17 +135,58 @@ def analyze(
     return result
 
 
+SHARPEN_MIN_GAIN = 5  # penajam teks dipakai hanya jika skor keterbacaan naik minimal sekian poin
+SHARPEN_MAX_ELAPSED = 1.6  # detik; lewat ini penajam dilewati supaya kurir tetap dijawab < 3 detik
+
+
+def _try_sharpen_text(result: PipelineResult, ctx: AnalysisContext) -> bool:
+    """Teks sulit dibaca -> coba penajam teks (unsharp mask, tanpa AI). Dipakai hanya jika keterbacaan teks naik
+    dan verdict tidak memburuk. Skor ketajaman TIDAK dinilai ulang (penajaman tidak boleh membuat skor itu naik palsu).
+    Return True jika dicoba."""
+    from engine.analyzers.ocr import readability
+    from engine.imaging.enhance import SHARPEN_AMOUNT, SHARPEN_SIGMA, sharpen_text
+
+    ocr = next((c for c in result.checks if c.check == "ocr" and c.score is not None), None)
+    th = ctx.profile.thresholds.get("ocr")
+    if ocr is None or th is None or th.warn is None or ocr.score >= th.warn:
+        return False
+    if ocr.score == 0 and not ocr.metrics.get("words"):
+        return False  # tidak ada teks sama sekali: penajam tidak akan membantu
+    src = result.output_image or result.image
+    sharp = sharpen_text(src)
+    r = readability(sharp, (ctx.meta or {}).get("awb"), skew=ocr.metrics.get("skew"), budget=0.7)
+    info = {"attempted": True, "before": ocr.score, "after": r["score"],
+            "operation": f"unsharp_mask:sigma={SHARPEN_SIGMA},amount={SHARPEN_AMOUNT}"}
+    if r["score"] >= ocr.score + SHARPEN_MIN_GAIN and not r["timed_out"]:
+        code = "NO_TEXT_DETECTED" if r["words"] < 3 and not r["awb_found"] else "TEXT_UNREADABLE"
+        new = CheckResult(check="ocr", score=r["score"], issue_code=code, metrics=r)
+        merged = [new if c.check == "ocr" else c for c in result.checks]
+        after = decide(ctx.profile, merged)
+        if _RANK[after.verdict] <= _RANK[result.verdict.verdict]:
+            before = {"verdict": result.verdict.verdict, "scores": result.verdict.scores,
+                      "codes": [x.code for x in result.verdict.reasons if x.severity != "info"]}
+            result.verdict, result.checks, result.output_image = after, merged, sharp
+            info["applied"] = True
+            e = result.enhancement
+            e["applied"] = True
+            e["operations"] = [*e.get("operations", []), info["operation"]]
+            e.setdefault("before", before)
+    info.setdefault("applied", False)
+    result.enhancement["sharpen_text"] = info
+    return True
+
+
 TEXT_DROP_TOLERANCE = 8  # skor keterbacaan teks hasil kompres boleh turun maksimal sekian poin
 
 
 def _guard_text(result: PipelineResult, src: LoadedImage, ctx: AnalysisContext) -> bool:
-    """Foto hasil kompres wajib tetap terbaca teksnya. Jika keterbacaan turun, naikkan kualitas lalu resolusi;
-    langkah terakhir memakai foto asli walau di atas target ukuran (keterbacaan mengalahkan ukuran).
+    """Foto hasil kompres wajib tetap terbaca teksnya. Jika keterbacaan turun, naikkan kualitas lalu resolusi,
+    tetapi tidak pernah melewati `compression.text_guard_max_bytes` (bawaan 1,5 MB) supaya storage terkendali.
 
     Hanya untuk foto yang teksnya terbaca di foto asli (skor OCR >= warn). Return True jika penjaga dijalankan.
     """
     from engine.analyzers.ocr import readability
-    from engine.imaging.compressor import encode_at, passthrough_of
+    from engine.imaging.compressor import encode_fit, passthrough_of
 
     comp = result.compression
     ocr = next((c for c in result.checks if c.check == "ocr" and c.score is not None), None)
@@ -158,26 +203,35 @@ def _guard_text(result: PipelineResult, src: LoadedImage, ctx: AnalysisContext) 
         if c.passthrough:
             return {"score": before, "awb_found": m.get("awb_found", False)}
         return readability(load_image(c.data), (ctx.meta or {}).get("awb"), m.get("regions") or [],
-                           full_image=m.get("method") == "full")
+                           full_image=m.get("method") == "full", skew=m.get("skew", 0.0), budget=0.6)
 
     def ok(r: dict) -> bool:
         return r["score"] >= floor and (r["awb_found"] or not m.get("awb_found"))
 
     cfg, long_side = ctx.profile.compression, max(src.width, src.height)
-    ladder = [
-        lambda: encode_at(src, cfg, max(comp.width, comp.height), min(95, (comp.quality or 80) + 10)),
-        lambda: encode_at(src, cfg, long_side, 92),
-        lambda: passthrough_of(src, cfg),
+    cap = max(cfg.text_guard_max_bytes, cfg.target_max_bytes)
+    q0, side0 = comp.quality or 80, max(comp.width, comp.height)
+    ladder = [  # makin besar; semuanya <= cap
+        lambda: encode_fit(src, cfg, side0, cap, q0 + 1, 95),
+        lambda: encode_fit(src, cfg, min(long_side, int(side0 * 1.4)), cap, cfg.min_quality, 92),
+        lambda: encode_fit(src, cfg, long_side, cap, cfg.min_quality, 92),
+        lambda: passthrough_of(src, cfg) if src.size_bytes <= cap and src.format in ("JPEG", "PNG", "WEBP") else None,
     ]
-    current, r, steps = comp, measure(comp), []
+    best, best_r = comp, measure(comp)
+    current, r, steps = best, best_r, []
     while not ok(r) and ladder:
         steps.append({"quality": current.quality, "long_side": max(current.width, current.height),
-                      "score": r["score"]})
-        current = ladder.pop(0)()
-        r = measure(current)
-    current.text_guard = {"before": before, "after": r["score"], "awb_found": r.get("awb_found", False),
-                          "raised": bool(steps), "steps": steps}
-    result.compression = current
+                      "bytes": current.size_bytes, "score": r["score"]})
+        cand = ladder.pop(0)()
+        if cand is None:
+            continue
+        current, r = cand, measure(cand)
+        if r["score"] > best_r["score"]:
+            best, best_r = current, r
+    chosen, cr = (current, r) if ok(r) else (best, best_r)  # tidak lolos: pakai yang paling terbaca dalam batas
+    chosen.text_guard = {"before": before, "after": cr["score"], "awb_found": cr.get("awb_found", False),
+                         "raised": chosen is not comp, "ok": ok(cr), "max_bytes": cap, "steps": steps}
+    result.compression = chosen
     return True
 
 

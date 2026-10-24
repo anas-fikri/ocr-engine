@@ -56,6 +56,9 @@ reasons:
   DUPLICATE_SIMILAR:
     message: The photo is very similar to another delivery's photo
     suggestion: Every delivery requires a new photo.
+  OCR_TIMEOUT:
+    message: Text could not be checked in time
+    suggestion: No action needed. Photo quality is still judged by the other checks.
   OCR_UNAVAILABLE:
     message: Text check (OCR) is not enabled on this server
     suggestion: No action needed. Contact the engine admin if OCR is required.

@@ -511,7 +511,13 @@ Nilai bawaan:
 | `package`, `goods` | 20 / 45 | (default) | (default) | (default) | (default) |
 | `location` | 10 / 25 | 20 / 40 | (default) | (default) | (default) |
 
-`ocr` aktif di **semua** profile: target engine adalah teks di foto (resi, label, dokumen) harus terbaca.
+`ocr` aktif di **semua** profile: target utama engine adalah teks di foto (resi, label, dokumen) harus terbaca;
+target berikutnya paket/foto terlihat jelas.
+
+**`text_first`** (profile, bawaan `true`): jika teks terbaca (skor `ocr` ≥ warn), masalah kejelasan foto lain
+(`sharpness`, `resolution`, `exposure`: buram ringan, pecah, gelap, terlalu terang, pudar) paling berat **WARN**: kurir
+diberi tahu, status pengiriman tetap boleh diupdate. Alasan tersebut ditandai `detail.softened: "text_readable"`. Teks
+tidak terbaca tetap REJECT. `text_first: false` = aturan lama (setiap pemeriksaan bisa REJECT sendiri).
 
 (format `reject / warn`)
 
@@ -613,6 +619,8 @@ Tidak ada param yang bisa diubah. Atur lewat threshold `exposure`.
 Target engine: **teks di foto harus terbaca**. Aktif di semua profile bawaan, butuh Tesseract (image Docker standar
 sudah menyertakan bahasa `ind` + `eng`).
 
+0. Luruskan foto bila miring (sudut dominan dari garis lurus: baris teks, tepi kartu/resi; Hough). Hanya untuk
+   dibaca, foto tidak diubah. Kasus nyata: kartu/resi yang dipegang miring 10-35° baru terbaca setelah diluruskan.
 1. Cari area yang tampak seperti teks (OpenCV: gradien + morfologi), ambil maksimal 4 area terbesar.
 2. Baca tiap area dengan Tesseract pada resolusi asli (area kecil diperbesar, area tegak dicoba diputar 90°).
 3. Jika hasil area belum meyakinkan (< 3 kata atau confidence < 70), seluruh foto ikut dibaca; dipakai yang terbaik.
@@ -622,7 +630,8 @@ sudah menyertakan bahasa `ind` + `eng`).
 - Skor = rata-rata confidence Tesseract per kata (berbobot panjang kata; kata dengan < 2 karakter alfanumerik diabaikan).
 - Kurang dari 3 kata terbaca (dan resi tidak ditemukan) → skor 0, kode `NO_TEXT_DETECTED`; selain itu skor di bawah
   threshold → `TEXT_UNREADABLE`.
-- Batas waktu baca 1,2 detik per foto (foto buram yang tak terbaca tidak menahan kurir).
+- Batas waktu baca 1,2 detik per foto. Waktu habis tanpa hasil (server sibuk / foto sangat buram) → info
+  `OCR_TIMEOUT`, **tanpa skor** (tidak menolak foto hanya karena waktu habis; foto buram tetap ditolak oleh `sharpness`).
 - Metrik: `score`, `confidence`, `words`, `awb_found`, `method` (`regions`/`full`), `regions` (koordinat relatif area teks).
 - Tesseract tidak ada → info `OCR_UNAVAILABLE`, tanpa skor, tidak memengaruhi verdict (preflight memberi peringatan).
 
@@ -665,6 +674,7 @@ ke aplikasi sebagai `output_image` di respons `POST /v1/analyze` (upload file); 
 | `min_quality` | 55 | 70 | Quality terendah yang boleh dipakai |
 | `max_quality` | 90 | | Quality tertinggi yang dicoba |
 | `guard.min_ssim` | 0.90 | 0.94 | Kemiripan minimal hasil vs original (SSIM, 1.0 = identik) |
+| `text_guard_max_bytes` | 1 500 000 | | Batas ukuran saat penjaga keterbacaan teks menaikkan kualitas |
 
 **Algoritma:**
 
@@ -676,9 +686,17 @@ ke aplikasi sebagai `output_image` di respons `POST /v1/analyze` (upload file); 
 6. Jika hasil malah lebih besar dari original (dan formatnya bisa dibuka browser), original yang dipakai.
 7. **Penjaga keterbacaan teks:** jika teks foto asli terbaca (skor `ocr` ≥ warn), hasil kompres dibaca ulang di area
    teks yang sama. Skor tidak boleh turun lebih dari 8 poin, tidak boleh di bawah warn, dan resi yang terbaca harus tetap
-   terbaca. Jika gagal: quality dinaikkan (+10), lalu resolusi asli dengan quality 92, lalu foto asli apa adanya,
-   **walau di atas 1 MB** (keterbacaan teks menang atas ukuran). Hasilnya di `compression.text_guard`
-   (`before`, `after`, `awb_found`, `raised`, `steps`).
+   terbaca. Jika gagal: quality dinaikkan, lalu resolusi (×1,4, lalu resolusi asli), lalu foto asli, tetapi **tidak
+   pernah melewati `text_guard_max_bytes`** (bawaan 1 500 000 byte) supaya storage terkendali. Tidak ada yang lolos →
+   dipakai kandidat paling terbaca dalam batas itu. Hasilnya di `compression.text_guard`
+   (`before`, `after`, `awb_found`, `raised`, `ok`, `max_bytes`, `steps`).
+
+**Penajam teks** (`enhance.sharpen_text`, bawaan `true`, tanpa AI): jika teks sulit dibaca (skor `ocr` < warn), engine
+mencoba unsharp mask klasik (`hasil = foto + 1,0 × (foto − blur σ1,2)`), lalu membaca ulang. Dipakai **hanya** jika skor
+keterbacaan naik ≥ 5 poin dan verdict tidak memburuk; skor ketajaman tidak dinilai ulang (tidak boleh naik palsu).
+Filter ini hanya mempertegas tepi yang sudah ada, tidak bisa menambah/mengubah huruf. Hanya untuk versi yang disimpan;
+foto asli dan hash-nya tidak berubah. Dicatat di `enhancement.sharpen_text` (`before`, `after`, `applied`). Dilewati
+jika analisis sudah > 1,6 detik (kurir tetap dijawab < 3 detik).
 
 **Thumbnail:** sisi terpanjang `thumbnail.long_side_px` (320), JPEG `thumbnail.quality` (70). Selalu JPEG. Dibuat engine
 saat diminta Web UI (`GET /v1/photos/{id}/file?variant=thumbnail`, dari arsip engine atau bucket aplikasi), tidak

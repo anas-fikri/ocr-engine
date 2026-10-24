@@ -41,6 +41,8 @@ class Compression(_Strict):
     min_quality: int = Field(55, ge=10, le=95)
     max_quality: int = Field(90, ge=10, le=98)
     guard: Guard = Guard()
+    # penjaga keterbacaan teks boleh menaikkan ukuran sampai batas ini (storage tetap terkendali)
+    text_guard_max_bytes: int = Field(1_500_000, ge=100_000)
 
 
 class Thumbnail(_Strict):
@@ -49,9 +51,11 @@ class Thumbnail(_Strict):
 
 
 class Enhance(_Strict):
-    """Koreksi pencahayaan opsional (tanpa AI), nonaktif secara bawaan. Lihat engine/imaging/enhance.py."""
+    """Perbaikan opsional tanpa AI. Lihat engine/imaging/enhance.py."""
 
-    enabled: bool = False
+    enabled: bool = False  # koreksi pencahayaan (kurva tonal global)
+    # penajam teks (unsharp mask, filter linear klasik): dipakai hanya jika keterbacaan teks terbukti naik
+    sharpen_text: bool = True
 
 
 class Profile(_Strict):
@@ -62,6 +66,9 @@ class Profile(_Strict):
     compression: Compression = Compression()
     thumbnail: Thumbnail = Thumbnail()
     enhance: Enhance = Enhance()
+    # Target utama = teks terbaca. true: jika teks terbaca (skor ocr >= warn), masalah kejelasan foto lain
+    # (ketajaman, resolusi, pencahayaan) paling berat WARN, bukan REJECT. Teks tidak terbaca tetap REJECT.
+    text_first: bool = True
 
     @field_validator("checks")
     @classmethod

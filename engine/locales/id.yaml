@@ -57,6 +57,9 @@ reasons:
   DUPLICATE_SIMILAR:
     message: Foto sangat mirip dengan foto pengiriman lain
     suggestion: Setiap pengiriman wajib memakai foto baru.
+  OCR_TIMEOUT:
+    message: Teks belum sempat diperiksa (waktu habis)
+    suggestion: Tidak perlu tindakan. Kualitas foto tetap dinilai dari pemeriksaan lain.
   OCR_UNAVAILABLE:
     message: Pemeriksaan teks (OCR) tidak aktif di server ini
     suggestion: Tidak perlu tindakan. Hubungi admin engine jika OCR dibutuhkan.
