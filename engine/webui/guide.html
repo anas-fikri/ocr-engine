@@ -102,9 +102,10 @@
 
       <section id="cepat">
         <h2>Cara tercepat: kirim foto, terima keputusan (1 panggilan)</h2>
-        <p>Engine <b>hanya memproses gambar</b>; sebelum dan sesudahnya dikerjakan aplikasi pengiriman, termasuk menyimpan ke SILO.
+        <p>Engine memproses gambar; sebelum dan sesudahnya dikerjakan aplikasi pengiriman, termasuk menyimpan foto pengiriman ke bucket-nya.
           Aplikasi mengirim foto dari kurir <b>langsung ke engine</b>. Engine memeriksa dan mengoptimasi foto, lalu menjawab dengan keputusan
-          dan <b>foto hasil</b> (<code>output_image</code>, base64, &lt; 1 MB). Engine <b>tidak menyimpan apa pun ke SILO</b>.
+          dan <b>foto hasil</b> (<code>output_image</code>, base64, &lt; 1 MB). Engine <b>tidak menulis ke bucket aplikasi</b>; engine hanya
+          mengarsipkan salinannya sendiri di bucket <code>ocr</code> (per aplikasi, 520 hari) di belakang layar.
           Satu request, tunggu maks. 3 detik (urutan lengkap: <a href="#kapan">kapan foto dikirim &amp; divalidasi</a>).</p>
         <table>
           <tr><th>Hasil</th><th>Yang dilakukan aplikasi pengiriman</th></tr>
@@ -186,8 +187,8 @@ if allow:
         <table>
           <tr><th>Mode</th><th>Yang terjadi</th></tr>
           <tr><td><b>Simulasi aplikasi kurir</b></td><td>Sama dengan integrasi level 2: <code>POST /v1/analyze?timeout_ms=3000</code> dengan file + metadata.
-            Hasil analisis tercatat (tenant <code>uji-coba</code>, retensi 30 hari) dan muncul di Web UI; foto hasil ditampilkan, tetapi tidak disimpan ke SILO
-            (di aplikasi asli, aplikasi yang menyimpan).</td></tr>
+            Hasil analisis tercatat (tenant <code>uji-coba</code>, retensi 30 hari) dan fotonya diarsipkan engine di <code>ocr/uji-coba/...</code>,
+            jadi bisa dibuka di Web UI dan evidence (di aplikasi asli, aplikasi juga menyimpan foto hasil ke bucket-nya).</td></tr>
           <tr><td><b>Uji cepat</b></td><td><code>POST /v1/analyze/preview</code>: hanya dianalisis, tidak disimpan.</td></tr>
         </table>
         <p>Buka dari HP di jaringan yang sama: <code>http://&lt;IP-PC-engine&gt;:8000/ui/coba.html</code>. Tombol <b>Ambil foto</b> membuka
@@ -207,14 +208,15 @@ if allow:
             <code>POST /v1/analyze</code> dengan file foto (+ <code>object_key</code> opsional). Satu request, tunggu maks. 3 detik.</td></tr>
           <tr><td>3 · scan</td><td>Engine</td><td><b>Validasi gambar</b> (biasanya 0,2–2 detik): ketajaman, pecah, resolusi, cahaya, EXIF, duplikat, OCR → verdict.</td></tr>
           <tr><td>4a · diterima</td><td>Engine → aplikasi</td><td>Optimasi + kompres &lt; 1 MB (tanpa manipulasi). Engine menjawab <code>allow_status_update: true</code> +
-            <code>output_image</code> (foto hasil, base64). Engine <b>tidak</b> menyimpan foto di mana pun; hanya metadata hasil analisis yang dicatat.</td></tr>
+            <code>output_image</code> (foto hasil, base64). Setelah menjawab, engine mengarsipkan foto hasil yang sama di bucket <code>ocr</code>.</td></tr>
           <tr><td>4b · ditolak</td><td>Engine → aplikasi → kurir</td><td>Tanpa foto hasil (<code>output_image: null</code>). Engine menjawab <code>allow_status_update: false</code> +
-            <code>courier_message</code>, aplikasi mengirim balik pesan itu ke kurir untuk foto ulang (kembali ke 1).</td></tr>
-          <tr><td>5 · simpan</td><td>Aplikasi pengiriman → SILO</td><td>Diterima → <b>aplikasi menyimpan</b> <code>output_image</code> ke SILO + update status. Ditolak → tidak disimpan, status <b>tidak</b> diupdate.
+            <code>courier_message</code>, aplikasi mengirim balik pesan itu ke kurir untuk foto ulang (kembali ke 1). Engine mengarsipkan foto asli di <code>ocr</code> untuk review ops.</td></tr>
+          <tr><td>5 · simpan</td><td>Aplikasi pengiriman → SILO</td><td>Diterima → <b>aplikasi menyimpan</b> <code>output_image</code> ke bucket-nya + update status. Ditolak → aplikasi tidak menyimpan, status <b>tidak</b> diupdate.
             Engine tidak menjawab dalam 3 detik → aplikasi menyimpan foto asli (kode lama) + update status (fail-open).</td></tr>
         </table>
-        <p class="muted small">Engine tidak punya bucket sendiri dan tidak pernah menulis ke SILO; cukup izin baca di bucket aplikasi
-          (untuk Web UI, evidence, backup NAS, dan polling). Foto asli kurir tidak diarsipkan engine; jika perlu disimpan juga, itu keputusan aplikasi.
+        <p class="muted small">Engine hanya membaca bucket aplikasi dan menulis ke bucket arsipnya sendiri (<code>ocr</code>, per aplikasi,
+          masa simpan 520 hari): foto diterima = foto hasil, foto ditolak = foto asli (untuk review &amp; kalibrasi). Web UI, evidence, dan backup NAS
+          memakai arsip ini. Menyimpan foto asli di bucket aplikasi (selain versi optimasi) adalah keputusan aplikasi.
           Level 0/1 (aplikasi tidak memanggil engine): aplikasi menyimpan ke SILO sendiri, engine membaca dan memeriksa belakangan lewat bucket notification/polling;
           hasilnya untuk laporan dan evidence, tetapi tidak bisa menahan status.</p>
         <p class="muted small mobile-only">Di HP: geser diagram ke samping, atau putar HP ke posisi lanskap.</p>
@@ -236,7 +238,7 @@ if allow:
         <h3 id="alur-engine">D. Proses di dalam engine</h3>
         <div class="diagram" id="dg-engine"></div>
         <p class="caption">Semua jalur masuk berakhir di antrean yang sama (idempotent: foto yang sama tidak diproses dua kali). Engine tidak
-          memanipulasi isi gambar: hanya optimasi ukuran dan kompresi. Engine hanya membaca SILO dan tidak menyimpan foto; yang dicatat hanya metadata hasil analisis.</p>
+          memanipulasi isi gambar: hanya optimasi ukuran dan kompresi. Engine hanya membaca bucket aplikasi; foto upload diarsipkan di bucket <code>ocr</code> setelah respons.</p>
       </section>
 
       <section id="aturan">
@@ -375,7 +377,8 @@ val result = runCatching { client.newCall(req).execute().use { it.body?.string()
   "reasons": [{ "code": "BLURRY", "severity": "reject", "message": "Foto buram",
                 "suggestion": "Pegang HP dengan stabil, ketuk layar untuk fokus, lalu foto ulang." }],
   "output_image": null,           // hanya dari upload file. Diterima: {"content_type","bytes","optimized","sha256","base64"}; ditolak: null
-  "object": null,                 // lokasi foto di SILO aplikasi (dari object_key / reportStored); null = tidak disimpan
+  "object": null,                 // lokasi foto di bucket aplikasi (dari object_key / reportStored); null = tidak disimpan aplikasi
+  "archive": null,                // salinan engine di bucket ocr (ditulis beberapa detik setelah respons; terlihat di GET /v1/photos/{id})
   "evidence_eligible": false      // apakah foto masuk bukti penagihan pelanggan
 }</pre>
         <table>
@@ -383,8 +386,9 @@ val result = runCatching { client.newCall(req).execute().use { it.body?.string()
           <tr><td><code>allow_status_update</code></td><td><b>Paling penting.</b> <code>false</code> hanya jika foto ditolak (<code>REJECT</code> di mode <code>enforce</code>, atau ops meminta foto ulang): aplikasi pengiriman <b>tidak boleh</b> update status. Selain itu <code>true</code>.</td></tr>
           <tr><td><code>courier_message</code></td><td>Kalimat siap tampil untuk kurir, atau <code>null</code> jika kurir tidak perlu melihat apa pun (PASS / mode shadow).</td></tr>
           <tr><td><code>output_image</code></td><td>Foto yang <b>disimpan aplikasi</b> ke SILO (decode <code>base64</code>): versi optimasi &lt; 1 MB, atau foto asli apa adanya
-            jika sudah memenuhi syarat (<code>optimized: false</code>). <code>null</code> jika foto ditolak, atau engine belum selesai (<code>202</code>, simpan foto asli). Engine tidak menyimpan foto ini.</td></tr>
-          <tr><td><code>object</code></td><td>Lokasi foto di SILO aplikasi (<code>bucket</code>, <code>key</code>) dari <code>object_key</code> atau <code>POST /v1/photos/{id}/stored</code>; dipakai Web UI, evidence, dan backup NAS (hanya dibaca).</td></tr>
+            jika sudah memenuhi syarat (<code>optimized: false</code>). <code>null</code> jika foto ditolak, atau engine belum selesai (<code>202</code>, simpan foto asli). Salinannya juga diarsipkan engine di bucket <code>ocr</code>.</td></tr>
+          <tr><td><code>object</code></td><td>Lokasi foto di bucket aplikasi (<code>bucket</code>, <code>key</code>) dari <code>object_key</code> atau <code>POST /v1/photos/{id}/stored</code>; opsional, pelengkap arsip engine (hanya dibaca).</td></tr>
+          <tr><td><code>archive</code></td><td>Salinan engine di bucket arsip (<code>ocr</code>, <code>&lt;tenant&gt;/&lt;yyyy&gt;/&lt;mm&gt;/&lt;dd&gt;/&lt;id&gt;</code>): foto hasil (diterima) atau foto asli (ditolak). Dipakai Web UI, evidence, dan backup NAS; dihapus setelah 520 hari.</td></tr>
           <tr><td><code>retake_required</code></td><td><code>true</code> = kualitas tidak memenuhi syarat (buram berat, pecah, terlalu kecil, terlalu gelap). Di mode <code>warn</code> kurir hanya diberi tahu; di mode <code>enforce</code> status ditahan.</td></tr>
           <tr><td><code>verdict</code></td><td><code>PASS</code> layak, <code>WARN</code> kurang ideal tapi masih terbaca (tetap diterima &amp; masuk evidence), <code>REJECT</code> tidak layak.</td></tr>
           <tr><td><code>reasons[].code</code></td><td>Kode stabil untuk logika aplikasi. <code>message</code>/<code>suggestion</code> sudah diterjemahkan (header <code>Accept-Language: id|en</code>).</td></tr>
@@ -454,7 +458,7 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
           <li>Foto besar: <b>diperkecil proporsional</b> bila perlu, lalu dicari kualitas JPEG tertinggi yang muat &lt; 1 MB.
             Pengaman SSIM memastikan teks tetap terbaca; jika target tidak tercapai tanpa merusak keterbacaan, keterbacaan diutamakan.</li>
           <li>Rotasi mengikuti orientasi kamera (EXIF) agar foto tidak miring saat ditampilkan.</li>
-          <li>Engine <b>tidak menyimpan foto</b>: foto hasil dikembalikan di <code>output_image</code>, aplikasi yang menyimpannya ke SILO.
+          <li>Foto hasil dikembalikan di <code>output_image</code>, aplikasi yang menyimpannya ke bucket-nya. Engine menyimpan salinannya hanya di arsipnya (<code>ocr</code>).
             Kode verifikasi keaslian (SHA-256) merujuk ke foto asli yang dikirim; <code>output_image.sha256</code> adalah hash foto hasil.</li>
           <li>Foto yang kualitasnya tidak memenuhi syarat (buram, pecah, terlalu kecil, terlalu gelap/terang) tidak "dibenarkan":
             engine mengembalikan <code>retake_required: true</code> dan kurir diminta foto ulang.</li>
@@ -483,7 +487,7 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
         <ul>
           <li>☐ Update status kurir tetap jalan saat engine dimatikan (uji!)</li>
           <li>☐ Semua panggilan punya timeout (≤ 3 dtk) dan fail-open (engine tidak menjawab → simpan foto asli)</li>
-          <li>☐ Foto diterima: simpan <code>output_image</code> ke SILO; foto ditolak: tidak disimpan, status tidak diupdate</li>
+          <li>☐ Foto diterima: simpan <code>output_image</code> ke bucket aplikasi; foto ditolak: tidak disimpan aplikasi, status tidak diupdate</li>
           <li>☐ API key hanya di env server, tidak di aplikasi mobile/browser/git</li>
           <li>☐ Foto dikirim asli dari kamera (tanpa kompres di aplikasi)</li>
           <li>☐ Metadata <code>awb</code>, <code>photo-type</code>, <code>courier-id</code>, <code>customer-id</code> terkirim</li>
@@ -530,7 +534,7 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
     D.flow(document.getElementById("dg-onboarding"), {
       title: "Alur integrasi sampai go-live", cols: 4, colW: 240, rowH: 96,
       nodes: {
-        a1: { c: 0, r: 0, k: "start", h: 60, t: "1. Minta tenant + API key;\ninfra: engine cukup\nizin BACA SILO" },
+        a1: { c: 0, r: 0, k: "start", h: 60, t: "1. Minta tenant + API key;\ninfra: bucket ocr +\nkey engine (baca app)" },
         a2: { c: 1, r: 0, t: "2. Uji coba di halaman\nUji Coba Kamera" },
         a3: { c: 2, r: 0, t: "3. Pilih level integrasi\n(0 / 1 / 2)" },
         a4: { c: 3, r: 0, t: "4. Implementasi:\ntimeout ≤ 3 dtk + fail-open" },
@@ -550,14 +554,16 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
         { note: "① FOTO LANGSUNG DIKIRIM KE ENGINE (belum ke SILO, status belum diupdate)", span: [1, 2], tone: "info" },
         { f: 1, t: 2, text: "2. POST /v1/analyze (file + object_key, ≤ 3 dtk)" },
         { note: "② SCAN / VALIDASI: ketajaman · pecah · resolusi · cahaya · EXIF · duplikat · OCR", span: [1, 3], tone: "engine" },
-        { note: "Jika DITERIMA (engine tidak menyimpan apa pun)", span: [1, 2], tone: "info" },
+        { note: "Jika DITERIMA", span: [1, 2], tone: "info" },
         { self: 2, text: "3. Optimasi + kompres < 1 MB" },
         { f: 2, t: 1, dash: true, text: "4. allow_status_update: true + output_image" },
-        { f: 1, t: 3, text: "5. APLIKASI simpan output_image ke SILO" },
+        { f: 1, t: 3, text: "5. APLIKASI simpan output_image ke bucket-nya" },
+        { f: 2, t: 3, dash: true, text: "Engine: arsip ke bucket ocr (latar belakang)" },
         { self: 1, text: "6. Update status pengiriman" },
-        { note: "Jika DITOLAK (REJECT, mode enforce): tidak disimpan, status tidak diupdate", span: [1, 3] },
+        { note: "Jika DITOLAK: aplikasi tidak simpan, status tidak diupdate", span: [1, 3] },
         { f: 2, t: 1, dash: true, text: "4'. allow_status_update: false + courier_message" },
         { f: 1, t: 0, dash: true, text: "5'. Kirim balik pesan → kurir foto ulang (ke langkah 1)" },
+        { f: 2, t: 3, dash: true, text: "Engine: arsip foto asli ke ocr (review)" },
         { note: "Engine tidak menjawab ≤ 3 dtk: aplikasi simpan foto asli + update status (fail-open)", span: [1, 3] },
         { f: 4, t: 2, text: "7. GET /v1/evidence/{awb}/pdf" },
         { f: 2, t: 4, dash: true, text: "8. Bukti foto PASS + WARN" },
@@ -573,8 +579,8 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
         k3: { c: 1.5, r: 3, k: "dec", w: 250, t: "4. Diterima?" },
         k4a: { c: 0.5, r: 4, tone: "pass", h: 66, w: 220, t: "Ya: optimasi + kompres,\njawab allow true\n+ output_image" },
         k4b: { c: 2.5, r: 4, tone: "reject", h: 66, w: 220, t: "Tidak (REJECT): jawab\nallow false +\ncourier_message" },
-        k5a: { c: 0.5, r: 5, k: "end", w: 240, h: 60, t: "5. Aplikasi simpan output_image\nke SILO + update status" },
-        k5b: { c: 2.5, r: 5, tone: "reject", w: 240, h: 60, t: "Tidak disimpan, kirim balik\nke kurir, status TIDAK diupdate" },
+        k5a: { c: 0.5, r: 5, k: "end", w: 240, h: 60, t: "5. Aplikasi simpan output_image\nke bucket-nya + update status" },
+        k5b: { c: 2.5, r: 5, tone: "reject", w: 240, h: 60, t: "Aplikasi tidak simpan, kirim balik\nke kurir, status TIDAK diupdate" },
       },
       edges: [
         { f: "k0", t: "k1" }, { f: "k1", t: "k1n", label: "error / > 3 dtk" }, { f: "k1", t: "k2" }, { f: "k2", t: "k3" },
@@ -595,11 +601,11 @@ curl -s "{{BASE}}/v1/verify/&lt;sha256&gt;"                                     
         ck: { c: 1.5, r: 3, w: 330, t: "Pemeriksaan: ketajaman, resolusi/pecah,\npencahayaan, EXIF, duplikat, OCR resi" },
         vd: { c: 1.5, r: 4, w: 300, t: "Verdict PASS / WARN / REJECT\n(threshold per jenis foto)" },
         cp: { c: 1.5, r: 5, w: 330, tone: "pass", t: "Optimasi tanpa manipulasi: perkecil bila perlu +\nkompres < 1 MB (foto kecil tidak disentuh)" },
-        st: { c: 1.5, r: 6, w: 340, t: "Catat metadata ke DB (tanpa foto);\nengine TIDAK menulis ke SILO" },
+        st: { c: 1.5, r: 6, w: 340, t: "Catat metadata ke DB; arsip foto ke bucket\nocr (latar belakang, bukan bucket aplikasi)" },
         rs: { c: 1.5, r: 7, k: "dec", w: 360, t: "Kembalikan keputusan + foto hasil:\nallow_status_update · courier_message · output_image" },
         o1: { c: 0, r: 8, t: "Respons API ke aplikasi\n(aplikasi simpan ke SILO)" },
         o2: { c: 1, r: 8, t: "Webhook HMAC\nke backend (retry)" },
-        o3: { c: 2, r: 8, t: "Web UI: dashboard,\nreview (opsional)" },
+        o3: { c: 2, r: 8, t: "Web UI: dashboard,\nreview (foto dari arsip)" },
         o4: { c: 3, r: 8, tone: "pass", t: "Evidence + PDF pelanggan\n(PASS + WARN)" },
       },
       edges: [

@@ -71,7 +71,7 @@ menulis atau menghapus di bucket aplikasi dalam operasi normal; `demo-upload` ad
    (buram berat, pecah, terlalu gelap) bertanda **Wajib foto ulang**; engine tidak memperbaiki/memanipulasi gambar,
    hanya mengoptimasi ukuran. Coba juga tombol **Setujui** / **Minta foto ulang**.
 4. **Uji foto**: upload foto dari HP Anda sendiri untuk melihat penilaian engine tanpa menyimpan apa pun.
-5. **Koneksi SILO** (admin): koneksi **baca** ke SILO (engine tidak pernah menyimpan foto; aplikasi yang menyimpan).
+5. **Koneksi SILO** (admin): koneksi ke SILO (baca bucket aplikasi, tulis arsip engine di bucket `ocr`).
    Di compose lokal sudah terisi dari env; untuk mencoba SILO lain, tempel JSON `mc` lalu **Test koneksi** (jangan
    pakai `127.0.0.1` dari dalam Docker, lihat [configuration.md §1.6](configuration.md#16-koneksi-silo-lewat-web-ui)).
 6. **Backup NAS** (admin): di compose lokal tujuan folder `/backup` = folder `./backup` di repo. Klik **Test NAS**, centang

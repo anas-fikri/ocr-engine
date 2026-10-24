@@ -9,9 +9,9 @@ Web UI dipakai tim **ops/SPV**, **admin engine**, dan **viewer** (finance, manaj
   juga memuat diagram alur integrasi, alur penggunaan, keputusan di aplikasi kurir, dan proses di dalam engine.
 - **Uji Coba Kamera** ada di `https://<host-engine>/ui/coba.html` (menu **Uji Coba Kamera ↗**): halaman yang dioptimalkan
   untuk HP untuk mencoba engine seperti aplikasi kurir, lihat [Uji Coba Kamera](#uji-coba-kamera-hp).
-- Engine **hanya memproses foto**; penyimpanan foto ke SILO dikerjakan aplikasi pengiriman
-  ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Web UI menampilkan foto dengan **membaca** SILO aplikasi.
-  Foto yang tidak disimpan aplikasi (ditolak, atau lokasinya tidak dilaporkan) tampil tanpa gambar.
+- Penyimpanan foto pengiriman dikerjakan aplikasi pengiriman ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)).
+  Web UI menampilkan foto dari **arsip engine** (bucket `ocr`, [ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)):
+  foto diterima = foto hasil, foto ditolak = foto asli (untuk review). Foto polling dibaca dari bucket aplikasi.
 
 **Navigasi:** menu ada di sidebar kiri, dikelompokkan **Pantau** (Dashboard, Review, Cari foto, Evidence), **Uji** (Uji
 foto, Uji Coba Kamera), **Pengaturan** (Tenant, API key, Koneksi SILO, Backup NAS; khusus admin), dan **Lainnya** (Sistem,
@@ -97,7 +97,7 @@ Daftar foto WARN atau REJECT, atau gagal diproses (ERROR), yang **belum** direvi
 Klik **Terapkan** (atau tekan **Enter**) setelah mengubah filter; **Reset** mengosongkan semua filter. Di HP hanya kotak
 **Resi** yang tampil; tombol **Filter lainnya** membuka filter lain. Daftar berisi 50 foto per halaman, terbaru di atas (tombol **Sebelumnya / Berikutnya**). Klik baris untuk membuka [detail foto](#detail-foto). Setelah keputusan diambil, foto hilang dari antrean.
 
-Kolom tabel: thumbnail, resi (+ ID eksternal), tenant/jenis foto, kurir/cabang, verdict (dengan tulisan merah **foto ulang** jika `retake_required`), alasan utama, status review, waktu diterima. Di HP kolom tenant, kurir, review, dan waktu disembunyikan. Thumbnail dibuat engine saat dibutuhkan dari foto di SILO aplikasi; kotak abu-abu bertuliskan **tidak disimpan** berarti foto itu tidak disimpan aplikasi (ditolak, atau aplikasi belum melaporkan lokasinya).
+Kolom tabel: thumbnail, resi (+ ID eksternal), tenant/jenis foto, kurir/cabang, verdict (dengan tulisan merah **foto ulang** jika `retake_required`), alasan utama, status review, waktu diterima. Di HP kolom tenant, kurir, review, dan waktu disembunyikan. Thumbnail dibuat engine saat dibutuhkan dari arsip engine (atau dari bucket aplikasi untuk foto polling); kotak abu-abu bertuliskan **tidak ada file** berarti tidak ada arsip (belum/gagal ditulis, atau lewat 520 hari) dan aplikasi tidak melaporkan lokasinya.
 
 > Saat filter **Kode alasan** dipakai, jumlah di bawah tabel tetap menghitung semua foto sesuai filter lain, dan satu halaman bisa berisi kurang dari 50 baris. Ini wajar.
 
@@ -122,7 +122,7 @@ Panel kanan yang terbuka saat baris foto diklik.
 
 **Bagian atas:** nomor resi, verdict (atau `ERROR` jika file gagal diproses), status review, tenant, profile yang dipakai, dan **aksi mode** (`log` / `notify` / `reject`, yaitu saran ke aplikasi sesuai mode profile; lihat [configuration.md §5](configuration.md#5-mode-verdict-dan-action)).
 
-**Gambar:** foto yang disimpan aplikasi di SILO (klik atau **Buka foto** untuk ukuran penuh), plus link **Evidence PDF resi ini**. Link berlaku 15 menit (`ENGINE_PRESIGN_TTL_UI`). Jika kedaluwarsa, tutup lalu buka lagi detailnya. Jika muncul kotak **Foto tidak disimpan di SILO**, foto ditolak (kurir diminta foto ulang) atau aplikasi belum melaporkan lokasinya; data analisis tetap ada, tetapi tidak ada gambar, foto tidak masuk evidence, dan **Analisis ulang** tidak bisa dipakai. Tekan **Esc** atau **×** untuk menutup panel.
+**Gambar:** foto dari arsip engine, atau dari bucket aplikasi jika tidak ada arsip (klik atau **Buka foto** untuk ukuran penuh), plus link **Evidence PDF resi ini**. Foto yang ditolak menampilkan foto asli dengan keterangan *"Foto asli yang ditolak (arsip engine, untuk review & kalibrasi). Tidak disimpan aplikasi."* Link berlaku 15 menit (`ENGINE_PRESIGN_TTL_UI`). Jika kedaluwarsa, tutup lalu buka lagi detailnya. Jika muncul kotak **Tidak ada file foto**, arsip belum tersimpan atau sudah lewat masa simpan dan aplikasi tidak melaporkan lokasinya; data analisis tetap ada, tetapi tidak ada gambar, foto tidak masuk evidence, dan **Analisis ulang** tidak bisa dipakai. Tekan **Esc** atau **×** untuk menutup panel.
 
 **Kotak status tambahan:**
 
@@ -156,14 +156,14 @@ diperkecil/dikompres dari file kurir.
 
 Kolom **Catatan (opsional)** ikut disimpan bersama keputusan. Setiap keputusan tercatat di **Riwayat review** (siapa, kapan, apa) dan di audit log, lalu dikirim sebagai webhook `review.updated` jika aplikasi berlangganan.
 
-**Bagian bawah:** data pengiriman (kurir, cabang, pelanggan, waktu foto, lokasi dengan link Google Maps, sumber ingest, **Lokasi di SILO** atau "tidak disimpan / belum dilaporkan aplikasi"), info gambar & kompresi (format, dimensi, ukuran sebelum → sesudah, quality, SSIM, SHA-256 file original), EXIF, riwayat review, dan metrik mentah (untuk kalibrasi).
+**Bagian bawah:** data pengiriman (kurir, cabang, pelanggan, waktu foto, lokasi dengan link Google Maps, sumber ingest, **Arsip engine** (`ocr/<tenant>/...` atau "-") dan **Lokasi di aplikasi** (atau "tidak dilaporkan aplikasi")), info gambar & kompresi (format, dimensi, ukuran sebelum → sesudah, quality, SSIM, SHA-256 file original), EXIF, riwayat review, dan metrik mentah (untuk kalibrasi).
 
 ---
 
 ## Evidence (penagihan)
 
 Menu **Evidence** (semua role; untuk finance cukup key `viewer`). Kursor langsung di kotak resi. Isi nomor resi (satu
-per baris, maks. 500) lalu **Buat PDF**. Hanya foto yang disimpan aplikasi di SILO yang bisa masuk PDF:
+per baris, maks. 500) lalu **Buat PDF**. Foto diambil dari arsip engine (atau bucket aplikasi untuk foto polling):
 
 - Satu resi → PDF evidence resi itu. Bisa juga dari detail foto: link **Evidence PDF resi ini**.
 - Banyak resi → satu PDF gabungan, misal semua resi dalam satu periode invoice.
@@ -232,9 +232,9 @@ bisa uji cepat). API key tersimpan di browser yang sama dengan Web UI, jadi cuku
 
 | Bagian | Isi |
 |---|---|
-| **1. Pengaturan uji** | **Simulasi aplikasi kurir** (alur sama dengan aplikasi asli: foto dikirim ke engine, diperiksa dan dioptimasi, engine mengembalikan keputusan + foto hasil; tunggu maks. 3 detik. Di aplikasi asli, aplikasi yang menyimpan foto ke SILO; halaman ini tidak menyimpan foto ke mana pun) atau **Uji cepat** (tidak dicatat). Tenant (bawaan `uji-coba`), jenis foto, **Tampilkan sebagai mode** (`shadow`/`warn`/`enforce`, hanya mengubah tampilan), nomor resi (otomatis `UJI...`, berganti setelah foto diterima; tetap sama saat foto ulang), ID kurir, lokasi GPS (butuh HTTPS) |
+| **1. Pengaturan uji** | **Simulasi aplikasi kurir** (alur sama dengan aplikasi asli: foto dikirim ke engine, diperiksa dan dioptimasi, engine mengembalikan keputusan + foto hasil; tunggu maks. 3 detik. Di aplikasi asli, aplikasi juga menyimpan foto hasil ke bucket-nya; engine mengarsipkan foto di bucket `ocr`) atau **Uji cepat** (tidak dicatat). Tenant (bawaan `uji-coba`), jenis foto, **Tampilkan sebagai mode** (`shadow`/`warn`/`enforce`, hanya mengubah tampilan), nomor resi (otomatis `UJI...`, berganti setelah foto diterima; tetap sama saat foto ulang), ID kurir, lokasi GPS (butuh HTTPS) |
 | **2. Ambil foto** | **📷 Ambil foto**: kamera bawaan HP (seperti aplikasi kurir, EXIF ikut). **🎥 Kamera langsung**: viewfinder di browser dengan tombol jepret, balik kamera, dan lampu (jika HP mendukung). Butuh HTTPS atau localhost. **🖼 Galeri / file** |
-| **3. Hasil** | **Yang dilihat kurir**: tiruan layar aplikasi dengan `courier_message` dan tombol (Foto ulang / Tetap kirim / Lanjut) sesuai `action` dan `retake_required`, baris **Status pengiriman: diupdate / TIDAK diupdate** (sesuai `allow_status_update`; foto ditolak di mode `enforce` hanya punya tombol Foto ulang) beserta keterangan penyimpanan ("aplikasi menyimpan foto hasil engine ke SILO" / "engine tidak menjawab: aplikasi menyimpan foto asli" / "foto TIDAK disimpan, kurir foto ulang" / "uji cepat: tidak disimpan"), plus waktu tunggu kurir. **Detail untuk tim**: verdict, boleh update status, **Foto untuk disimpan aplikasi** (ukuran, dioptimasi atau asli, atau "tidak ada (ditolak)"; hanya di mode simulasi), wajib foto ulang, aksi, waktu tunggu & proses engine, ukuran sebelum → sesudah, masuk evidence atau tidak, perbandingan foto asli vs hasil engine, skor, catatan, kompresi, EXIF, JSON respons. Di mode simulasi ada tombol **Buka di Web UI** (foto uji tampil tanpa gambar karena tidak disimpan ke SILO) |
+| **3. Hasil** | **Yang dilihat kurir**: tiruan layar aplikasi dengan `courier_message` dan tombol (Foto ulang / Tetap kirim / Lanjut) sesuai `action` dan `retake_required`, baris **Status pengiriman: diupdate / TIDAK diupdate** (sesuai `allow_status_update`; foto ditolak di mode `enforce` hanya punya tombol Foto ulang) beserta keterangan penyimpanan ("aplikasi menyimpan foto hasil engine ke bucket-nya ... engine mengarsipkan salinannya di bucket ocr" / "engine tidak menjawab: aplikasi menyimpan foto asli" / "aplikasi TIDAK menyimpan foto ini ... engine mengarsipkan foto asli di bucket ocr untuk review" / "uji cepat: tidak disimpan"), plus waktu tunggu kurir. **Detail untuk tim**: verdict, boleh update status, **Foto untuk disimpan aplikasi** (ukuran, dioptimasi atau asli, atau "tidak ada (ditolak)"; hanya di mode simulasi), wajib foto ulang, aksi, waktu tunggu & proses engine, ukuran sebelum → sesudah, masuk evidence atau tidak, perbandingan foto asli vs hasil engine, skor, catatan, kompresi, EXIF, JSON respons. Di mode simulasi ada tombol **Buka di Web UI**; foto uji tersimpan di arsip engine (`ocr/uji-coba/...`), jadi tampil di Web UI dan evidence resi uji |
 | **Riwayat sesi ini** | Thumbnail percobaan sebelumnya; klik untuk melihat hasilnya lagi (hanya di browser, hilang saat halaman ditutup) |
 
 Cara membuka dari HP dan menyalakan HTTPS untuk kamera langsung: [getting-started.md §4b](getting-started.md#4b-uji-coba-dari-hp-tanpa-membangun-aplikasi).
@@ -283,13 +283,12 @@ Praktik baik: satu key per aplikasi per lingkungan (dev/staging/prod) dan satu k
 
 ## Koneksi SILO (admin)
 
-Mengatur koneksi **baca** engine ke SILO tanpa mengedit `.env` dan tanpa restart (dulu bernama "Pengaturan SILO").
-Engine tidak pernah menyimpan foto ke SILO; koneksi ini dipakai untuk membaca foto yang disimpan aplikasi (Web UI,
-evidence, backup NAS, polling). Kursor langsung di field **Endpoint**. Referensi lengkap:
+Mengatur koneksi engine ke SILO tanpa mengedit `.env` dan tanpa restart (dulu bernama "Pengaturan SILO"). Engine
+**membaca** bucket aplikasi (polling, foto tanpa arsip) dan **menulis** hanya ke bucket arsipnya (bawaan `ocr`). Kursor langsung di field **Endpoint**. Referensi lengkap:
 [configuration.md §1.6](configuration.md#16-koneksi-silo-lewat-web-ui).
 
 **Kartu "Koneksi"** berisi field Endpoint, Endpoint publik, Region, Access key, Secret key, Gaya alamat, Signature,
-dan Bucket foto aplikasi. Di bawah tiap field tertulis asal nilainya saat
+Bucket foto aplikasi, dan **Bucket arsip engine** (bawaan `ocr`; arsip per aplikasi, masa simpan 520 hari). Di bawah tiap field tertulis asal nilainya saat
 ini: *dari halaman ini*, *dari env server*, atau *bawaan*. Field yang berasal dari halaman ini punya link
 **kembalikan ke env**.
 
@@ -300,8 +299,8 @@ Langkah memasang koneksi dari JSON `mc` (format yang biasa dipakai `mc alias` / 
 2. Klik **Isi form dari JSON**. Form terisi otomatis (belum disimpan). Jika `url` berisi `127.0.0.1` atau
    `localhost`, muncul peringatan: di dalam Docker/Kubernetes alamat itu menunjuk ke container engine sendiri, bukan
    SILO. Ganti dengan host/IP SILO (atau `http://silo:9000` di compose lokal).
-3. Klik **Test koneksi**. Dua cek baca dijalankan dengan nilai form: **Baca bucket aplikasi** dan **Baca isi foto**.
-   Tidak ada yang ditulis ke SILO. Keduanya harus ✅. Jika ❌, baca pesan errornya
+3. Klik **Test koneksi**. Tiga cek dijalankan dengan nilai form: **Baca bucket aplikasi**, **Baca isi foto**, dan
+   **Tulis bucket arsip 'ocr'** (menulis lalu menghapus file uji kecil). Bucket aplikasi tidak ditulis. Semua harus ✅. Jika ❌, baca pesan errornya
    (lihat [troubleshooting.md](troubleshooting.md#koneksi-silo-test-koneksi-gagal)).
 4. Klik **Simpan**. Berlaku di semua proses dalam ≤ 10 detik.
 
@@ -311,21 +310,21 @@ Catatan:
   Kosongkan field ini jika tidak ingin mengubahnya. Access key ditampilkan tersamar.
 - Jika muncul kotak **"PQE_SECRET_KEY belum diisi di server"**, secret key tidak bisa disimpan lewat halaman ini
   sampai admin server mengisi `PQE_SECRET_KEY` (lihat [operations.md](operations.md)). Field lain tetap bisa disimpan.
-- Kartu kanan menampilkan contoh **policy permission minimal** (hanya `s3:GetObject` + `s3:ListBucket` di bucket
-  aplikasi) sesuai nama bucket di form. Gunakan service account khusus engine, bukan akun admin/root SILO.
+- Kartu kanan menampilkan contoh **policy permission minimal** (`s3:GetObject` + `s3:ListBucket` di bucket aplikasi;
+  baca/tulis/hapus di bucket arsip) sesuai nama bucket di form. Gunakan service account khusus engine, bukan akun admin/root SILO.
 - Setiap simpan tercatat di audit log (`settings.storage.update`, tanpa nilai rahasia).
-- Bucket aplikasi hanya dibaca. Ini dijaga di kode engine: walau key yang diisi punya akses penuh, engine menolak
+- Bucket aplikasi hanya dibaca; engine hanya menulis ke bucket arsip. Ini dijaga di kode engine: walau key yang diisi punya akses penuh, engine menolak
   menulis atau menghapus di bucket aplikasi.
 
 ---
 
 ## Backup NAS (admin)
 
-Menu **Backup NAS** mengatur salinan terjadwal database engine dan foto yang disimpan aplikasi di SILO ke NAS. Hanya role `admin`. Backup **hanya
+Menu **Backup NAS** mengatur salinan terjadwal database engine dan arsip foto (bucket `ocr`; foto polling dari bucket aplikasi) ke NAS. Hanya role `admin`. Backup **hanya
 menyalin**: file di NAS tidak pernah dihapus engine, kecuali dump database lama di luar jumlah simpan.
 
 **Kartu atas:** status jadwal (Aktif/Mati), **Foto belum tersalin**, **Foto sudah tersalin**, dan **Ruang kosong NAS**
-(tujuan folder). Foto yang tidak disimpan aplikasi tidak dihitung "belum tersalin". Jika backup terakhir gagal, muncul kotak merah berisi pesan error dan waktunya.
+(tujuan folder). Foto tanpa arsip dan tanpa lokasi aplikasi tidak dihitung "belum tersalin". Jika backup terakhir gagal, muncul kotak merah berisi pesan error dan waktunya.
 
 **Kartu Tujuan:**
 
@@ -337,12 +336,12 @@ menyalin**: file di NAS tidak pernah dihapus engine, kecuali dump database lama 
 | Endpoint, Bucket, Prefix, Region, Access key, Secret key, Gaya alamat | Untuk NAS S3. Secret disimpan terenkripsi dan tidak ditampilkan lagi; kosongkan jika tidak ingin mengubah |
 
 - **Test NAS**: menguji nilai di form (belum disimpan) dan menampilkan ✅/❌ untuk: tujuan ada, tulis-baca-hapus file uji,
-  ruang kosong (> 1 GB, tujuan folder), akses baca bucket foto aplikasi, dan kesiapan dump database.
+  ruang kosong (> 1 GB, tujuan folder), akses baca bucket arsip engine dan bucket foto aplikasi, dan kesiapan dump database.
 - **Simpan**: berlaku di putaran worker berikutnya (±10 detik), tanpa restart.
 
-**Kartu Yang dibackup:** **Database engine** (wajib) dan **Foto pengiriman di SILO aplikasi** (aktif secara bawaan;
-disalin dari lokasi yang disimpan aplikasi; matikan jika tim infra sudah mem-backup bucket aplikasi). Bagian lipat
-**Data versi lama** berisi pilihan untuk salinan di bucket engine dari versi awal (foto asli upload, hasil kompres,
+**Kartu Yang dibackup:** **Database engine** (wajib) dan **Foto** (aktif secara bawaan; satu salinan per foto: arsip
+engine bila ada, selain itu foto di bucket aplikasi untuk foto polling). Bagian lipat **Data versi lama** berisi pilihan
+untuk salinan di bucket `photos-*` dari versi sebelum arsip `ocr` (foto asli upload, hasil kompres,
 thumbnail); instalasi baru tidak punya data ini. **Jadwal**: foto setiap 15 menit, database
 setiap 24 jam, simpan 14 dump terakhir.
 
@@ -367,7 +366,7 @@ Masalah umum: [troubleshooting.md](troubleshooting.md#backup-nas).
 | **Source ingest** | Setiap source (`tenant:index:type`): kapan terakhir jalan, jumlah foto baru, reconcile terakhir, error terakhir. Kolom error yang terisi = source bermasalah (lihat [troubleshooting.md](troubleshooting.md)) |
 | **Audit log** (admin) | 50 aktivitas terakhir: perubahan config, API key, review, retry job/webhook, Koneksi SILO, retensi |
 | Link **/metrics** dan **/docs** | Metrik Prometheus dan dokumentasi API interaktif (Swagger) |
-| **Kesiapan production (preflight)** (admin) | Tombol **Jalankan preflight**: memeriksa secret, database, koneksi SILO (hanya baca: "Baca bucket aplikasi", "Engine hanya membaca SILO"), mode tenant, backup NAS, worker, OCR. Tiap baris ✅ / ⚠️ / ❌ beserta cara memperbaiki. Hasil "SIAP production" = tidak ada ❌. Sama dengan perintah `pqe preflight` |
+| **Kesiapan production (preflight)** (admin) | Tombol **Jalankan preflight**: memeriksa secret, database, koneksi SILO ("Baca bucket aplikasi", "Tulis bucket arsip 'ocr'", "Bucket aplikasi hanya dibaca"), mode tenant, backup NAS, worker, OCR. Tiap baris ✅ / ⚠️ / ❌ beserta cara memperbaiki. Hasil "SIAP production" = tidak ada ❌. Sama dengan perintah `pqe preflight` |
 
 ---
 
