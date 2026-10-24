@@ -154,7 +154,8 @@ def _try_sharpen_text(result: PipelineResult, ctx: AnalysisContext) -> bool:
         return False  # tidak ada teks sama sekali: penajam tidak akan membantu
     src = result.output_image or result.image
     sharp = sharpen_text(src)
-    r = readability(sharp, (ctx.meta or {}).get("awb"), skew=ocr.metrics.get("skew"), budget=0.7)
+    r = readability(sharp, (ctx.meta or {}).get("awb"), skew=ocr.metrics.get("skew"), budget=0.7,
+                    scan_codes=False)
     info = {"attempted": True, "before": ocr.score, "after": r["score"],
             "operation": f"unsharp_mask:sigma={SHARPEN_SIGMA},amount={SHARPEN_AMOUNT}"}
     if r["score"] >= ocr.score + SHARPEN_MIN_GAIN and not r["timed_out"]:
@@ -202,8 +203,11 @@ def _guard_text(result: PipelineResult, src: LoadedImage, ctx: AnalysisContext) 
     def measure(c) -> dict:
         if c.passthrough:
             return {"score": before, "awb_found": m.get("awb_found", False)}
+        if m.get("method") == "barcode":  # cukup barcode yang sama masih terbaca; jika tidak, Tesseract otomatis
+            return readability(load_image(c.data), (ctx.meta or {}).get("awb"), budget=0.6)
         return readability(load_image(c.data), (ctx.meta or {}).get("awb"), m.get("regions") or [],
-                           full_image=m.get("method") == "full", skew=m.get("skew", 0.0), budget=0.6)
+                           full_image=m.get("method") == "full", skew=m.get("skew", 0.0), budget=0.6,
+                           scan_codes=False)
 
     def ok(r: dict) -> bool:
         return r["score"] >= floor and (r["awb_found"] or not m.get("awb_found"))

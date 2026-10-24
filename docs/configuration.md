@@ -621,7 +621,18 @@ Tidak ada param yang bisa diubah. Atur lewat threshold `exposure`.
 ### ocr (kode `NO_TEXT_DETECTED`, `TEXT_UNREADABLE`; info `OCR_UNAVAILABLE`)
 
 Target engine: **teks di foto harus terbaca**. Aktif di semua profile bawaan, butuh Tesseract (image Docker standar
-sudah menyertakan bahasa `ind` + `eng`).
+sudah menyertakan bahasa `ind` + `eng`) dan zxing-cpp (pembaca barcode, ikut terpasang dari `requirements.lock`).
+
+**Langkah pertama: barcode/QR resi.** Label resi memuat nomor resi sebagai barcode Code 128 dan QR. Engine membacanya
+dengan zxing-cpp (decoder barcode biasa, bukan AI; Code 128, Code 39, QR, DataMatrix; ±20-150 ms). Jika ada kode
+berisi nomor resi (sama dengan `awb` dari aplikasi, atau tanpa `awb`: 8-40 huruf/angka dengan minimal 4 angka, bukan
+URL), label dianggap **terbaca**: skor 95, `metrics.ocr.method: "barcode"`, `metrics.ocr.code` = kode yang terbaca, dan
+Tesseract dilewati. Barcode hanya bisa dibaca bila label tajam dan cukup besar, jadi ini bukti keterbacaan yang lebih
+pasti dan jauh lebih cepat daripada OCR. Contoh nyata uji coba: resi PCP di atas Delivery Order merah muda, OCR
+Tesseract 1,3-1,5 detik (kadang habis waktu), barcode 0,04 detik. Semua kode yang terbaca tercatat di
+`metrics.ocr.codes`. Kode berisi resi lain dari `awb` tetap membuktikan label terbaca, tetapi `awb_found: false`.
+
+Tidak ada barcode yang terbaca (foto buram, label tertutup, dokumen tanpa barcode) → lanjut ke OCR Tesseract:
 
 0. Luruskan foto bila miring (sudut dominan dari garis lurus: baris teks, tepi kartu/resi; Hough). Hanya untuk
    dibaca, foto tidak diubah. Kasus nyata: kartu/resi yang dipegang miring 10-35° baru terbaca setelah diluruskan.
@@ -638,8 +649,12 @@ sudah menyertakan bahasa `ind` + `eng`).
   akhir (dipotong di sela baris). Keterbacaan diukur dari sampel itu.
 - Batas waktu baca 1,2 detik per foto. Waktu habis tanpa hasil (server sibuk / foto sangat buram) → info
   `OCR_TIMEOUT`, **tanpa skor** (tidak menolak foto hanya karena waktu habis; foto buram tetap ditolak oleh `sharpness`).
-- Metrik: `score`, `confidence`, `words`, `awb_found`, `method` (`regions`/`full`), `regions` (koordinat relatif area teks).
-- Tesseract tidak ada → info `OCR_UNAVAILABLE`, tanpa skor, tidak memengaruhi verdict (preflight memberi peringatan).
+- Metrik: `score`, `confidence`, `words`, `awb_found`, `method` (`barcode`/`regions`/`full`), `code`, `codes`,
+  `regions` (koordinat relatif area teks).
+- Tesseract tidak ada → barcode tetap dicoba; tanpa barcode → info `OCR_UNAVAILABLE`, tanpa skor, tidak memengaruhi
+  verdict (preflight memberi peringatan).
+- Penjaga kompresi: foto yang dinilai lewat barcode diperiksa ulang barcodenya di hasil kompres; barcode hilang →
+  kualitas/resolusi dinaikkan (lihat penjaga keterbacaan teks di bawah).
 
 ### authenticity (dari `exif` + `duplicate`)
 

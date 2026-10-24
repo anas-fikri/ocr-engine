@@ -27,6 +27,7 @@ dependencies = [
   "prometheus-client>=0.20",
   "fpdf2>=2.7",
   "cryptography>=43",
+  "zxing-cpp>=2.2",
 ]
 
 [project.optional-dependencies]

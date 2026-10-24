@@ -1,6 +1,8 @@
 """Keterbacaan teks (OCR). Target engine: teks di foto (resi, label, dokumen) harus bisa dibaca.
 
-Cara kerja (tanpa AI generatif; Tesseract + OpenCV):
+Cara kerja (tanpa AI generatif; zxing-cpp + Tesseract + OpenCV):
+0. Baca barcode/QR (analyzers/barcode.py). Barcode berisi nomor resi terbaca = label tajam dan terbaca: skor
+   BARCODE_SCORE, Tesseract dilewati (cepat dan pasti). Jika tidak ada, lanjut ke langkah 1.
 1. Cari area yang tampak seperti teks (gradien + morfologi), ambil beberapa area terbesar.
 2. Baca setiap area dengan Tesseract pada resolusi asli (diperbesar bila teks kecil; area tegak dicoba diputar).
 3. Jika hasilnya belum meyakinkan, baca seluruh foto sebagai pembanding; ambil yang terbaik.
@@ -23,6 +25,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from engine.analyzers import barcode
 from engine.analyzers.base import AnalysisContext, CheckResult, Finding
 from engine.imaging.loader import LoadedImage
 
@@ -31,6 +34,7 @@ READ_SIDE = 3000  # resolusi maksimum yang dibaca Tesseract
 MAX_REGIONS = 4
 MIN_WORDS = 3
 GOOD_ENOUGH = 70  # hasil area sudah meyakinkan: tidak perlu membaca seluruh foto
+BARCODE_SCORE = 95.0  # skor keterbacaan bila nomor resi terbaca dari barcode/QR
 BUDGET_SEC = 1.2  # batas total waktu Tesseract per foto (kurir menunggu maks. 3 detik untuk semua pemeriksaan)
 
 
@@ -224,9 +228,18 @@ def _norm(text: str) -> str:
 
 def readability(img: LoadedImage, awb: str | None = None, regions: list[list[float]] | None = None,
                 full_image: bool | None = None, skew: float | None = None,
-                budget: float = BUDGET_SEC) -> dict[str, Any]:
+                budget: float = BUDGET_SEC, scan_codes: bool = True) -> dict[str, Any]:
     """Nilai keterbacaan teks. `regions`/`full_image` diisi untuk memeriksa ulang foto lain (hasil kompresi)
-    dengan cara yang sama persis seperti foto aslinya."""
+    dengan cara yang sama persis seperti foto aslinya. `budget` hanya untuk Tesseract (barcode jauh lebih cepat)."""
+    codes = barcode.read_codes(img) if scan_codes else []
+    code = barcode.find_awb(codes, awb) or barcode.find_awb(codes, None)
+    if code is not None:
+        return {"score": BARCODE_SCORE, "confidence": BARCODE_SCORE, "words": 0,
+                "awb_found": bool(awb) and barcode.find_awb([code], awb) is not None, "method": "barcode",
+                "code": code, "codes": codes, "regions": regions or [], "skew": skew or 0.0, "timed_out": False}
+    if not ocr_available():
+        return {"score": 0.0, "confidence": 0.0, "words": 0, "awb_found": False, "method": "unavailable",
+                "codes": codes, "regions": [], "skew": 0.0, "timed_out": True}
     deadline = time.monotonic() + budget
     left = lambda: deadline - time.monotonic()  # noqa: E731
     if skew is None:
@@ -274,7 +287,7 @@ def readability(img: LoadedImage, awb: str | None = None, regions: list[list[flo
     if awb_found:
         score = max(score, 90.0)
     return {"score": round(score, 1), "confidence": round(conf, 1), "words": words, "awb_found": awb_found,
-            "method": method, "regions": regions, "skew": skew,
+            "method": method, "codes": codes, "regions": regions, "skew": skew,
             "timed_out": timed_out and words < MIN_WORDS and not awb_found}
 
 
@@ -288,10 +301,13 @@ class OcrAnalyzer:
     name = "ocr"
 
     def __call__(self, img: LoadedImage, ctx: AnalysisContext) -> CheckResult:
-        if not ocr_available():
+        if not ocr_available() and not barcode.barcode_available():
             return CheckResult(check=self.name, findings=[Finding("OCR_UNAVAILABLE", "info")])
         r = readability(img, (ctx.meta or {}).get("awb"))
+        if r["method"] == "unavailable":  # tanpa Tesseract dan barcode tidak terbaca
+            return CheckResult(check=self.name, metrics=r, findings=[Finding("OCR_UNAVAILABLE", "info")])
         if r["timed_out"]:  # server sibuk / foto sangat buram: jangan menolak hanya karena waktu habis
             return CheckResult(check=self.name, metrics=r, findings=[Finding("OCR_TIMEOUT", "info")])
-        code = "NO_TEXT_DETECTED" if r["words"] < MIN_WORDS and not r["awb_found"] else "TEXT_UNREADABLE"
+        code = "NO_TEXT_DETECTED" if r["words"] < MIN_WORDS and not r["awb_found"] and r["method"] != "barcode" \
+            else "TEXT_UNREADABLE"
         return CheckResult(check=self.name, score=r["score"], issue_code=code, metrics=r)

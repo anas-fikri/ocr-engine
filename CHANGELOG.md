@@ -23,6 +23,8 @@ Rilis pertama untuk live uji coba dan UAT.
   aplikasi tetap hanya dibaca.
 - **Teks harus terbaca** di semua jenis foto: foto miring diluruskan dulu, OCR per area teks, pencocokan nomor resi,
   foto tidak terbaca ditolak (`NO_TEXT_DETECTED`/`TEXT_UNREADABLE`); waktu habis tidak menghukum (`OCR_TIMEOUT`).
+- Nomor resi dibaca dari **barcode/QR** label (zxing-cpp, bukan AI) sebelum OCR: label terbaca dalam puluhan ms
+  (skor 95), tanpa menunggu Tesseract; hasil kompres dijaga agar barcode tetap terbaca.
 - `text_first`: teks terbaca → gelap/terang/pudar/pecah/buram ringan cukup WARN (target berikutnya: paket jelas).
 - Dokumen/struk/layar berlatar putih tidak lagi dinilai silau: putih dianggap kertas bila teks jelas terbaca.
 - Halaman penuh teks dibaca per kelompok baris (awal/tengah/akhir) supaya tidak kehabisan waktu.

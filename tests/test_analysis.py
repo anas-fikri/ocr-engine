@@ -406,3 +406,65 @@ def test_white_document_is_not_glare_and_dense_text_is_read():
     assert r.verdict.verdict in ("PASS", "WARN")
     assert not any(x.code in ("GLARE", "TOO_BRIGHT") and x.severity != "info" for x in r.verdict.reasons)
     assert next(c for c in r.checks if c.check == "exposure").metrics["paper_background"] is True
+
+
+# ---------------- barcode/QR resi (zxing-cpp, bukan AI) ----------------
+
+barcode_only = pytest.mark.skipif("not __import__('engine.analyzers.barcode', fromlist=['x']).barcode_available()",
+                                  reason="zxing-cpp tidak terpasang")
+AWB = "JKTMKQC2260919000021"
+
+
+def _label_photo(blur: float = 0, w: int = 2400, h: int = 1800) -> bytes:
+    """Label resi di atas paket: barcode Code 128 + QR berisi nomor resi, plus teks alamat."""
+    import numpy as np
+    import zxingcpp
+    from PIL import ImageDraw, ImageFilter
+
+    from engine.synth import _font
+
+    rng = np.random.default_rng(7)
+    bg = np.clip(rng.normal(150, 18, (h, w, 3)), 0, 255).astype("uint8")  # kardus
+    img = Image.fromarray(bg)
+    img.paste((245, 245, 245), (300, 250, 2100, 1550))
+    bar = zxingcpp.create_barcode(AWB, zxingcpp.BarcodeFormat.Code128).to_image(scale=4)
+    qr = zxingcpp.create_barcode(AWB, zxingcpp.BarcodeFormat.QRCode).to_image(scale=8)
+    img.paste(Image.fromarray(np.asarray(bar)).resize((1200, 200)).convert("RGB"), (450, 350))
+    img.paste(Image.fromarray(np.asarray(qr)).convert("RGB"), (1750, 1100))
+    d = ImageDraw.Draw(img)
+    for i, line in enumerate(["PCP EXPRESS", "PAPUA CONSIGNMENT WAREHOUSE", "WANAM ILYAWAB MERAUKE"]):
+        d.text((450, 650 + i * 90), line, font=_font(56), fill=(20, 20, 20))
+    if blur:
+        img = img.filter(ImageFilter.GaussianBlur(blur))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=92)
+    return buf.getvalue()
+
+
+@barcode_only
+def test_awb_barcode_proves_label_is_readable():
+    """Barcode/QR berisi nomor resi terbaca -> label terbaca (skor 95), tanpa menunggu Tesseract."""
+    from engine.analyzers.ocr import BARCODE_SCORE
+
+    for meta, found in (({"awb": AWB}, True), ({"awb": "jktmkqc 2260919000021"}, True), ({}, False),
+                        ({"awb": "JKT0000000001"}, False)):
+        r = analyze(_label_photo(), ctx(meta=meta), do_compress=False, do_thumbnail=False)
+        ocr = next(c for c in r.checks if c.check == "ocr")
+        assert ocr.metrics["method"] == "barcode" and ocr.score == BARCODE_SCORE
+        assert ocr.metrics["code"]["text"] == AWB and ocr.metrics["awb_found"] is found
+        assert r.verdict.verdict == "PASS"
+        assert r.timings_ms["ocr"] < 1000
+
+
+@barcode_only
+def test_blurred_barcode_falls_back_to_tesseract_and_compression_keeps_barcode():
+    from engine.analyzers.barcode import looks_like_awb
+
+    r = analyze(_label_photo(blur=12), ctx(), do_compress=False, do_thumbnail=False)
+    assert next(c for c in r.checks if c.check == "ocr").metrics["method"] != "barcode"
+    # hasil kompres harus tetap bisa dibaca barcodenya
+    r = analyze(_label_photo(), ctx())
+    tg = r.compression.text_guard
+    assert not r.compression.passthrough and tg["ok"] is True and tg["after"] >= tg["before"] - 8
+    assert looks_like_awb(AWB) and not looks_like_awb("https://pcpexpress.com/term_condition")
+    assert not looks_like_awb("PCPEXPRESS")
