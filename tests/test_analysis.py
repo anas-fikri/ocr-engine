@@ -468,3 +468,18 @@ def test_blurred_barcode_falls_back_to_tesseract_and_compression_keeps_barcode()
     assert not r.compression.passthrough and tg["ok"] is True and tg["after"] >= tg["before"] - 8
     assert looks_like_awb(AWB) and not looks_like_awb("https://pcpexpress.com/term_condition")
     assert not looks_like_awb("PCPEXPRESS")
+
+
+@ocr_only
+def test_both_tesseract_backends_read_text(monkeypatch):
+    """tesserocr (library, model dimuat sekali) dan pytesseract (CLI, cadangan) memberi penilaian yang setara."""
+    from engine.analyzers import ocr as ocr_mod
+
+    img = load_image(_document_page(lines=6))
+    fast = ocr_mod.readability(img)
+    monkeypatch.setattr(ocr_mod, "_tesserocr", lambda: (None, "", ""))
+    if ocr_mod._tesseract()[0] is None:
+        pytest.skip("CLI tesseract tidak terpasang")
+    slow = ocr_mod.readability(img)
+    for r in (fast, slow):
+        assert r["score"] >= 80 and r["words"] >= 15 and not r["timed_out"]

@@ -135,7 +135,7 @@ python3.12 -m venv .venv
 pip install -r requirements.lock -e ".[dev]"
 ```
 
-OCR opsional: `requirements.lock` sudah memuat `pytesseract`, tapi Anda perlu binary Tesseract (`apt install tesseract-ocr tesseract-ocr-ind tesseract-ocr-eng`). Tanpa Tesseract, check `ocr` dilewati dengan info `OCR_UNAVAILABLE`.
+OCR opsional: `requirements.lock` sudah memuat `tesserocr` (Tesseract sebagai library, wheel Linux x86_64/Python 3.12 sudah menyertakan libtesseract) dan `pytesseract` (cadangan, memanggil CLI), tapi Anda perlu binary Tesseract (`apt install tesseract-ocr tesseract-ocr-ind tesseract-ocr-eng`). Tanpa Tesseract, check `ocr` dilewati dengan info `OCR_UNAVAILABLE`.
 
 ### Menjalankan engine tanpa Docker (SQLite + S3 tiruan)
 

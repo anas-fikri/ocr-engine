@@ -521,7 +521,7 @@ tidak terbaca tetap REJECT. `text_first: false` = aturan lama (setiap pemeriksaa
 
 **Latar putih dokumen/layar:** pemeriksaan `exposure` mengenali latar kertas (banyak putih + goresan teks gelap;
 metrik `paper_background`). Silau dihitung hanya dari area putih yang jauh dari teks, dan "terlalu terang" dari
-kepekatan teks tergelap. Jika teks terbaca jelas (skor `ocr` ≥ 80), `GLARE`/`TOO_BRIGHT` pada latar kertas hanya info.
+kepekatan teks tergelap. Jika teks terbaca jelas (skor `ocr` ≥ 70; skor 70-90 pada screenshot/struk yang jelas adalah hal biasa), `GLARE`/`TOO_BRIGHT` pada latar kertas hanya info.
 
 (format `reject / warn`)
 
@@ -632,7 +632,10 @@ pasti dan jauh lebih cepat daripada OCR. Contoh nyata uji coba: resi PCP di atas
 Tesseract 1,3-1,5 detik (kadang habis waktu), barcode 0,04 detik. Semua kode yang terbaca tercatat di
 `metrics.ocr.codes`. Kode berisi resi lain dari `awb` tetap membuktikan label terbaca, tetapi `awb_found: false`.
 
-Tidak ada barcode yang terbaca (foto buram, label tertutup, dokumen tanpa barcode) → lanjut ke OCR Tesseract:
+Tidak ada barcode yang terbaca (foto buram, label tertutup, dokumen tanpa barcode) → lanjut ke OCR Tesseract.
+Tesseract dipakai sebagai library (`tesserocr`): model bahasa dimuat sekali per thread, area/strip teks dibaca
+paralel (1 thread OpenMP per pembacaan). Tanpa `tesserocr`, engine memakai CLI `tesseract` lewat `pytesseract`
+(hasil setara, lebih lambat ±0,2 detik per pembacaan). Langkahnya:
 
 0. Luruskan foto bila miring (sudut dominan dari garis lurus: baris teks, tepi kartu/resi; Hough). Hanya untuk
    dibaca, foto tidak diubah. Kasus nyata: kartu/resi yang dipegang miring 10-35° baru terbaca setelah diluruskan.

@@ -10,7 +10,7 @@ from engine.tenant_config import Profile
 PASS, WARN, REJECT = "PASS", "WARN", "REJECT"
 _RANK = {PASS: 0, WARN: 1, REJECT: 2}
 TEXT_FIRST_SOFTEN = {"sharpness", "resolution", "exposure"}  # diturunkan ke WARN jika teks terbaca
-PAPER_CLEAR_OCR = 80  # teks sejelas ini di latar putih: silau/terlalu terang tidak dianggap masalah
+PAPER_CLEAR_OCR = 70  # teks sejelas ini di latar putih: silau/terlalu terang tidak dianggap masalah
 
 
 @dataclass

@@ -6,6 +6,7 @@ Dipakai oleh worker, endpoint API sinkron/preview, dan CLI `pqe analyze`.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from engine.analyzers import REGISTRY, AnalysisContext, CheckResult
@@ -101,6 +102,10 @@ def analyze(
     t0 = time.perf_counter()
     img = data if isinstance(data, LoadedImage) else load_image(data)
     timings = {"decode": int((time.perf_counter() - t0) * 1000)}
+    # kompres & thumbnail foto asli dikerjakan bersamaan dengan pemeriksaan (encode JPEG & Tesseract melepas GIL);
+    # hasilnya dipakai jika foto asli memang yang disimpan (tanpa perbaikan otomatis), selain itu dibuat ulang
+    spec_c = _SPEC_POOL.submit(_timed, compress, img, ctx.profile.compression) if do_compress else None
+    spec_t = _SPEC_POOL.submit(_timed, thumbnail, img, ctx.profile.thumbnail) if do_thumbnail else None
     checks, check_t = run_checks(img, ctx)
     timings.update(check_t)
     result = PipelineResult(image=img, verdict=decide(ctx.profile, checks), checks=checks, timings_ms=timings,
@@ -117,22 +122,30 @@ def analyze(
             timings["sharpen_text"] = int((time.perf_counter() - t_s) * 1000)
     out = result.output_image
     if do_compress:
-        t1 = time.perf_counter()
-        result.compression = compress(out, ctx.profile.compression)
-        if out is not img and result.compression.passthrough:  # hasil perbaikan wajib disimpan sebagai file baru
-            c = result.compression
-            c.data, c.passthrough, c.content_type = out.data, False, "image/jpeg"
-            c.width, c.height = out.width, out.height
-        timings["compress"] = int((time.perf_counter() - t1) * 1000)
+        if out is img:
+            result.compression, timings["compress"] = spec_c.result()
+        else:
+            result.compression, timings["compress"] = _timed(compress, out, ctx.profile.compression)
+            if result.compression.passthrough:  # hasil perbaikan wajib disimpan sebagai file baru
+                c = result.compression
+                c.data, c.passthrough, c.content_type = out.data, False, "image/jpeg"
+                c.width, c.height = out.width, out.height
         t3 = time.perf_counter()
         if _guard_text(result, out, ctx):
             timings["text_guard"] = int((time.perf_counter() - t3) * 1000)
     if do_thumbnail:
-        t2 = time.perf_counter()
-        result.thumbnail = thumbnail(out, ctx.profile.thumbnail)
-        timings["thumbnail"] = int((time.perf_counter() - t2) * 1000)
+        result.thumbnail, timings["thumbnail"] = spec_t.result() if out is img else _timed(
+            thumbnail, out, ctx.profile.thumbnail)
     timings["total"] = int((time.perf_counter() - t0) * 1000)
     return result
+
+
+_SPEC_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pipeline")
+
+
+def _timed(fn, *args):
+    t = time.perf_counter()
+    return fn(*args), int((time.perf_counter() - t) * 1000)
 
 
 SHARPEN_MIN_GAIN = 5  # penajam teks dipakai hanya jika skor keterbacaan naik minimal sekian poin

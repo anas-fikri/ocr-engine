@@ -17,13 +17,17 @@ Docker image engine sudah menyertakan Tesseract (bahasa ind + eng).
 
 from __future__ import annotations
 
+import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from engine.analyzers import barcode
 from engine.analyzers.base import AnalysisContext, CheckResult, Finding
@@ -34,41 +38,71 @@ READ_SIDE = 3000  # resolusi maksimum yang dibaca Tesseract
 MAX_REGIONS = 4
 MIN_WORDS = 3
 GOOD_ENOUGH = 70  # hasil area sudah meyakinkan: tidak perlu membaca seluruh foto
+# Tesseract memakai OpenMP (bawaan 4 thread per proses). Beberapa proses paralel x 4 thread saling berebut CPU dan
+# justru lebih lambat; 1 thread per proses + beberapa proses sekaligus lebih cepat.
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+_POOL = ThreadPoolExecutor(max_workers=min(4, os.cpu_count() or 1), thread_name_prefix="tesseract")
 BARCODE_SCORE = 95.0  # skor keterbacaan bila nomor resi terbaca dari barcode/QR
 BUDGET_SEC = 1.2  # batas total waktu Tesseract per foto (kurir menunggu maks. 3 detik untuk semua pemeriksaan)
 
 
+TESSDATA_DIRS = ("/usr/share/tesseract-ocr/5/tessdata", "/usr/share/tesseract-ocr/4.00/tessdata", "/usr/share/tessdata",
+                 "/usr/local/share/tessdata", "/opt/homebrew/share/tessdata")
+
+
+def _pick_lang(langs) -> str:
+    return "+".join(x for x in ("ind", "eng") if x in set(langs)) or "eng"
+
+
+@lru_cache
+def _tesserocr() -> tuple[object | None, str, str]:
+    """Tesseract sebagai library (tesserocr): model bahasa dimuat sekali per thread, bukan sekali per panggilan.
+    Panggilan kecil turun dari ±200 ms (proses baru + muat model) menjadi puluhan ms."""
+    try:
+        import tesserocr
+
+        for path in filter(None, (os.environ.get("TESSDATA_PREFIX"), *TESSDATA_DIRS)):
+            path = path.rstrip("/") + "/"
+            if os.path.isdir(path):
+                langs = tesserocr.get_languages(path)[1]
+                if "eng" in langs or "ind" in langs:
+                    return tesserocr, path, _pick_lang(langs)
+    except Exception:
+        pass
+    return None, "", ""
+
+
 @lru_cache
 def _tesseract() -> tuple[object | None, str]:
+    """Cadangan: CLI tesseract lewat pytesseract (satu proses per panggilan)."""
     try:
         import pytesseract
 
         pytesseract.get_tesseract_version()
-        langs = set(pytesseract.get_languages(config=""))
-        lang = "+".join(x for x in ("ind", "eng") if x in langs) or "eng"
-        return pytesseract, lang
+        return pytesseract, _pick_lang(pytesseract.get_languages(config=""))
     except Exception:
         return None, ""
 
 
 def ocr_available() -> bool:
-    return _tesseract()[0] is not None
+    return _tesserocr()[0] is not None or _tesseract()[0] is not None
 
 
-def _read(gray: np.ndarray, psm: int, timeout: float = 0.8) -> tuple[float, float, int, str]:
-    """Return (jumlah conf*panjang, jumlah panjang, jumlah kata, teks).
+_local = threading.local()
 
-    Tesseract bisa sangat lama pada foto buram tanpa hasil apa pun; lewat `timeout` dianggap tidak terbaca
-    supaya kurir tidak menunggu (foto buram sudah ditolak oleh check ketajaman)."""
-    tess, lang = _tesseract()
-    try:
-        data = tess.image_to_data(gray, lang=lang, config=f"--psm {psm}", timeout=timeout,  # type: ignore[attr-defined]
-                                  output_type=tess.Output.DICT)  # type: ignore[attr-defined]
-    except RuntimeError:  # timeout
-        return 0.0, 0.0, -1, ""  # -1 = kehabisan waktu (bukan "tidak ada teks")
+
+def _api():
+    api = getattr(_local, "api", None)
+    if api is None:
+        tess, path, lang = _tesserocr()
+        api = _local.api = tess.PyTessBaseAPI(path=path, lang=lang)  # type: ignore[attr-defined]
+    return api
+
+
+def _words(pairs) -> tuple[float, float, int, str]:
     total = weight = 0.0
     words, texts = 0, []
-    for text, conf in zip(data["text"], data["conf"], strict=False):
+    for text, conf in pairs:
         text = (text or "").strip()
         conf = float(conf)
         if conf < 0 or sum(c.isalnum() for c in text) < 2:
@@ -78,6 +112,42 @@ def _read(gray: np.ndarray, psm: int, timeout: float = 0.8) -> tuple[float, floa
         weight += len(text)
         texts.append(text)
     return total, weight, words, " ".join(texts)
+
+
+def _read_lib(gray: np.ndarray, psm: int, timeout: float) -> tuple[float, float, int, str]:
+    tess = _tesserocr()[0]
+    api = _api()
+    api.SetPageSegMode(psm)
+    api.SetImage(Image.fromarray(gray))
+    if not api.Recognize(timeout=max(1, int(timeout * 1000))):
+        return 0.0, 0.0, -1, ""  # -1 = kehabisan waktu (bukan "tidak ada teks")
+    it = api.GetIterator()
+    if it is None:
+        return 0.0, 0.0, 0, ""
+    lvl = tess.RIL.WORD  # type: ignore[attr-defined]
+    pairs = []
+    for w in tess.iterate_level(it, lvl):  # type: ignore[attr-defined]
+        try:
+            pairs.append((w.GetUTF8Text(lvl), w.Confidence(lvl)))
+        except RuntimeError:  # kata kosong
+            continue
+    return _words(pairs)
+
+
+def _read(gray: np.ndarray, psm: int, timeout: float = 0.8) -> tuple[float, float, int, str]:
+    """Return (jumlah conf*panjang, jumlah panjang, jumlah kata, teks).
+
+    Tesseract bisa sangat lama pada foto buram tanpa hasil apa pun; lewat `timeout` dianggap tidak terbaca
+    supaya kurir tidak menunggu (foto buram sudah ditolak oleh check ketajaman)."""
+    if _tesserocr()[0] is not None:
+        return _read_lib(gray, psm, timeout)
+    tess, lang = _tesseract()
+    try:
+        data = tess.image_to_data(gray, lang=lang, config=f"--psm {psm}", timeout=timeout,  # type: ignore[attr-defined]
+                                  output_type=tess.Output.DICT)  # type: ignore[attr-defined]
+    except RuntimeError:  # timeout
+        return 0.0, 0.0, -1, ""
+    return _words(zip(data["text"], data["conf"], strict=False))
 
 
 class _View:
@@ -249,21 +319,23 @@ def readability(img: LoadedImage, awb: str | None = None, regions: list[list[flo
         regions = find_text_regions(view)
     total = weight = 0.0
     words, texts, timed_out = 0, [], False
-    for r in regions:
-        if left() < 0.15:
-            break
-        crop = _crop(view, r)
-        if crop.size == 0:
-            continue
-        reads = [_read(s, 6, max(0.1, min(0.6, left()))) for s in _strips(crop)]
+    # semua area/strip dibaca bersamaan: tiap panggilan Tesseract adalah proses sendiri, jadi berjalan paralel
+    crops = [c for c in (_crop(view, r) for r in regions) if c.size]
+    tmo = max(0.1, min(0.6, left()))
+    pending = [[_POOL.submit(_read, s, 6, tmo) for s in _strips(c)] for c in crops] if left() >= 0.15 else []
+    for crop, futs in zip(crops, pending, strict=False):
+        reads = [f.result() for f in futs]
         first = (sum(x[0] for x in reads), sum(x[1] for x in reads), sum(max(x[2], 0) for x in reads),
                  " ".join(x[3] for x in reads))
         timed_out |= any(x[2] < 0 for x in reads)
         best = first
         if first[2] < MIN_WORDS and crop.shape[0] > 1.5 * crop.shape[1] and left() > 0.3:
             # hampir tidak terbaca dan areanya tegak: mungkin teks diputar 90 derajat
-            for rot in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE):
-                x = _read(cv2.rotate(crop, rot), 6, max(0.1, min(0.5, left())))
+            rtmo = max(0.1, min(0.5, left()))
+            rots = [_POOL.submit(_read, cv2.rotate(crop, rot), 6, rtmo)
+                    for rot in (cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE)]
+            for fut in rots:
+                x = fut.result()
                 timed_out |= x[2] < 0
                 if (x[1] and x[0] / x[1]) * min(max(x[2], 0), 10) > (best[1] and best[0] / best[1]) * min(best[2], 10):
                     best = (x[0], x[1], max(x[2], 0), x[3])

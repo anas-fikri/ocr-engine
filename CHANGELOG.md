@@ -25,6 +25,8 @@ Rilis pertama untuk live uji coba dan UAT.
   foto tidak terbaca ditolak (`NO_TEXT_DETECTED`/`TEXT_UNREADABLE`); waktu habis tidak menghukum (`OCR_TIMEOUT`).
 - Nomor resi dibaca dari **barcode/QR** label (zxing-cpp, bukan AI) sebelum OCR: label terbaca dalam puluhan ms
   (skor 95), tanpa menunggu Tesseract; hasil kompres dijaga agar barcode tetap terbaca.
+- Lebih cepat: Tesseract sebagai library (model dimuat sekali, bukan per panggilan), area teks dibaca paralel, kompresi
+  & thumbnail dikerjakan bersamaan dengan pemeriksaan. Foto kamera 12 MP ±1,8 → ±0,8 detik; foto buram ±1,3 → ±0,4 detik.
 - `text_first`: teks terbaca → gelap/terang/pudar/pecah/buram ringan cukup WARN (target berikutnya: paket jelas).
 - Dokumen/struk/layar berlatar putih tidak lagi dinilai silau: putih dianggap kertas bila teks jelas terbaca.
 - Halaman penuh teks dibaca per kelompok baris (awal/tengah/akhir) supaya tidak kehabisan waktu.
