@@ -115,8 +115,9 @@
             <code>courier_message</code> ke kurir, <b>jangan update status</b>, kurir foto ulang.</td></tr>
           <tr><td>Engine error / timeout</td><td>Simpan <b>foto asli</b> ke SILO seperti sekarang (kode lama tetap dipakai sebagai cadangan), lalu update status (fail-open).</td></tr>
         </table>
-        <p class="muted small">Kirim juga <code>object_key</code> (key SILO yang akan Anda pakai) supaya Web UI, evidence, dan backup NAS bisa menampilkan fotonya
-          (engine hanya membaca). Key baru diketahui setelah menyimpan? Laporkan dengan <code>POST /v1/photos/{id}/stored</code> (<code>reportStored</code> di client).</p>
+        <p class="muted small">Web UI, evidence, dan backup NAS memakai arsip engine (bucket <code>ocr</code>), jadi tidak bergantung pada aplikasi.
+          <code>object_key</code> (key SILO yang akan Anda pakai) opsional: dicatat sebagai lokasi foto di aplikasi. Key baru diketahui setelah menyimpan?
+          Laporkan dengan <code>POST /v1/photos/{id}/stored</code> (<code>reportStored</code> di client).</p>
         <div class="tabs" data-tabs="fast"><button data-t="php">PHP / Laravel</button><button data-t="ts">TypeScript / Node</button><button data-t="curl">curl</button><button data-t="py">Python</button></div>
         <div class="tabpane" data-pane="fast:php"><pre data-code>// Salin clients/php/PhotoQualityClient.php (tanpa dependency). checkFile tidak pernah throw.
 $pqe = new PhotoQualityClient('{{BASE}}', env('PQE_API_KEY'), 5000, 'id');

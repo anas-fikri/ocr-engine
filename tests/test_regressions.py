@@ -399,3 +399,15 @@ def test_engine_archives_to_ocr_bucket(client, admin_headers, samples):
     assert client.get(f"/v1/photos/{ok['id']}", headers=admin_headers).json()["archive"] is None
     assert not any(o.key == a_ok["key"] for o in st.list("ocr"))
     assert client.get(f"/v1/photos/{rej['id']}", headers=admin_headers).json()["archive"] is not None
+
+
+def test_archive_bucket_editable_via_storage_settings(client, admin_headers, monkeypatch):
+    from engine.settings import reset_settings_cache
+
+    monkeypatch.setenv("PQE_SECRET_KEY", "kunci-test")
+    reset_settings_cache()
+    r = client.put("/v1/admin/settings/storage", json={"archive_bucket": "ocr-lain"}, headers=admin_headers)
+    assert r.status_code == 200, r.text
+    cfg = client.get("/v1/admin/settings/storage", headers=admin_headers).json()
+    field = cfg["fields"]["archive_bucket"]
+    assert field["value"] == "ocr-lain" and field["source"] == "database"

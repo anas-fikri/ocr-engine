@@ -253,6 +253,7 @@ class StorageSettingsIn(BaseModel):
     addressing_style: str | None = Field(None, description="auto | path | virtual")
     signature_version: str | None = Field(None, description="s3v4 | s3")
     app_bucket: str | None = Field(None, description="Bucket foto aplikasi (engine hanya membaca)")
+    archive_bucket: str | None = Field(None, description="Bucket arsip engine (bawaan ocr)")
     processed_bucket: str | None = None
     thumb_bucket: str | None = None
     upload_bucket: str | None = None

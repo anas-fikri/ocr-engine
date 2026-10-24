@@ -34,7 +34,7 @@ menghubungkan aplikasinya ke Photo Quality Engine. Ikuti dari atas ke bawah. Sem
 
 ## 0. Cara tercepat: kirim foto, terima keputusan
 
-Engine **hanya memproses gambar**. Sebelum dan sesudahnya, termasuk **menyimpan foto ke SILO** dan status
+Engine memproses gambar. Sebelum dan sesudahnya, termasuk **menyimpan foto pengiriman ke SILO** dan status
 pengiriman, dikerjakan aplikasi pengiriman ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Engine hanya
 menyimpan **arsipnya sendiri** di bucket `ocr` untuk review, evidence, dan backup
 ([ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)); bucket aplikasi tidak pernah ditulis engine.
