@@ -12,14 +12,15 @@ Kotlin (Android), Swift (iOS), Dart (Flutter), dan Python: contoh kode ada di pa
 
 ## Cara tercepat: `checkFile` (kirim foto, terima keputusan)
 
-Satu panggilan, satu keputusan. Engine **hanya memproses gambar** dan tidak pernah menyimpan ke SILO: file foto dikirim
+Satu panggilan, satu keputusan. Engine tidak menyimpan ke bucket aplikasi: file foto dikirim
 ke engine, engine memeriksa dan mengoptimasi, lalu mengembalikan keputusan + foto hasil (`image`) untuk foto yang
 diterima. **Aplikasi yang menyimpan** foto itu ke SILO. Foto ditolak: `image` null, jangan disimpan. Tunggu maks.
 3 detik, **tidak pernah throw**, dan fail-open: engine mati, lambat, error, atau lewat batas waktu = `image` null,
-aplikasi menyimpan foto asli dan status boleh diupdate.
+aplikasi menyimpan foto asli dan status boleh diupdate. Engine sendiri mengarsipkan salinannya di bucket `ocr` (foto
+hasil, atau foto asli jika ditolak) untuk Web UI, evidence, dan backup NAS.
 
-Kirim juga `objectKey` (key SILO yang akan dipakai aplikasi) supaya Web UI, evidence, dan backup NAS engine bisa
-membaca fotonya. Jika key baru diketahui setelah menyimpan, pakai `reportStored(photoId, objectKey)`.
+`objectKey` (key SILO yang akan dipakai aplikasi) opsional: engine mencatatnya sebagai lokasi di aplikasi. Jika key
+baru diketahui setelah menyimpan, pakai `reportStored(photoId, objectKey)`.
 
 ```ts
 // TypeScript / Node
@@ -62,9 +63,9 @@ membacanya). Keputusannya sama, tetapi foto yang ditolak sudah ada di bucket apl
 | Laporkan lokasi SILO | `reportStored(photoId, objectKey, bucket?)` | `reportStored($photoId, $objectKey, $bucket = null)` |
 | Hasil lengkap | `analyzeFile(file, filename, fields, { timeoutMs, objectKey, bucket })`, `analyzeObject(...)` | `analyzeFile($path, $fields, $syncTimeoutMs = 3000, $objectKey = null, $bucket = null)`, `analyzeObject(...)` |
 
-Status pengiriman dan penyimpanan foto milik aplikasi pengiriman; engine tidak pernah mengubahnya. Butuh seluruh
+Status pengiriman dan penyimpanan foto pengiriman milik aplikasi pengiriman; engine tidak pernah mengubahnya. Butuh seluruh
 hasil? Pakai `analyzeObject` / `analyzeFile` (objek foto lengkap di `r.photo` / `$r['data']`, termasuk
-`allow_status_update`, `courier_message`, `output_image`, `object`, `retake_required`, `reasons`), lalu
+`allow_status_update`, `courier_message`, `output_image`, `object`, `archive`, `retake_required`, `reasons`), lalu
 `toDecision(...)` untuk keputusan yang sama.
 
 ## Kenapa versi minimal ini?

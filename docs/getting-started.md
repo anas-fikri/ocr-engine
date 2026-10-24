@@ -93,9 +93,10 @@ engine, lalu lihat pesan yang akan tampil di layar kurir beserta detail analisis
 3. Pilih mode:
    - **Simulasi aplikasi kurir** (bawaan): sama dengan integrasi aplikasi (`POST /v1/analyze?timeout_ms=3000` dengan
      file): engine memeriksa dan mengoptimasi foto, lalu mengembalikan keputusan + foto hasil (`output_image`). Di
-     aplikasi asli, aplikasi yang menyimpan foto itu ke SILO; halaman uji coba **tidak menyimpan** foto ke mana pun.
-     Hasil analisis masuk tenant **`uji-coba`** (dibuat otomatis dari `config/tenants/uji-coba.yaml`, mode `enforce`,
-     retensi 30 hari), jadi tidak tercampur dengan data aplikasi kurir, dan tampil di Web UI (tanpa gambar).
+     aplikasi asli, aplikasi yang menyimpan foto itu ke bucket-nya. Engine mengarsipkan foto di bucket `ocr`
+     (`ocr/uji-coba/...`). Hasil analisis masuk tenant **`uji-coba`** (dibuat otomatis dari
+     `config/tenants/uji-coba.yaml`, mode `enforce`, retensi 30 hari), jadi tidak tercampur dengan data aplikasi kurir,
+     dan tampil di Web UI lengkap dengan fotonya.
    - **Uji cepat**: hanya dianalisis, tidak disimpan.
 4. Tekan **📷 Ambil foto** (membuka kamera bawaan HP, EXIF ikut terkirim) atau **Pilih dari galeri**.
 5. Hasil: tampilan **layar kurir** (pesan `courier_message`, tombol Foto ulang / Tetap kirim / Lanjut, dan baris
@@ -175,8 +176,9 @@ cp .env.example .env
 docker compose -f docker-compose.remote-silo.yml up -d --build
 ```
 
-Engine tidak butuh bucket sendiri: engine hanya **membaca** bucket aplikasi dan tidak pernah menyimpan foto
-([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Key cukup izin baca. Detail permission dan setup SILO produksi: [operations.md](operations.md).
+Engine **membaca** bucket aplikasi dan menyimpan arsipnya sendiri di bucket `ocr`
+([ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)); minta tim infra membuat bucket `ocr`. Key engine: baca di bucket
+aplikasi, baca/tulis/hapus di `ocr`. Detail permission dan setup SILO produksi: [operations.md](operations.md).
 
 ## Menjalankan tanpa Docker
 

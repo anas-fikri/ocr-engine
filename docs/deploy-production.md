@@ -11,7 +11,7 @@ flowchart LR
     U[Aplikasi pengiriman / Ops / HP uji coba] -->|HTTPS 443| C[Caddy]
     C --> E[Engine]
     E --> P[(PostgreSQL)]
-    E -->|hanya baca bucket aplikasi| S[(SILO s3.pcpexpress.com)]
+    E -->|baca bucket aplikasi, tulis arsip ocr| S[(SILO s3.pcpexpress.com)]
     U -->|aplikasi menyimpan foto| S
     E -->|backup foto + database| N[(NAS)]
 ```
@@ -29,19 +29,25 @@ Semua komponen di atas (Caddy, engine, PostgreSQL) berjalan di **satu server** l
 | 3 | Nama domain internal | Contoh `photo-quality.pcpexpress.com`, diarahkan ke IP server (DNS kantor atau `/etc/hosts`) |
 | 4 | Port 443 (dan 80) terbuka | Dari jaringan aplikasi pengiriman, ops, dan HP uji coba ke server |
 | 5 | Server bisa menjangkau SILO | `curl -I https://s3.pcpexpress.com` dari server |
-| 6 | Key SILO | Disarankan service account khusus engine dengan izin **baca saja** di bucket aplikasi (langkah 2). Engine tidak pernah menulis ke SILO, jadi key yang sudah ada pun aman, tetapi sebaiknya tidak memakai key admin |
+| 6 | Bucket arsip + key SILO | Bucket `ocr` untuk arsip engine dan service account khusus engine: **baca** di bucket aplikasi, **baca/tulis/hapus** di `ocr` (langkah 2). Engine tidak pernah menulis ke bucket aplikasi (dijaga di kode), tetapi sebaiknya tidak memakai key admin |
 | 7 | Share NAS | Folder SMB/NFS khusus backup + akun yang bisa menulis (langkah 3) |
 
 ## 2. Siapkan SILO (sekali, oleh tim infra)
 
-**Tidak perlu membuat bucket.** Engine hanya memproses gambar dan **tidak menyimpan apa pun ke SILO**; aplikasi
-pengiriman yang menyimpan foto ke bucket-nya sendiri ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Engine
-hanya **membaca** bucket aplikasi untuk Web UI, evidence, backup NAS, dan polling.
+Aplikasi pengiriman tetap menyimpan foto pengirimannya ke bucket-nya sendiri
+([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Engine menyimpan **arsipnya sendiri** di bucket `ocr`
+(per aplikasi, masa simpan 520 hari; foto ditolak = foto asli untuk review) dan hanya **membaca** bucket aplikasi
+([ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)).
 
-Cukup buat service account engine dengan izin baca (`s3:GetObject`, `s3:ListBucket`) di bucket aplikasi:
+Buat bucket arsip dan service account engine: baca (`s3:GetObject`, `s3:ListBucket`) di bucket aplikasi, baca/tulis/hapus
+di bucket `ocr`:
 
 ```bash
 mcli alias set pcp https://s3.pcpexpress.com <ACCESS_KEY_ADMIN> <SECRET_KEY_ADMIN>
+```
+
+```bash
+mcli mb pcp/ocr
 ```
 
 Policy dan perintahnya: [operations.md bagian 4.2](operations.md#42-service-account-engine-least-privilege) (contoh
@@ -128,7 +134,8 @@ Jika server memakai `ufw`, izinkan port 5432 dari jaringan Docker: `sudo ufw all
 Buka `https://photo-quality.pcpexpress.com/ui`, masuk dengan API key admin dari langkah 5.
 
 1. **Koneksi SILO**: endpoint `https://s3.pcpexpress.com`, access key, secret key, bucket aplikasi. Klik **Test koneksi**
-   (dua cek baca ✅), lalu **Simpan**.
+   ("Baca bucket aplikasi", "Baca isi foto", "Tulis bucket arsip 'ocr'" ✅). Bucket arsip bawaan `ocr`; isi field
+   **Bucket arsip engine** hanya jika memakai nama lain. Lalu **Simpan**.
 2. **Backup NAS**: tujuan Folder `/backup`, klik **Test NAS** (semua ✅), centang **Aktifkan backup terjadwal**,
    **Simpan**, lalu **Backup database sekarang**.
 3. **Tenant** → `courier-app`: sesuaikan `bucket`/`prefix` dengan folder foto POD di SILO. Biarkan `mode: shadow`.
@@ -141,8 +148,8 @@ Buka `https://photo-quality.pcpexpress.com/ui`, masuk dengan API key admin dari 
 docker compose -f docker-compose.prod.yml exec engine pqe preflight
 ```
 
-atau Web UI → **Sistem** → **Jalankan preflight**. Preflight memeriksa secret, database, koneksi baca SILO
-("Baca bucket aplikasi", "Engine hanya membaca SILO"), mode tenant, backup NAS, worker, dan OCR. Hasil akhir harus **"SIAP production"**.
+atau Web UI → **Sistem** → **Jalankan preflight**. Preflight memeriksa secret, database, koneksi SILO
+("Baca bucket aplikasi", "Tulis bucket arsip 'ocr'", "Bucket aplikasi hanya dibaca"), mode tenant, backup NAS, worker, dan OCR. Hasil akhir harus **"SIAP production"**.
 Peringatan (⚠️) boleh untuk uji coba, tetapi baca saran perbaikannya.
 
 ## 9. Sertifikat internal di perangkat uji
@@ -162,8 +169,9 @@ Let's Encrypt.
 ## 10. Uji coba langsung
 
 - HP uji coba: `https://photo-quality.pcpexpress.com/ui/coba.html` (kamera langsung berfungsi karena sudah HTTPS).
-  Hasil analisis masuk tenant `uji-coba`, tidak tercampur data kurir. Halaman ini tidak menyimpan foto ke SILO (di
-  aplikasi asli, aplikasi yang menyimpan), jadi di Web UI foto uji tampil tanpa gambar.
+  Hasil analisis masuk tenant `uji-coba`, tidak tercampur data kurir. Foto uji diarsipkan engine di
+  `ocr/uji-coba/...`, jadi bisa dibuka di Web UI dan Evidence (resi uji). Di aplikasi asli, aplikasi juga menyimpan
+  foto hasil ke bucket-nya sendiri.
 - Developer aplikasi: `https://photo-quality.pcpexpress.com/ui/guide.html`.
 - Ops: Web UI → Dashboard / Review untuk foto asli yang dinilai di mode shadow.
 
@@ -189,7 +197,7 @@ Jika suatu rilis mengubah skema, catatan rilisnya akan menyebutkan langkah tamba
 ## 12. Checklist keamanan production
 
 - `.env` hanya bisa dibaca root/admin server (`chmod 600`, sudah diatur script).
-- Key SILO admin yang pernah dibagikan di chat/email sudah diganti (rotate). Engine cukup memakai key **baca saja**.
+- Key SILO admin yang pernah dibagikan di chat/email sudah diganti (rotate). Key engine hanya baca di bucket aplikasi dan baca/tulis/hapus di `ocr`.
 - Key admin engine hanya dipegang 1–2 orang; tim lain memakai key `ops`/`viewer`/`app`.
 - Port 8000 hanya terbuka di `127.0.0.1` server (sudah diatur compose); akses dari luar hanya lewat HTTPS.
 - Backup NAS aktif dan uji restore dilakukan minimal sebulan sekali.

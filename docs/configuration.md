@@ -47,10 +47,11 @@ penyimpanan dikerjakan aplikasi. Jadi yang wajib diisi hanya endpoint, key (izin
 | `AWS_SIGNATURE_VERSION` ⚙ | `s3v4` | Versi tanda tangan request: `s3v4` (disarankan) atau `s3` (v2, server lama). Sama dengan `api` di konfigurasi `mc` | Hanya untuk server S3 lama yang belum mendukung v4 |
 | `AWS_ACCESS_KEY_ID` ⚙ | kosong | Access key **service account engine** | Selalu diisi. Jangan pakai akun admin/root SILO |
 | `AWS_SECRET_ACCESS_KEY` ⚙ | kosong | Secret key pasangannya | Selalu diisi |
-| `AWS_BUCKET` ⚙ | `ekas-pcptransport` | Bucket foto milik aplikasi (engine hanya **membaca**: Web UI, evidence, backup NAS, polling). Default untuk `object_key` dari API/source yang tidak menyebut bucket | Sesuaikan dengan bucket aplikasi |
+| `AWS_BUCKET` ⚙ | `ekas-pcptransport` | Bucket foto milik aplikasi (engine hanya **membaca**: polling, `object_key`, dan foto yang tidak punya arsip). Default untuk `object_key` dari API/source yang tidak menyebut bucket | Sesuaikan dengan bucket aplikasi |
 | `AWS_URL` | — | **Tidak dibaca engine.** Ada di `.env.example` hanya agar sama dengan config aplikasi Laravel | — |
-| `ENGINE_BUCKET_PROCESSED` / `ENGINE_BUCKET_THUMB` / `ENGINE_BUCKET_UPLOAD` | `photos-processed` / `photos-thumb` / `photos-upload` | **Data versi lama saja.** Versi awal menyimpan salinan foto di bucket ini; versi sekarang tidak menulis apa pun ke SILO. Hanya dibaca untuk membuka/backup foto lama | Biarkan bawaan. Instalasi baru tidak perlu membuat bucket ini |
-| `ENGINE_CREATE_BUCKETS` | `false` | `true` = saat start, engine membuat `AWS_BUCKET` (dan bucket versi lama) jika belum ada | `true` hanya untuk SILO lokal/uji coba (`docker-compose.yml`). Di produksi selalu `false` |
+| `ENGINE_BUCKET_ARCHIVE` ⚙ | `ocr` | Bucket **arsip engine** (baca + tulis + hapus). Setiap foto upload diarsipkan di `<tenant>/<yyyy>/<mm>/<dd>/<id>.<ext>`: foto diterima = sama dengan `output_image`, foto ditolak = foto asli (review & kalibrasi). Dihapus worker setelah `archive_retention_days` tenant (bawaan 520 hari). Satu-satunya bucket yang ditulis engine ([ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)) | Biarkan `ocr`; tim infra membuat bucket ini. Tenant bisa memakai bucket lain lewat `archive_bucket` |
+| `ENGINE_BUCKET_PROCESSED` / `ENGINE_BUCKET_THUMB` / `ENGINE_BUCKET_UPLOAD` | `photos-processed` / `photos-thumb` / `photos-upload` | **Data versi lama saja** (sebelum arsip `ocr`). Hanya dibaca untuk membuka/backup foto lama | Biarkan bawaan. Instalasi baru tidak perlu membuat bucket ini |
+| `ENGINE_CREATE_BUCKETS` | `false` | `true` = saat start, engine membuat `AWS_BUCKET`, `ENGINE_BUCKET_ARCHIVE` (dan bucket versi lama) jika belum ada | `true` hanya untuk SILO lokal/uji coba (`docker-compose.yml`). Di produksi selalu `false` |
 | `ENGINE_PRESIGN_TTL_UI` | `900` | Masa berlaku link foto (detik) untuk Web UI dan API `/v1/photos` | Perpanjang jika ops sering membuka tab lama |
 | `ENGINE_PRESIGN_TTL_CUSTOMER` | `604800` (7 hari) | Masa berlaku link foto di `/v1/evidence/...` (untuk pelanggan) | Maksimal 7 hari (batas presigned S3 v4) |
 
@@ -74,7 +75,7 @@ Skema tabel dibuat otomatis saat start (`pqe init` / `pqe run` / `pqe api` / `pq
 | `PQE_SYNC_TIMEOUT_MS` | `3000` | Batas tunggu default `POST /v1/analyze` dengan file (selalu dianalisis langsung) dan `?sync=true` untuk `object_key`. Lewat batas → respons `202`, `allow_status_update: true`, `output_image: null` (fail-open; aplikasi menyimpan foto asli), hasil tetap tercatat | Turunkan jika aplikasi butuh respons lebih cepat |
 | `PQE_SECRET_KEY` | kosong | Kunci untuk mengenkripsi rahasia yang disimpan di database lewat Web UI (secret key SILO di halaman **Koneksi SILO**). Isi dengan nilai acak panjang, contoh `openssl rand -hex 32` | **Selalu isi di produksi** dan simpan di K8s Secret. Jika kosong, secret key SILO tidak bisa disimpan lewat Web UI (`409 SECRET_KEY_MISSING`). Jika **diganti**, secret yang sudah tersimpan tidak bisa dibaca lagi dan harus diisi ulang di Koneksi SILO |
 | `PQE_CORS_ORIGINS` | kosong | Origin web (dipisah koma) yang boleh memanggil API langsung dari browser. Kosong = CORS mati | Isi hanya jika aplikasi web memanggil engine dari browser |
-| `PQE_ENV` | `production` | `production` = pagar pengaman perintah: `pqe demo-upload` ditolak kecuali dengan `--force`. `development` = perintah demo diizinkan. Apa pun nilainya, engine **tidak pernah** menulis/menghapus di bucket aplikasi (read-only walau key punya akses penuh); foto pun tidak disimpan engine sama sekali | `development` hanya untuk lokal (`docker-compose.yml` sudah mengaturnya). Biarkan `production` di server |
+| `PQE_ENV` | `production` | `production` = pagar pengaman perintah: `pqe demo-upload` ditolak kecuali dengan `--force`. `development` = perintah demo diizinkan. Apa pun nilainya, engine **tidak pernah** menulis/menghapus di bucket aplikasi (read-only walau key punya akses penuh); engine hanya menulis ke bucket arsipnya (`ENGINE_BUCKET_ARCHIVE`) | `development` hanya untuk lokal (`docker-compose.yml` sudah mengaturnya). Biarkan `production` di server |
 
 ### 1.4 Worker & ingestor
 
@@ -137,6 +138,7 @@ Field yang tidak diisi di halaman ini tetap memakai env. Setiap field menampilka
 | Gaya alamat (`addressing_style`) | `AWS_ADDRESSING_STYLE` |
 | Signature (`signature_version`) | `AWS_SIGNATURE_VERSION` |
 | Bucket foto aplikasi (`app_bucket`) | `AWS_BUCKET` |
+| Bucket arsip engine (`archive_bucket`) | `ENGINE_BUCKET_ARCHIVE` |
 | Bucket versi lama (`processed_bucket`, `thumb_bucket`, `upload_bucket`, hanya lewat API, tidak tampil di form) | `ENGINE_BUCKET_PROCESSED` / `ENGINE_BUCKET_THUMB` / `ENGINE_BUCKET_UPLOAD` |
 
 **Impor dari konfigurasi `mc` / MinIO client.** Tempel JSON seperti di bawah ke kotak "Impor dari konfigurasi mc",
@@ -160,8 +162,8 @@ klik **Isi form dari JSON**, lalu **Test koneksi** dan **Simpan**:
 > host lain untuk membuka foto, isi **Endpoint publik**.
 
 **Test koneksi** memakai nilai di form (sebelum disimpan; field kosong memakai nilai efektif saat ini) dan menjalankan
-dua cek **baca saja**: (1) "Baca bucket aplikasi" (list), (2) "Baca isi foto" (membaca metadata satu foto contoh).
-Tidak ada yang ditulis ke SILO. Setiap cek menampilkan ✅/❌ beserta pesan error asli dari SILO (lihat
+tiga cek: (1) "Baca bucket aplikasi" (list), (2) "Baca isi foto" (membaca metadata satu foto contoh), (3) "Tulis bucket
+arsip 'ocr'" (menulis lalu menghapus file uji kecil). Bucket aplikasi tidak pernah ditulis. Setiap cek menampilkan ✅/❌ beserta pesan error asli dari SILO (lihat
 [troubleshooting](troubleshooting.md#koneksi-silo-test-koneksi-gagal)).
 
 Aturan penyimpanan:
@@ -190,8 +192,8 @@ Menu **Backup NAS** (role `admin`) mengatur salinan terjadwal database dan foto 
 | `folder_path` | `/backup` | Path absolut di dalam container (= `NAS_MOUNT` di compose) |
 | `s3_endpoint`, `s3_bucket`, `s3_prefix`, `s3_region`, `s3_access_key`, `s3_secret_key`, `s3_addressing_style` | `us-east-1`, `path` | Tujuan NAS S3. Secret disimpan terenkripsi dengan `PQE_SECRET_KEY` (tanpa itu: `409 SECRET_KEY_MISSING`) |
 | `include_database` | `true` | Dump database engine |
-| `include_photos` | `true` | Foto pengiriman yang disimpan aplikasi di SILO (dibaca dari lokasi `object_key` / `POST /v1/photos/{id}/stored` / polling). Matikan jika tim infra sudah mem-backup bucket aplikasi. Foto yang tidak disimpan aplikasi (ditolak) tidak ikut |
-| `include_upload_originals` / `include_processed` / `include_thumbs` | `true` / `true` / `false` | **Data versi lama**: salinan di bucket engine dari versi awal. Di Web UI ada di bagian "Data versi lama" |
+| `include_photos` | `true` | Satu salinan per foto: arsip engine (bucket `ocr`) bila ada, selain itu foto di bucket aplikasi (foto polling / `object_key`). Foto tanpa arsip dan tanpa lokasi aplikasi tidak ikut |
+| `include_upload_originals` / `include_processed` / `include_thumbs` | `true` / `true` / `false` | **Data versi lama**: salinan di bucket `photos-upload`/`photos-processed`/`photos-thumb` dari versi sebelum arsip `ocr`. Di Web UI ada di bagian "Data versi lama" |
 | `photo_interval_minutes` | `15` | Jeda backup foto (1–1440) |
 | `db_interval_hours` | `24` | Jeda dump database (1–720) |
 | `db_keep` | `14` | Jumlah dump database terakhir yang disimpan di NAS (1–365) |
@@ -218,7 +220,9 @@ Field yang tidak dikenal akan **ditolak** saat validasi, supaya salah ketik lang
 | `default_lang` | | `id` | `id` / `en`. Bahasa pesan di **payload webhook** tenant ini. (Respons API mengikuti `Accept-Language` / `?lang=` / `PQE_DEFAULT_LANG`, bukan field ini) |
 | `timezone` | | `Asia/Jakarta` | Zona waktu untuk: waktu EXIF dan `captured_at` tanpa offset, tanggal pada `date_prefix_format`, checkpoint `db_poll`, dan tampilan waktu di PDF evidence |
 | `retention_days` | | `1095` (3 tahun) | Lihat [Retensi](#retensi) |
-| `store_mode`, `upload_bucket` | | — | **Tidak dipakai lagi** (engine tidak menyimpan foto ke SILO, [ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Masih diterima agar config lama tetap valid |
+| `archive_bucket` | | kosong | Bucket arsip khusus tenant ini. Kosong = `ENGINE_BUCKET_ARCHIVE` (bawaan `ocr`), dipisah per tenant lewat prefix `<code>/`. Bucket ini harus bisa ditulis key engine |
+| `archive_retention_days` | | `520` | Masa simpan file arsip engine (1–3650 hari, dihitung dari waktu diterima). Setelah itu worker menghapus file arsipnya (audit `archive.purge`); catatan analisis tetap sampai `retention_days`. Lihat [Retensi](#retensi) |
+| `store_mode`, `upload_bucket` | | — | **Tidak dipakai lagi** ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md); arsip sekarang lewat `archive_bucket`). Masih diterima agar config lama tetap valid |
 | `default_profile` | | `default` | Profile yang dipakai jika `photo_type` foto kosong atau tidak dikenal |
 | `review_required` | | `false` | Apakah foto `WARN` harus di-*approve* ops dulu sebelum masuk evidence pelanggan. `false` = `PASS` dan `WARN` langsung masuk evidence, review ops **opsional** (antrean Review tetap bisa dipakai untuk memantau). `true` = hanya `PASS` atau foto yang di-*approve* ops. `REJECT` tidak pernah masuk tanpa approve. Lihat [bagian 5](#5-mode-verdict-dan-action) |
 | `sources` | | `[]` | Dari mana foto diambil. Kosong = tenant hanya menerima foto lewat API |
@@ -229,6 +233,7 @@ Field yang tidak dikenal akan **ditolak** saat validasi, supaya salah ketik lang
 #### Retensi
 
 - Saat foto pertama kali tercatat, engine mengisi `expires_at = waktu tercatat + retention_days`. Saat `retention_days` diubah (Web UI / API / `pqe import-tenants --force`), `expires_at` **semua foto tenant itu dihitung ulang** dari waktu tercatatnya.
+- **Arsip engine** (bucket `ocr`) punya masa simpan sendiri: `archive_retention_days` (bawaan 520 hari). Setelah lewat, worker menghapus file arsipnya dan mengosongkan `archive` di catatan foto; hasil analisis tetap ada. Dicatat di audit log (`archive.purge`) dan metrik `pqe_archive_total{result="purged"}`.
 - Setelah lewat `expires_at`, worker menghapus **milik engine saja**: baris foto (metadata hasil analisis), job, riwayat review terkait, dan objek di bucket engine versi lama jika ada. Penghapusan dicatat di audit log (`retention.purge`). Catatan pengiriman webhook yang sudah selesai/dead dihapus otomatis setelah 30 hari.
 - **Foto di bucket aplikasi tidak pernah dihapus engine.** Atur lifecycle di SILO, contoh 3 tahun:
   ```bash
@@ -238,7 +243,7 @@ Field yang tidak dikenal akan **ditolak** saat validasi, supaya salah ketik lang
 ### 2.2 sources: dari mana foto diambil
 
 Satu tenant boleh punya beberapa source. Semua jalur berujung ke antrean yang **idempotent** (foto yang sama tidak diproses dua kali), jadi polling, event, dan reconcile boleh tumpang tindih.
-Semua source hanya **membaca** SILO/database aplikasi; engine tidak menulis salinan apa pun.
+Semua source hanya **membaca** SILO/database aplikasi; foto dari source tidak diarsipkan ulang ke bucket `ocr`.
 
 > Jika aplikasi sudah memanggil `POST /v1/analyze` (`checkFile`) untuk foto di prefix yang sama, kirim `object_key` di
 > request itu supaya catatan dari polling digabung ke catatan upload. Tanpa `object_key`, satu foto bisa tercatat dua
@@ -658,12 +663,15 @@ ke aplikasi sebagai `output_image` di respons `POST /v1/analyze` (upload file); 
 6. Jika hasil malah lebih besar dari original (dan formatnya bisa dibuka browser), original yang dipakai.
 
 **Thumbnail:** sisi terpanjang `thumbnail.long_side_px` (320), JPEG `thumbnail.quality` (70). Selalu JPEG. Dibuat engine
-saat diminta Web UI (`GET /v1/photos/{id}/file?variant=thumbnail`, dibaca dari SILO aplikasi), tidak disimpan.
+saat diminta Web UI (`GET /v1/photos/{id}/file?variant=thumbnail`, dari arsip engine atau bucket aplikasi), tidak
+disimpan.
 
-**Tidak ada file yang disimpan engine.** Foto yang **diterima** (`allow_status_update: true`) dikembalikan di
-`output_image` (base64; hasil kompresi, atau file asli jika tidak perlu dikompres); aplikasi menyimpannya ke SILO dan
-boleh memberi tahu lokasinya (`object_key` atau `POST /v1/photos/{id}/stored`). Foto yang ditolak: `output_image: null`.
-Untuk foto yang dibaca dari SILO (polling, `object_key`), engine hanya menganalisis; tidak ada kompresi yang disimpan.
+**Yang disimpan:** foto yang **diterima** (`allow_status_update: true`) dikembalikan di `output_image` (base64; hasil
+kompresi, atau file asli jika tidak perlu dikompres); aplikasi menyimpannya ke bucket-nya sendiri dan boleh memberi tahu
+lokasinya (`object_key` atau `POST /v1/photos/{id}/stored`). Foto yang ditolak: `output_image: null`. Engine
+mengarsipkan salinannya di bucket arsip (`ocr`) setelah respons: foto diterima = isi `output_image`, foto ditolak =
+foto asli. Untuk foto yang dibaca dari SILO (polling, `object_key`), engine hanya menganalisis; tidak ada salinan yang
+disimpan.
 
 ---
 

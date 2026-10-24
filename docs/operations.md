@@ -44,7 +44,7 @@ pqe worker --concurrency 4
 pqe ingestor
 ```
 
-Setiap peran menjalankan `bootstrap` saat start: membuat tabel database (jika belum ada), membuat kunci admin dari `PQE_BOOTSTRAP_ADMIN_KEY` (jika belum ada), meng-import tenant dari `PQE_TENANTS_DIR` (hanya tenant yang **belum** ada di DB), dan (hanya untuk uji lokal) membuat bucket jika `ENGINE_CREATE_BUCKETS=true`. Engine tidak menyimpan foto ke SILO, jadi di server bucket engine tidak diperlukan.
+Setiap peran menjalankan `bootstrap` saat start: membuat tabel database (jika belum ada), membuat kunci admin dari `PQE_BOOTSTRAP_ADMIN_KEY` (jika belum ada), meng-import tenant dari `PQE_TENANTS_DIR` (hanya tenant yang **belum** ada di DB), dan (hanya untuk uji lokal) membuat bucket jika `ENGINE_CREATE_BUCKETS=true`. Di server, bucket arsip `ocr` dibuat tim infra (bagian 4.1); bucket engine versi lama tidak diperlukan.
 
 Perintah operasional lain:
 
@@ -95,7 +95,7 @@ docker compose ps             # tunggu engine "healthy"
 Compose lokal memakai `PQE_ENV=development` agar `pqe demo-upload` boleh dijalankan, dan memasang folder `./backup`
 (`NAS_MOUNT`) ke `/backup` untuk mencoba halaman **Backup NAS**.
 
-Image SILO yang dipakai: `docker.io/pgsty/silo:RELEASE.2026-10-18T00-00-00Z` (fork komunitas MinIO dari Pigsty, kompatibel S3). Compose lokal membuat bucket aplikasi `ekas-pcptransport` otomatis (`ENGINE_CREATE_BUCKETS=true`). Engine hanya membacanya; tidak ada bucket engine yang dipakai untuk foto baru. Folder `config/tenants` di-mount read-only ke container.
+Image SILO yang dipakai: `docker.io/pgsty/silo:RELEASE.2026-10-18T00-00-00Z` (fork komunitas MinIO dari Pigsty, kompatibel S3). Compose lokal membuat bucket aplikasi `ekas-pcptransport` dan bucket arsip `ocr` otomatis (`ENGINE_CREATE_BUCKETS=true`). Engine hanya membaca bucket aplikasi dan mengarsipkan foto upload di `ocr`. Folder `config/tenants` di-mount read-only ke container.
 
 ### Mencoba alur end-to-end
 
@@ -144,8 +144,8 @@ dijangkau **dari container engine** (contoh `https://s3.pcpexpress.com`), **buka
 Catatan:
 
 - Seluruh `.env` dimuat ke container engine (`env_file: .env`). `DATABASE_URL` ditimpa compose agar mengarah ke Postgres di compose.
-- `ENGINE_CREATE_BUCKETS` di `.env.example` bernilai `false`. Engine tidak butuh bucket sendiri.
-- Engine **hanya membaca** SILO (`AWS_BUCKET`) dan **tidak pernah menulis** ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)). Foto dikirim aplikasi ke engine, engine mengembalikan keputusan + foto hasil optimasi (`output_image`), lalu **aplikasi** yang menyimpannya ke SILO. Ini juga dijaga di kode (pagar pengaman, lihat bagian 11): walau key yang dipakai punya akses penuh, engine menolak menulis/menghapus di bucket aplikasi, dan `PQE_ENV=production` (bawaan `.env.example`) menolak `pqe demo-upload`.
+- `ENGINE_CREATE_BUCKETS` di `.env.example` bernilai `false`. Bucket arsip engine (`ENGINE_BUCKET_ARCHIVE`, bawaan `ocr`) dibuat tim infra (bagian 4.1).
+- Engine **hanya membaca** bucket aplikasi (`AWS_BUCKET`) dan hanya **menulis ke arsipnya sendiri** (`ocr`) ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md), [ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)). Foto dikirim aplikasi ke engine, engine mengembalikan keputusan + foto hasil optimasi (`output_image`), lalu **aplikasi** yang menyimpannya ke bucket-nya; engine mengarsipkan salinannya di `ocr` di belakang layar. Ini juga dijaga di kode (pagar pengaman, lihat bagian 11): walau key yang dipakai punya akses penuh, engine menolak menulis/menghapus di bucket aplikasi, dan `PQE_ENV=production` (bawaan `.env.example`) menolak `pqe demo-upload`.
 - Backup NAS: mount share NAS di server, isi `NAS_MOUNT` di `.env` (dipasang ke `/backup`), lalu atur di Web UI → **Backup NAS** (bagian 6.2–6.3).
 - Sesuaikan `config/tenants/courier-app.yaml` (bucket, prefix, mapping) dengan struktur key foto di SILO kantor sebelum start. Setelah tenant tersimpan di DB, ubah lewat Web UI (menu Tenant) atau `pqe import-tenants --force`.
 
@@ -161,16 +161,25 @@ mcli alias set pcp https://s3.pcpexpress.com ADMIN_USER ADMIN_PASSWORD
 
 ### 4.1 Bucket
 
-Engine **tidak butuh bucket sendiri**: foto disimpan aplikasi di bucket aplikasi (`ekas-pcptransport`), engine hanya
-membacanya. Bucket `photos-processed`, `photos-thumb`, `photos-upload` hanya ada pada instalasi versi awal (data lama
-tetap bisa dibuka dan dibackup); jangan buat untuk instalasi baru.
+Engine butuh **satu bucket arsip** miliknya, bawaan `ocr` (`ENGINE_BUCKET_ARCHIVE`). Isinya dipisah per aplikasi lewat
+prefix `<tenant>/<yyyy>/<mm>/<dd>/`: foto diterima (sama dengan `output_image`) dan foto ditolak (foto asli, untuk
+review & kalibrasi). Masa simpan 520 hari per tenant (`archive_retention_days`), dihapus otomatis oleh worker.
+
+```bash
+mcli mb pcp/ocr
+```
+
+Foto pengiriman tetap disimpan aplikasi di bucket aplikasi (`ekas-pcptransport`); engine hanya membacanya. Bucket
+`photos-processed`, `photos-thumb`, `photos-upload` hanya ada pada instalasi versi awal (data lama tetap bisa dibuka
+dan dibackup); jangan buat untuk instalasi baru. Perkiraan ukuran arsip: ±1 MB per foto diterima (ganda dengan salinan
+aplikasi); 1.000 foto/hari ≈ 30 GB/bulan, dibatasi 520 hari.
 
 Bucket aplikasi sudah ada dan tetap dimiliki aplikasi. Pastikan semua bucket **private** (tanpa anonymous policy): `mcli anonymous get pcp/ekas-pcptransport` harus `private`/`none`.
 
 ### 4.2 Service account engine (least privilege)
 
-Jangan pernah memakai akun admin/root SILO untuk engine. Engine cukup **izin baca** bucket aplikasi. Simpan policy
-berikut sebagai `pqe-engine-policy.json`:
+Jangan pernah memakai akun admin/root SILO untuk engine. Engine butuh **izin baca** di bucket aplikasi dan **baca,
+tulis, hapus** di bucket arsip `ocr`. Simpan policy berikut sebagai `pqe-engine-policy.json`:
 
 ```json
 {
@@ -187,6 +196,12 @@ berikut sebagai `pqe-engine-policy.json`:
       "Effect": "Allow",
       "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
       "Resource": ["arn:aws:s3:::ekas-pcptransport"]
+    },
+    {
+      "Sid": "ArsipEngine",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket", "s3:GetBucketLocation"],
+      "Resource": ["arn:aws:s3:::ocr", "arn:aws:s3:::ocr/*"]
     }
   ]
 }
@@ -198,9 +213,11 @@ mcli admin policy create pcp pqe-engine pqe-engine-policy.json
 mcli admin policy attach pcp pqe-engine --user pqe-engine
 ```
 
-Isi `AWS_ACCESS_KEY_ID=pqe-engine` dan `AWS_SECRET_ACCESS_KEY=<secret>` di `.env` / K8s Secret, **atau** masukkan lewat Web UI → **Koneksi SILO** (secret disimpan terenkripsi dengan `PQE_SECRET_KEY`). Jika foto aplikasi lain ada di bucket lain, tambahkan bucket itu ke kedua statement. Halaman Koneksi SILO juga menampilkan contoh policy ini sesuai nama bucket yang diisi.
+Isi `AWS_ACCESS_KEY_ID=pqe-engine` dan `AWS_SECRET_ACCESS_KEY=<secret>` di `.env` / K8s Secret, **atau** masukkan lewat Web UI → **Koneksi SILO** (secret disimpan terenkripsi dengan `PQE_SECRET_KEY`). Jika foto aplikasi lain ada di bucket lain, tambahkan bucket itu ke dua statement pertama. Halaman Koneksi SILO juga menampilkan contoh policy ini sesuai nama bucket yang diisi.
 
-Policy ini tidak butuh `s3:PutObject`, `s3:DeleteObject`, atau `s3:CreateBucket`: engine tidak pernah menulis ke SILO. `/readyz` memeriksa akses ke bucket aplikasi.
+`s3:PutObject`/`s3:DeleteObject` hanya diberikan untuk bucket `ocr` (hapus dipakai untuk arsip yang lewat 520 hari).
+Engine tidak butuh `s3:CreateBucket` dan tidak pernah menulis ke bucket aplikasi (juga dijaga di kode). `/readyz`
+memeriksa akses ke bucket aplikasi; preflight dan **Test koneksi** memeriksa tulis/hapus di bucket arsip.
 
 Instalasi versi awal yang masih punya data di `photos-processed`/`photos-thumb`/`photos-upload`: tambahkan izin
 `s3:GetObject` + `s3:ListBucket` untuk bucket itu supaya foto lama tetap bisa dibuka dan dibackup.
@@ -226,7 +243,12 @@ mcli event list pcp/ekas-pcptransport          # verifikasi
 
 ### 4.4 Retensi (lifecycle)
 
-Engine menghapus data miliknya sendiri yang melewati `retention_days` tenant (default 1095 hari = 3 tahun): baris DB foto (dan objek di bucket engine versi lama, jika ada). **Foto milik aplikasi tidak dihapus engine.** Atur lifecycle di SILO:
+Engine menghapus data miliknya sendiri:
+
+- **File arsip** di bucket `ocr` setelah `archive_retention_days` tenant (default 520 hari); catatan analisis tetap. Audit `archive.purge`, metrik `pqe_archive_total{result="purged"}`. Tidak perlu lifecycle SILO untuk `ocr` (boleh ditambah sebagai pengaman, misal `--expire-days 540`).
+- **Catatan analisis** setelah `retention_days` tenant (default 1095 hari = 3 tahun): baris DB foto (dan objek di bucket engine versi lama, jika ada).
+
+**Foto milik aplikasi tidak dihapus engine.** Atur lifecycle di SILO:
 
 ```bash
 mcli ilm rule add pcp/ekas-pcptransport --expire-days 1095
@@ -330,10 +352,10 @@ worker, hanya satu yang menjalankan backup dalam satu waktu (lease 15 menit di t
 | Pilihan | Bawaan | Keterangan |
 |---|:-:|---|
 | Database engine (`include_database`) | ✅ | `pg_dump --format=custom` (PostgreSQL) atau salinan konsisten SQLite |
-| Foto pengiriman di SILO aplikasi (`include_photos`) | ✅ | Foto yang disimpan **aplikasi** di SILO, dibaca dari lokasi yang dilaporkan aplikasi (`object_key` / `POST /v1/photos/{id}/stored`) atau dari polling. Matikan jika tim infra sudah mem-backup bucket aplikasi (lihat 6.5) |
+| Foto (`include_photos`) | ✅ | Satu salinan per foto: **arsip engine** (bucket `ocr`) bila ada, selain itu foto di bucket aplikasi (foto polling / `object_key`) |
 | Data versi lama: foto di bucket engine (`include_upload_originals`, `include_processed`, `include_thumbs`) | ✅ / ✅ / ❌ | Hanya untuk foto dari versi awal yang masih punya salinan di `photos-upload`/`photos-processed`/`photos-thumb`. Instalasi baru tidak punya data ini |
 
-Foto yang tidak disimpan aplikasi (ditolak, atau lokasinya tidak dilaporkan) tidak punya file, jadi tidak dihitung
+Foto tanpa arsip dan tanpa lokasi aplikasi (misal arsip gagal ditulis) tidak punya file, jadi tidak dihitung
 "belum tersalin".
 
 **Jadwal (bawaan):** foto setiap **15 menit** (`photo_interval_minutes`), database setiap **24 jam** (`db_interval_hours`),
@@ -343,7 +365,8 @@ menjalankannya di putaran berikutnya (±10 detik), juga saat jadwal dimatikan.
 **Tata letak di NAS:**
 
 ```
-photos/<bucket>/<key>              contoh photos/ekas-pcptransport/pod/2026/10/23/AWB123.jpg
+photos/<bucket>/<key>              contoh photos/ocr/courier-app/2026/10/23/<id-foto>.jpg (arsip engine)
+                                          photos/ekas-pcptransport/pod/2026/10/23/AWB123.jpg (foto polling)
 database/pqe-<YYYYmmdd-HHMMSS>.dump   (PostgreSQL)  atau  database/pqe-<...>.sqlite (SQLite)
 ```
 
@@ -360,7 +383,7 @@ database/pqe-<YYYYmmdd-HHMMSS>.dump   (PostgreSQL)  atau  database/pqe-<...>.sql
 - Image engine sudah memuat `postgresql-client` (pg_dump 17, kompatibel dengan PostgreSQL 14–17).
 
 Tombol **Test NAS** memeriksa: folder/bucket tujuan ada, tulis-baca-hapus file uji, ruang kosong (> 1 GB, tujuan folder),
-akses baca bucket aplikasi (`AWS_BUCKET`), dan kesiapan dump database. API: `GET/PUT
+akses baca bucket arsip (`ocr`) dan bucket aplikasi (`AWS_BUCKET`), dan kesiapan dump database. API: `GET/PUT
 /v1/admin/settings/backup`, `POST /v1/admin/settings/backup/test`, `POST /v1/admin/backup/run`
 ([api-reference.md](api-reference.md#backup-nas)).
 
@@ -436,7 +459,7 @@ psql -h staging-host -U postgres -d pqe_restore_test -c "select count(*), max(re
 
 - **Point-in-time recovery database:** dump harian berarti kehilangan maksimal 24 jam data analisis. Untuk lebih rapat,
   aktifkan WAL archiving di server Postgres (`archive_mode=on`, `archive_command` ke NAS) atau fitur PITR layanan Postgres.
-- **Foto di bucket aplikasi:** jika tim infra sudah mem-backup bucket aplikasi, matikan `include_photos` di Backup NAS.
+- **Foto di bucket aplikasi:** Backup NAS menyalin arsip engine (`ocr`), bukan bucket aplikasi (kecuali foto polling). Foto pengiriman di bucket aplikasi tetap tanggung jawab tim infra/aplikasi (`mcli mirror` atau backup lain).
   Alternatif di sisi infra (sesuai [sdlc-plan.md](sdlc-plan.md) 4.11):
 
   ```bash
@@ -478,6 +501,7 @@ psql -h staging-host -U postgres -d pqe_restore_test -c "select count(*), max(re
 | `pqe_backup_pending` | gauge | - | Foto yang belum tersalin ke NAS (diperbarui setiap putaran backup di worker) |
 | `pqe_backup_files_total` | counter | `kind` (`original`/`processed`/`thumbnail`/`database`) | File yang disalin ke NAS |
 | `pqe_backup_errors_total` | counter | `kind` (`photos`/`database`) | Kegagalan backup ke NAS |
+| `pqe_archive_total` | counter | `result` (`ok`/`retry`/`failed`/`purged`) | Penulisan ke arsip engine (`ocr`): berhasil, dicoba ulang (1, 4, 15 detik), gagal permanen, atau file dihapus karena lewat `archive_retention_days`. `failed` yang naik = cek izin tulis bucket `ocr` |
 
 **Penting, metrik bersifat per proses:**
 
@@ -607,7 +631,7 @@ metrik proses worker (`pqe run` di :8000, `pqe worker` di :9100).
 | `PQE_SECRET_KEY` hilang / berubah | Secret K8s dibuat ulang tanpa nilai lama | Secret key SILO yang tersimpan tidak bisa dibuka; engine memakai `AWS_SECRET_ACCESS_KEY` env (jika ada). Isi ulang secret key di **Koneksi SILO**, atau kembalikan nilai `PQE_SECRET_KEY` lama |
 | Backup NAS gagal / "Foto belum tersalin" terus naik | NAS tidak ter-mount, penuh, kredensial NAS S3 salah, jadwal mati, worker mati | Web UI → **Backup NAS** → baca error terakhir → **Test NAS**. Perbaiki mount/izin (6.3) atau kredensial, lalu **Backup foto sekarang**. Foto yang belum tersalin tidak hilang; disalin begitu NAS kembali |
 | Perlu memulihkan foto / database | SILO rusak, objek terhapus, DB rusak | Restore dari NAS (6.4). Setelah DB dipulihkan, jalankan `pqe reconcile` agar foto yang masuk setelah dump terakhir tercatat lagi |
-| Foto tampil "tidak disimpan" di Web UI / tidak masuk evidence & backup | Foto ditolak (benar, aplikasi tidak menyimpannya), atau aplikasi tidak mengirim `object_key` dan tidak memanggil `POST /v1/photos/{id}/stored` | Minta tim aplikasi mengirim `object_key` di `checkFile` (lihat [integration-guide.md](integration-guide.md)). Foto yang sudah lewat bisa dilaporkan lokasinya dengan `POST /v1/photos/{id}/stored` |
+| Foto tampil "tidak ada file" di Web UI / tidak masuk evidence & backup | Arsip ke bucket `ocr` gagal (izin tulis, bucket belum dibuat, SILO mati saat itu) atau sudah lewat `archive_retention_days`, dan aplikasi tidak melaporkan lokasinya | Cek `pqe_archive_total{result="failed"}`, log worker/API (`arsip foto ... gagal`), dan preflight "Tulis bucket arsip". Foto lama bisa dilaporkan lokasinya dengan `POST /v1/photos/{id}/stored` |
 | Foto yang sama tercatat dua kali (sekali dari aplikasi, sekali dari polling) | Polling `s3_poll` masih aktif untuk prefix yang sama setelah aplikasi memakai `checkFile` | Kirim `object_key` dari aplikasi (catatan polling digabung otomatis), atau matikan source polling untuk prefix itu di config tenant |
 | Config tenant rusak / salah | Edit YAML keliru | Web UI -> Tenant -> Riwayat versi, salin versi lama, simpan. Config yang gagal di-parse dilewati (tenant lain tetap jalan) dan tercatat di log |
 
@@ -642,13 +666,13 @@ Setelah upgrade, jalankan `pqe preflight` (atau Web UI → Sistem → Jalankan p
 - [ ] `PQE_SECRET_KEY` diisi nilai acak panjang (`openssl rand -hex 32`, bukan `local-secret-key-change-me` dari compose lokal), sama di semua pod, dan salinannya disimpan aman. Kunci ini mengenkripsi secret key SILO yang disimpan lewat Web UI.
 - [ ] Halaman **Koneksi SILO** hanya bisa diakses role `admin`. Batasi jumlah admin key, dan cek audit log `settings.storage.update` secara berkala.
 - [ ] Engine memakai **service account khusus** dengan policy minimum (bagian 4.2), bukan admin/root SILO.
-- [ ] Service account engine hanya punya izin **baca** (`s3:GetObject`, `s3:ListBucket`) di bucket aplikasi. Engine tidak
-      pernah menulis ke SILO ([ADR 0006](adr/0006-engine-hanya-memproses-gambar.md)); preflight menampilkan
-      "Engine hanya membaca SILO".
+- [ ] Service account engine hanya punya izin **baca** (`s3:GetObject`, `s3:ListBucket`) di bucket aplikasi, dan
+      baca/tulis/hapus hanya di bucket arsip `ocr` ([ADR 0007](adr/0007-arsip-engine-di-bucket-ocr.md)); preflight
+      menampilkan "Tulis bucket arsip" dan "Bucket aplikasi hanya dibaca".
 - [ ] `PQE_ENV=production` (bawaan) di server. Pagar pengaman di engine: bucket aplikasi tetap **read-only** walau key
       yang dipakai punya akses penuh, dan `pqe demo-upload` ditolak kecuali dengan `--force`. Pagar ini tambahan, bukan
       pengganti service account least privilege.
-- [ ] **Backup NAS** aktif (Web UI → Backup NAS) untuk database dan foto pengiriman di SILO aplikasi (kecuali sudah dibackup tim infra), sudah di-**Test NAS**,
+- [ ] **Backup NAS** aktif (Web UI → Backup NAS) untuk database dan arsip foto, sudah di-**Test NAS**,
       dan restore sudah diuji (bagian 6). Akun NAS khusus backup, share NAS tidak bisa diakses umum.
 - [ ] Semua bucket **private**. Foto hanya diakses lewat presigned URL: `ENGINE_PRESIGN_TTL_UI` (default 900 detik) dan `ENGINE_PRESIGN_TTL_CUSTOMER` (default 604800 = 7 hari, maksimum yang diizinkan S3 SigV4).
 - [ ] Engine diakses lewat **TLS** (ingress / reverse proxy). `AWS_PUBLIC_ENDPOINT` memakai https.
