@@ -1,0 +1,20 @@
+# HTTPS production di depan engine (docker-compose.prod.yml).
+# PQE_TLS=internal          -> sertifikat dari CA internal Caddy (intranet / domain tidak publik).
+# PQE_TLS=admin@domain.com  -> sertifikat Let's Encrypt otomatis (domain publik, port 80/443 terbuka dari internet).
+{
+	admin off
+}
+
+{$PQE_DOMAIN} {
+	tls {$PQE_TLS:internal}
+	encode gzip
+	request_body {
+		max_size 30MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+	reverse_proxy engine:8000
+}

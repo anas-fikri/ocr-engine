@@ -28,12 +28,12 @@ versi interaktif tanpa login di `<base-url>/ui/guide.html`.
 | `GET /v1/photos`, `GET /v1/photos/{id}`, `GET /v1/photos/{id}/file` | ✓ | ✓ | ✓ | ✓ (tenant sendiri) | | |
 | `POST /v1/photos/{id}/review`, `/reprocess` | ✓ | ✓ | | | | |
 | `GET /v1/photos/{id}/reviews` | ✓ | ✓ | ✓ | | | |
-| `GET /v1/evidence/...`, `POST /v1/evidence/batch` | ✓ | ✓ | | ✓ (tenant sendiri) | ✓ (customer_id sendiri) | |
+| `GET /v1/evidence/...`, `POST /v1/evidence/batch` | ✓ | ✓ | ✓ | ✓ (tenant sendiri) | ✓ (customer_id sendiri) | |
 | `GET /v1/stats` | ✓ | ✓ | ✓ | ✓ (tenant sendiri) | | |
 | `GET /v1/admin/tenants`, `/tenants/{code}`, `/history`, `/profiles/builtin`, `/jobs`, `/webhooks`, `/sources` | ✓ | ✓ | ✓ | | | |
 | `PUT/POST /v1/admin/tenants...`, `/api-keys`, `/jobs/.../retry`, `/webhooks/retry-dead`, `/audit` | ✓ | | | | | |
 | `GET/PUT /v1/admin/settings/storage`, `POST /v1/admin/settings/storage/test` | ✓ | | | | | |
-| `GET/PUT /v1/admin/settings/backup`, `POST /v1/admin/settings/backup/test`, `POST /v1/admin/backup/run` | ✓ | | | | | |
+| `GET/PUT /v1/admin/settings/backup`, `POST /v1/admin/settings/backup/test`, `POST /v1/admin/backup/run`, `GET /v1/admin/preflight` | ✓ | | | | | |
 | `GET /v1/verify/{sha256}`, `/v1/meta/reason-codes`, `/v1/meta/fields`, `/healthz`, `/readyz`, `/metrics`, `/ui/guide.html`, `/ui/coba.html` (halaman; API-nya tetap butuh key) | | | | | | ✓ |
 | `GET /v1/me`, `GET /v1/meta/profiles` | ✓ | ✓ | ✓ | ✓ | ✓ | |
 | `POST /v1/events/s3` | token `PQE_S3_EVENT_TOKEN` (dipakai SILO) | | | | | |
@@ -199,6 +199,9 @@ Riwayat keputusan review: `[{"action", "note", "actor", "at"}]`.
 | `GET /v1/evidence/{awb}` | `lang` | `{"awb", "count", "photos": [{"photo_id", "awb", "photo_type", "courier_id", "captured_at", "received_at", "location", "image_url", "sha256", "verify_url"}], "lang"}` |
 | `GET /v1/evidence/{awb}/pdf` | `lang` | `application/pdf`, satu halaman per foto layak |
 | `POST /v1/evidence/batch` | `{"awbs": ["AWB1", "AWB2"]}` (1-500 resi), `lang` | `application/pdf` |
+
+Key `viewer` (misal finance) dan staf yang terikat tenant hanya melihat evidence tenant-nya; key tanpa tenant melihat semua.
+Resi tanpa foto layak tidak muncul di PDF; jika tidak ada satu pun, PDF berisi satu halaman keterangan.
 | `GET /v1/verify/{sha256}` | - | `{"found": true, "received_at": "...", "awb_suffix": "B123", "message": "..."}` atau `{"found": false}` |
 
 `image_url` adalah presigned URL dengan masa berlaku `ENGINE_PRESIGN_TTL_CUSTOMER` (default 7 hari).
@@ -281,6 +284,7 @@ Semua butuh role `admin`, kecuali endpoint baca yang juga boleh `ops`/`viewer` (
 | `PUT /v1/admin/settings/backup` | JSON | Simpan konfigurasi backup NAS (berlaku di putaran worker berikutnya) |
 | `POST /v1/admin/settings/backup/test` | JSON | Uji tujuan NAS dengan nilai yang dikirim, tanpa menyimpan |
 | `POST /v1/admin/backup/run` | JSON `{"kind": "photos"\|"database"\|"all"}` | Minta worker menjalankan backup sekarang (±10 detik) |
+| `GET /v1/admin/preflight?check_silo=true` | - | Cek kesiapan production, sama dengan `pqe preflight`: `{"ready", "counts": {"ok", "warn", "fail"}, "checks": [{"group", "check", "status", "detail", "fix"}]}`. `ready` = tidak ada `fail`. Dengan `check_silo=true` (bawaan) engine menulis lalu menghapus file kecil `_pqe_preflight/...` di bucket engine |
 
 Contoh mengubah config:
 

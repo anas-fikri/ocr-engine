@@ -215,6 +215,28 @@ def cmd_demo_upload(a) -> None:
     print(f"{len(samples)} foto diupload. Engine akan memprosesnya dalam beberapa detik; buka Web UI -> Review.")
 
 
+def cmd_preflight(a) -> None:
+    import json
+
+    from engine.bootstrap import bootstrap
+    from engine.preflight import run
+
+    bootstrap()
+    r = run(check_silo=not a.no_silo)
+    if a.json:
+        print(json.dumps(r, indent=2, ensure_ascii=False))
+    else:
+        icon = {"ok": "✅", "warn": "⚠️ ", "fail": "❌"}
+        for c in r["checks"]:
+            print(f"{icon[c['status']]} [{c['group']}] {c['check']}: {c['detail']}")
+            if c["status"] != "ok" and c["fix"]:
+                print(f"      -> {c['fix']}")
+        n = r["counts"]
+        print(f"\n{n['ok']} ok, {n['warn']} peringatan, {n['fail']} gagal. "
+              + ("SIAP production." if r["ready"] else "BELUM siap production: bereskan yang gagal."))
+    raise SystemExit(0 if r["ready"] else 1)
+
+
 def cmd_reconcile(a) -> None:
     from engine.bootstrap import bootstrap
     from engine.ingestor import run_source
@@ -332,6 +354,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--bucket", help="Default: AWS_BUCKET")
     p.add_argument("--prefix", default="demo/")
     p.add_argument("--force", action="store_true", help="Izinkan walaupun PQE_ENV=production")
+
+    p = add("preflight", cmd_preflight, "Periksa kesiapan production (secret, SILO, bucket, NAS, tenant)")
+    p.add_argument("--no-silo", action="store_true", help="Lewati uji tulis/baca ke SILO")
+    p.add_argument("--json", action="store_true")
 
     p = add("reconcile", cmd_reconcile, "Jalankan semua source sekali dengan lookback panjang")
     p.add_argument("--tenant")

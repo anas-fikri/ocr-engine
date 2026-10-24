@@ -380,7 +380,7 @@ def photo_reviews(photo_id: str, principal: Annotated[Principal, Depends(require
 def _evidence_scope(p: Principal) -> tuple[list[str] | None, str | None]:
     if p.role == "customer":
         return ([p.tenant_code] if p.tenant_code else None), p.customer_id
-    if p.role == "app":
+    if p.tenant_code:  # app, atau staf yang key-nya terikat satu tenant
         return [p.tenant_code], None
     return None, None
 
@@ -389,7 +389,7 @@ def _evidence_scope(p: Principal) -> tuple[list[str] | None, str | None]:
 def evidence_json(
     awb: str,
     request: Request,
-    principal: Annotated[Principal, Depends(require("customer", "app", "admin", "ops"))],
+    principal: Annotated[Principal, Depends(require("customer", "app", "admin", "ops", "viewer"))],
     lang: str | None = None,
 ):
     tenants, customer = _evidence_scope(principal)
@@ -419,7 +419,7 @@ def _pdf_response(awbs: list[str], principal: Principal, lang: str, filename: st
 def evidence_pdf(
     awb: str,
     request: Request,
-    principal: Annotated[Principal, Depends(require("customer", "app", "admin", "ops"))],
+    principal: Annotated[Principal, Depends(require("customer", "app", "admin", "ops", "viewer"))],
     lang: str | None = None,
 ):
     return _pdf_response([awb], principal, request_lang(request, lang), f"pod-{awb}.pdf")
@@ -433,7 +433,7 @@ class EvidenceBatch(BaseModel):
 def evidence_batch(
     body: EvidenceBatch,
     request: Request,
-    principal: Annotated[Principal, Depends(require("customer", "app", "admin", "ops"))],
+    principal: Annotated[Principal, Depends(require("customer", "app", "admin", "ops", "viewer"))],
     lang: str | None = None,
 ):
     return _pdf_response(body.awbs, principal, request_lang(request, lang), "pod-batch.pdf")

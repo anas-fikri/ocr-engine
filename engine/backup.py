@@ -526,6 +526,11 @@ def test(overrides: dict[str, Any] | None = None, storage=None) -> dict:
         if target.read(probe) != b"ok":
             raise BackupError("isi file uji berbeda setelah dibaca ulang")
         target.delete(probe)
+        if isinstance(target, FolderTarget):  # jangan tinggalkan folder uji kosong di NAS
+            try:
+                (target.root / probe).parent.rmdir()
+            except OSError:
+                pass
         return "tulis, baca, hapus berhasil"
 
     run("Tulis ke NAS", write_read_delete)

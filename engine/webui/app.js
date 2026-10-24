@@ -62,7 +62,7 @@ $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") closeDrawer(); });
 window.addEventListener("hashchange", route);
 
-const pages = { dashboard, review, photos, test: testPhoto, tenants, keys, silo, nas, system };
+const pages = { dashboard, review, photos, evidence, test: testPhoto, tenants, keys, silo, nas, system };
 function route() {
   const [path, query] = location.hash.replace(/^#\//, "").split("?");
   const page = path || "dashboard";
@@ -209,7 +209,7 @@ async function openPhoto(id, onChange) {
         ${p.urls.processed ? `<a href="${esc(p.urls.processed)}" target="_blank"><img src="${esc(p.urls.processed)}" data-photo="${esc(p.id)}" data-variant="processed" onerror="viaEngine(this)" alt="foto"></a>`
           : p.urls.original ? `<a href="${esc(p.urls.original)}" target="_blank"><img src="${esc(p.urls.original)}" data-photo="${esc(p.id)}" data-variant="original" onerror="viaEngine(this)" alt="foto asli"></a><div class="small muted">Foto asli (tidak ada versi pengiriman${p.verdict === "REJECT" ? ", karena ditolak" : ""})</div>`
           : `<div class="empty">Tidak ada pratinjau</div>`}
-        <div class="small"><a href="${esc(p.urls.original)}" target="_blank">Buka original</a>${p.urls.processed ? ` · <a href="${esc(p.urls.processed)}" target="_blank">Buka versi kompres</a>` : ""}</div>
+        <div class="small"><a href="${esc(p.urls.original)}" target="_blank">Buka original</a>${p.urls.processed ? ` · <a href="${esc(p.urls.processed)}" target="_blank">Buka versi kompres</a>` : ""}${p.awb ? ` · <a href="#" data-evidence="${esc(p.awb)}">Evidence PDF resi ini</a>` : ""}</div>
       </div>
       <div>
         ${p.retake_required ? `<div class="reason reject"><b>Wajib foto ulang</b><div class="small">${esc(p.retake_message || "")}</div></div>` : ""}
@@ -249,6 +249,7 @@ async function openPhoto(id, onChange) {
       toast("Keputusan tersimpan"); closeDrawer(); onChange && onChange();
     } catch (e) { toast(e.message, true); }
   }));
+  document.querySelectorAll("#drawer-body [data-evidence]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); evidencePdf([a.dataset.evidence]); }));
   const rp = $("#rv-reprocess");
   if (rp) rp.onclick = async () => { try { await api(`/v1/photos/${id}/reprocess`, { method: "POST" }); toast("Masuk antrean analisis ulang"); closeDrawer(); onChange && onChange(); } catch (e) { toast(e.message, true); } };
 }
@@ -461,6 +462,35 @@ async function silo() {
   }));
 }
 
+/* ---------------- Evidence penagihan ---------------- */
+async function evidencePdf(awbs) {
+  try {
+    const r = await fetch(awbs.length === 1 ? `/v1/evidence/${encodeURIComponent(awbs[0])}/pdf` : "/v1/evidence/batch", {
+      method: awbs.length === 1 ? "GET" : "POST",
+      headers: { "X-API-Key": storedKey() || "", "Content-Type": "application/json" },
+      body: awbs.length === 1 ? undefined : JSON.stringify({ awbs }),
+    });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error((j.error && j.error.message) || r.statusText); }
+    window.open(URL.createObjectURL(await r.blob()), "_blank");
+  } catch (e) { toast("Evidence gagal: " + e.message, true); }
+}
+
+async function evidence() {
+  $("#main").innerHTML = `<h1>Evidence penagihan</h1>
+    <p class="muted">PDF bukti pengiriman untuk pelanggan: hanya foto layak (PASS/WARN), tanpa skor internal, dengan kode verifikasi keaslian.</p>
+    <div class="card" style="max-width:640px">
+      <label>Nomor resi (satu per baris, maks. 500)<textarea id="ev-awbs" class="code" style="min-height:180px" placeholder="AWB123&#10;AWB124"></textarea></label>
+      <div class="actions"><button id="ev-pdf">Buat PDF</button></div>
+      <p class="muted small">Satu resi = PDF per resi; banyak resi = satu PDF gabungan (misal per periode invoice). Resi tanpa foto layak tidak muncul di PDF; jika tidak ada satu pun, PDF berisi keterangan itu.</p>
+    </div>`;
+  $("#ev-pdf").onclick = () => {
+    const awbs = [...new Set($("#ev-awbs").value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean))];
+    if (!awbs.length) return toast("Isi minimal satu nomor resi", true);
+    if (awbs.length > 500) return toast("Maksimal 500 resi per PDF", true);
+    evidencePdf(awbs);
+  };
+}
+
 /* ---------------- Backup NAS (admin) ---------------- */
 const ago = (iso) => {
   if (!iso) return "belum pernah";
@@ -561,6 +591,16 @@ async function nas() {
 }
 
 /* ---------------- Sistem ---------------- */
+async function runPreflight() {
+  $("#pf-out").innerHTML = `<p class="muted">Memeriksa...</p>`;
+  try {
+    const r = await api("/v1/admin/preflight");
+    const icon = { ok: "✅", warn: "⚠️", fail: "❌" }, cls = { ok: "info", warn: "warn", fail: "reject" };
+    $("#pf-out").innerHTML = `<h3>${r.ready ? "Siap production" : "Belum siap production"} <span class="muted small">${r.counts.ok} ok · ${r.counts.warn} peringatan · ${r.counts.fail} gagal</span></h3>` +
+      r.checks.map((c) => `<div class="reason ${cls[c.status]}">${icon[c.status]} <b>${esc(c.group)} · ${esc(c.check)}</b> <span class="small">${esc(c.detail)}</span>${c.status !== "ok" && c.fix ? `<div class="small">→ ${esc(c.fix)}</div>` : ""}</div>`).join("");
+  } catch (e) { $("#pf-out").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
+}
+
 async function system() {
   const [jobs, sources, hooks] = await Promise.all([api("/v1/admin/jobs?status=dead"), api("/v1/admin/sources"), api("/v1/admin/webhooks?status=dead")]);
   const audit = state.me.role === "admin" ? await api("/v1/admin/audit?limit=50").catch(() => []) : [];
@@ -572,6 +612,10 @@ async function system() {
       <div class="card kpi"><div class="v">${st.done}</div><div class="l">Selesai</div></div>
       <div class="card kpi"><div class="v" style="color:${st.dead ? "var(--reject)" : "inherit"}">${st.dead}</div><div class="l">Gagal permanen (dead)</div></div>
     </div>
+    ${state.me.role === "admin" ? `<div class="card" style="margin-top:16px"><h2>Kesiapan production (preflight)</h2>
+      <p class="muted small">Memeriksa secret, database, koneksi & izin SILO, pagar pengaman, mode tenant, backup NAS, worker, dan OCR.
+        Sama dengan perintah <code>pqe preflight</code>. Uji SILO menulis lalu menghapus file kecil di bucket engine.</p>
+      <div class="actions"><button id="pf-run">Jalankan preflight</button></div><div id="pf-out"></div></div>` : ""}
     <div class="card" style="margin-top:16px"><h2>Job gagal permanen</h2>
       ${jobs.items.length ? `<table><thead><tr><th>ID</th><th>Tenant</th><th>Objek</th><th>Percobaan</th><th>Error terakhir</th><th></th></tr></thead><tbody>
       ${jobs.items.map((j) => `<tr><td>${j.id}</td><td>${esc(j.tenant)}</td><td><code class="small">${esc(j.object_key)}</code></td><td>${j.attempts}</td><td class="small">${esc(j.last_error)}</td>
@@ -594,6 +638,8 @@ async function system() {
   if (rh) rh.onclick = async () => { const r = await api("/v1/admin/webhooks/retry-dead", { method: "POST" }); toast(`${r.requeued} webhook diantrekan ulang`); system(); };
   const ra = $("#retry-all");
   if (ra) ra.onclick = async () => { const r = await api("/v1/admin/jobs/retry-dead", { method: "POST" }); toast(`${r.requeued} job diantrekan ulang`); system(); };
+  const pf = $("#pf-run");
+  if (pf) pf.onclick = runPreflight;
 }
 
 boot();

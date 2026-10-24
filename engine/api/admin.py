@@ -336,6 +336,13 @@ def run_backup(body: BackupRunIn, principal: Admin):
     return backup.describe()
 
 
+@router.get("/preflight", summary="Pemeriksaan kesiapan production (secret, SILO, bucket, NAS, tenant, worker)")
+def preflight(_: Admin, check_silo: bool = True):
+    from engine.preflight import run
+
+    return run(check_silo=check_silo)
+
+
 @router.get("/settings/storage", summary="Konfigurasi SILO efektif (rahasia disamarkan)")
 def get_storage_settings(_: Admin):
     from engine.storage_config import describe

@@ -103,6 +103,16 @@ Compose lokal juga mengisi `PQE_SECRET_KEY` dengan nilai contoh `local-secret-ke
 SILO langsung bisa dicoba, dan `PQE_ENV=development` agar `pqe demo-upload` bisa dijalankan. **Jangan** pakai nilai
 itu di server.
 
+Khusus `docker-compose.prod.yml` (server production, lihat [deploy-production.md](deploy-production.md)), diisi otomatis
+oleh `scripts/prod-setup.sh`:
+
+| Variabel | Default | Arti |
+|---|---|---|
+| `PQE_DOMAIN` | - (wajib) | Nama domain HTTPS engine, misal `photo-quality.pcpexpress.com` |
+| `PQE_TLS` | `internal` | `internal` = sertifikat dari CA internal Caddy (intranet; pasang root CA di perangkat). Isi alamat email untuk sertifikat Let's Encrypt otomatis (domain publik, port 80/443 terbuka dari internet) |
+| `POSTGRES_PASSWORD` | - (wajib) | Password Postgres production, acak. Harus diisi **sebelum** start pertama |
+| `NAS_MOUNT` | `./backup` | Folder share NAS di server, dipasang ke `/backup` |
+
 ### 1.6 Pengaturan SILO lewat Web UI
 
 Admin bisa mengatur koneksi SILO dari Web UI → **Pengaturan SILO** (atau API `GET/PUT /v1/admin/settings/storage`,

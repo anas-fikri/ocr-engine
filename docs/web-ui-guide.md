@@ -17,6 +17,7 @@ Daftar isi:
 - [Review (antrean ops)](#review-antrean-ops)
 - [Cari foto](#cari-foto)
 - [Detail foto](#detail-foto)
+- [Evidence (penagihan)](#evidence-penagihan)
 - [Panduan keputusan ops](#panduan-keputusan-ops)
 - [Uji foto](#uji-foto)
 - [Uji Coba Kamera (HP)](#uji-coba-kamera-hp)
@@ -145,6 +146,20 @@ Secara bawaan engine tidak memanipulasi isi gambar: "versi kompres" hanya diperk
 Kolom **Catatan (opsional)** ikut disimpan bersama keputusan. Setiap keputusan tercatat di **Riwayat review** (siapa, kapan, apa) dan di audit log, lalu dikirim sebagai webhook `review.updated` jika aplikasi berlangganan.
 
 **Bagian bawah:** data pengiriman (kurir, cabang, pelanggan, waktu foto, lokasi dengan link Google Maps, sumber ingest, lokasi objek di SILO), info gambar & kompresi (format, dimensi, ukuran sebelum → sesudah, quality, SSIM, SHA-256 file original), EXIF, riwayat review, dan metrik mentah (untuk kalibrasi).
+
+---
+
+## Evidence (penagihan)
+
+Menu **Evidence** (semua role; untuk finance cukup key `viewer`). Isi nomor resi (satu per baris, maks. 500)
+lalu **Buat PDF**:
+
+- Satu resi → PDF evidence resi itu. Bisa juga dari detail foto: link **Evidence PDF resi ini**.
+- Banyak resi → satu PDF gabungan, misal semua resi dalam satu periode invoice.
+- Isi PDF: hanya foto layak (lihat [Pengaruh ke evidence pelanggan](#pengaruh-ke-evidence-pelanggan)), tanpa skor
+  internal, dengan kode verifikasi SHA-256 per foto. Resi tanpa foto layak tidak muncul; jika tidak ada satu pun, PDF
+  berisi keterangan itu.
+- Key yang terikat tenant hanya melihat foto tenant-nya.
 
 ---
 
@@ -335,6 +350,7 @@ Masalah umum: [troubleshooting.md](troubleshooting.md#backup-nas).
 | **Source ingest** | Setiap source (`tenant:index:type`): kapan terakhir jalan, jumlah foto baru, reconcile terakhir, error terakhir. Kolom error yang terisi = source bermasalah (lihat [troubleshooting.md](troubleshooting.md)) |
 | **Audit log** (admin) | 50 aktivitas terakhir: perubahan config, API key, review, retry job/webhook, Pengaturan SILO, retensi |
 | Link **/metrics** dan **/docs** | Metrik Prometheus dan dokumentasi API interaktif (Swagger) |
+| **Kesiapan production (preflight)** (admin) | Tombol **Jalankan preflight**: memeriksa secret, database, koneksi & izin SILO (menulis lalu menghapus file kecil di bucket engine), pagar pengaman bucket aplikasi, mode tenant, backup NAS, worker, OCR. Tiap baris ✅ / ⚠️ / ❌ beserta cara memperbaiki. Hasil "SIAP production" = tidak ada ❌. Sama dengan perintah `pqe preflight` |
 
 ---
 

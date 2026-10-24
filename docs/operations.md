@@ -18,6 +18,10 @@ Untuk integrasi aplikasi lihat [integration-guide.md](integration-guide.md). Unt
 10. [Upgrade & rollback](#10-upgrade--rollback)
 11. [Checklist keamanan](#11-checklist-keamanan)
 
+> **Mau naik ke production untuk live uji coba / UAT?** Ikuti [deploy-production.md](deploy-production.md)
+> (satu server, `docker-compose.prod.yml` + HTTPS, 30–60 menit), lalu [uat-plan.md](uat-plan.md). Dokumen ini berisi
+> detail SILO, Kubernetes, backup, monitoring, dan runbook.
+
 ---
 
 ## 1. Mode menjalankan engine
@@ -639,11 +643,14 @@ metrik proses worker (`pqe run` di :8000, `pqe worker` di :9100).
 **Rollback:** `kubectl -n photo-quality rollout undo deploy/pqe-api deploy/pqe-worker deploy/pqe-ingestor`, atau kembalikan tag image. Karena skema saat ini hanya *menambah* tabel (`create_all`), versi lama tetap bisa jalan di DB yang sama. Jika suatu rilis mengubah skema secara tidak kompatibel, restore dari backup langkah 3.
 
 Docker compose: `git pull && docker compose up -d --build`. Rollback: checkout versi sebelumnya lalu `up -d --build`.
+Server production dengan `docker-compose.prod.yml`: pakai tag versi, lihat [deploy-production.md bagian 11](deploy-production.md#11-operasional).
+Setelah upgrade, jalankan `pqe preflight` (atau Web UI → Sistem → Jalankan preflight).
 
 ---
 
 ## 11. Checklist keamanan
 
+- [ ] `pqe preflight` hasilnya "SIAP production" (0 gagal). Preflight memeriksa sebagian besar butir di bawah secara otomatis.
 - [ ] `PQE_BOOTSTRAP_ADMIN_KEY` diganti nilai acak panjang (bukan `pqe_local_admin_change_me`). Setelah admin personal dibuat, pertimbangkan merotasi/mencabut key bootstrap.
 - [ ] `PQE_S3_EVENT_TOKEN` diisi (endpoint event menerima tanpa token jika kosong).
 - [ ] `PQE_SECRET_KEY` diisi nilai acak panjang (`openssl rand -hex 32`, bukan `local-secret-key-change-me` dari compose lokal), sama di semua pod, dan salinannya disimpan aman. Kunci ini mengenkripsi secret key SILO yang disimpan lewat Web UI.

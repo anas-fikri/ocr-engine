@@ -24,14 +24,14 @@ Engine bisa dipakai oleh aplikasi apa pun (Android, iOS, Flutter, web, Laravel, 
 | Multi-aplikasi & multi-jenis foto | Tenant per aplikasi, profile per jenis foto (POD penerima, resi, paket, lokasi, barang), semua lewat config |
 | Mode bertahap | `shadow` → `warn` → `enforce` per tenant/profile tanpa deploy ulang |
 | Integrasi tercepat: scan dulu, baru simpan | Aplikasi mengirim file foto langsung ke engine (`POST /v1/analyze?sync=true`, client `checkFile`). Engine memeriksa dulu; hanya foto yang diterima disimpan ke SILO dan linknya dikembalikan di `stored.url`. Foto ditolak tidak disimpan, pesannya dikirim balik ke kurir. Engine mati → aplikasi menyimpan sendiri (fail-open). Alternatif: `checkObject` untuk foto yang sudah di SILO, atau tanpa ubah aplikasi (baca SILO / metadata saat upload) |
-| Web UI | Dashboard, antrean review ops (opsional), pencarian, uji foto, editor config tenant, API key, **Pengaturan SILO** (impor JSON mc, tes koneksi), **Backup NAS**, status sistem. Bisa dibuka dari HP |
+| Web UI | Dashboard, antrean review ops (opsional), pencarian, **Evidence** (PDF penagihan per resi/invoice), uji foto, editor config tenant, API key, **Pengaturan SILO** (impor JSON mc, tes koneksi), **Backup NAS**, status sistem + **preflight**. Bisa dibuka dari HP |
 | Pagar pengaman production | Engine hanya bisa menulis/menghapus di bucket miliknya; bucket aplikasi tetap read-only walau key SILO punya akses penuh. `PQE_ENV=production` (bawaan) menolak perintah demo yang menulis foto sintetis |
 | Backup NAS | Salinan terjadwal foto asli kurir, foto pengiriman, dan database ke NAS (folder SMB/NFS atau NAS S3-compatible), diatur di Web UI (test, jadwal, backup sekarang, status). Hanya menyalin, tidak pernah menghapus di NAS |
 | Panduan developer di browser | `/ui/guide.html`: panduan integrasi interaktif tanpa login, diagram alur (integrasi, penggunaan, keputusan di aplikasi pengiriman, proses engine), contoh kode curl/PHP/TS/Python/Kotlin dengan URL server terisi otomatis |
 | Uji coba tanpa aplikasi | `/ui/coba.html`: buka dari HP, ambil foto dengan kamera, lihat pesan yang tampil di layar kurir + detail analisis (simulasi penuh atau uji cepat) |
 | Evidence pelanggan | JSON/PDF per resi atau per invoice, hanya foto layak (bawaan: PASS + WARN; REJECT tidak pernah), dengan hash verifikasi keaslian |
 | Andal | Antrean dengan retry & dead-letter, reconciliation harian, idempotent, webhook bertanda tangan HMAC |
-| Siap produksi | Docker, docker-compose (SILO + Postgres), manifest Kubernetes, metrik Prometheus, CI |
+| Siap produksi | `docker-compose.prod.yml` (engine + Postgres + HTTPS Caddy) dengan `scripts/prod-setup.sh` (secret acak otomatis), `pqe preflight` (cek kesiapan go-live), manifest Kubernetes, metrik Prometheus, CI |
 
 ## Arsitektur singkat
 
@@ -94,7 +94,8 @@ Langkah lengkap: [docs/getting-started.md](docs/getting-started.md).
 | **Programmer aplikasi** | [Cara tercepat: scan dulu, baru simpan](docs/integration-guide.md#0-cara-tercepat-scan-dulu-baru-simpan) · Panduan di browser: `http://<server-engine>/ui/guide.html` · [Panduan integrasi](docs/integration-guide.md) · [Referensi API](docs/api-reference.md) · [Client siap pakai](clients/README.md) |
 | Admin engine | [Konfigurasi (env, tenant, profile, mapping, kalibrasi)](docs/configuration.md) |
 | Ops / finance | [Panduan Web UI](docs/web-ui-guide.md) |
-| DevOps / infra | [Operasional (deploy, SILO, K8s, monitoring, backup, runbook)](docs/operations.md) |
+| DevOps / infra | **[Deploy ke production (live uji coba & UAT)](docs/deploy-production.md)** · [Operasional (SILO, K8s, monitoring, backup, runbook)](docs/operations.md) |
+| PIC UAT / semua peran | [Rencana UAT (skenario, kalibrasi, sign-off)](docs/uat-plan.md) |
 | Developer engine | [Pengembangan](docs/development.md) · [Keputusan arsitektur (ADR)](docs/adr/) |
 | Saat ada masalah | [Troubleshooting](docs/troubleshooting.md) |
 | Perencanaan | [Dokumen SDLC](docs/sdlc-plan.md) |
@@ -127,7 +128,8 @@ docs/                 dokumentasi
 | `pqe create-key --name X --role app --tenant T` | Buat API key |
 | `pqe import-tenants [--force]` | Import config tenant dari `config/tenants/` |
 | `pqe validate-tenant FILE...` | Validasi file config tenant |
-| `pqe demo-upload` | Upload foto contoh ke bucket |
+| `pqe preflight [--no-silo] [--json]` | Cek kesiapan production (secret, database, SILO, pagar pengaman, tenant, backup NAS, worker, OCR). Exit 1 jika ada yang gagal |
+| `pqe demo-upload` | Upload foto contoh ke bucket (ditolak di `PQE_ENV=production` kecuali `--force`) |
 | `pqe synth-samples DIR` | Buat sampel foto sintetis |
 | `pqe reconcile` | Pindai ulang semua source (lookback panjang) |
 | `pqe process` | Proses semua antrean lalu berhenti |

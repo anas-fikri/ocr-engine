@@ -159,6 +159,19 @@ Pesan di bawah muncul di hasil **Test koneksi** (Web UI → Pengaturan SILO) ata
 | SILO lokal: bucket notification tidak jalan | Aturan event belum ditambahkan ke bucket | Jalankan `./scripts/silo-enable-events.sh` setelah bucket ada. Polling tetap jalan sebagai cadangan |
 | Antrean menumpuk (`pqe_queue_lag_seconds` tinggi) | Worker kurang, CPU penuh, atau SILO lambat | Tambah `PQE_WORKER_CONCURRENCY` / replika worker (K8s: HPA). Cek error di log worker |
 
+## Preflight (`pqe preflight` / Web UI → Sistem)
+
+| Gejala | Penyebab | Solusi |
+|---|---|---|
+| ❌ `PQE_BOOTSTRAP_ADMIN_KEY` / `PQE_SECRET_KEY`: masih nilai bawaan/terlalu pendek | `.env` masih berisi nilai contoh | `scripts/prod-setup.sh <domain>` (hanya mengisi yang kosong/bawaan), lalu `docker compose -f docker-compose.prod.yml up -d`. Mengganti `PQE_SECRET_KEY` membuat secret SILO yang tersimpan tidak bisa dibuka: isi ulang key SILO di Web UI |
+| ❌ Password PostgreSQL: masih password bawaan | Database dibuat dengan `pqe-local-only` | Isi `POSTGRES_PASSWORD` sebelum start pertama. Jika sudah telanjur: `ALTER USER pqe PASSWORD '...'` di container postgres, samakan `.env`, restart engine |
+| ❌ SILO: Kredensial belum diisi | Key SILO belum dimasukkan | Web UI → Pengaturan SILO → isi, Test koneksi, Simpan |
+| ❌ Tulis bucket engine `photos-...` | Bucket belum dibuat atau key tidak punya izin tulis | Buat bucket (`mcli mb`), beri izin tulis ([operations.md 4.2](operations.md#42-service-account-engine-least-privilege)) |
+| ❌ Backup NAS: belum aktif | Backup belum disimpan aktif | Web UI → Backup NAS → Test NAS → centang aktif → Simpan |
+| ⚠️ Folder NAS: `/backup` belum ter-mount | `NAS_MOUNT` kosong atau share belum di-mount | Mount share NAS ([deploy-production.md langkah 3](deploy-production.md#3-mount-nas-di-server)), isi `NAS_MOUNT`, `up -d` |
+| ⚠️ Tenant `courier-app`: mode enforce | Production dimulai langsung di enforce | Turunkan ke `shadow` dulu (Web UI → Tenant), naikkan setelah kalibrasi ([uat-plan.md](uat-plan.md)) |
+| ⚠️ `PUBLIC_BASE_URL` bukan https | Engine tidak di belakang HTTPS | Pakai `docker-compose.prod.yml` (Caddy) atau isi alamat https reverse proxy |
+
 ## Backup NAS
 
 Halaman Web UI → **Backup NAS** menampilkan error terakhir; tombol **Test NAS** memeriksa setiap langkah. Detail mount dan

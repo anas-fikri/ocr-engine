@@ -62,6 +62,7 @@ def test_backup_to_folder(client, admin_headers, samples, tmp_path):
     assert r.json()["pending"] == 2
     test = client.post("/v1/admin/settings/backup/test", json={}, headers=admin_headers).json()
     assert test["ok"], test
+    assert not (nas / "_pqe_backup_test").exists()  # uji tidak meninggalkan sampah di NAS
 
     res = backup.maybe_run()
     assert res["error"] is None and res["photos"]["photos"] == 2
@@ -133,3 +134,50 @@ def test_backup_to_s3_nas_and_errors(client, admin_headers, samples, env, monkey
     assert res["error"]
     status = client.get("/v1/admin/settings/backup", headers=admin_headers).json()
     assert status["pending"] == 1 and status["state"]["last_error"]
+
+
+def test_preflight_flags_unsafe_setup_then_passes(client, admin_headers, tmp_path, monkeypatch, samples):
+    from engine import backup
+    from engine.cli import main
+    from engine.settings import reset_settings_cache
+
+    r = client.get("/v1/admin/preflight", headers=admin_headers).json()
+    status = {c["check"]: c["status"] for c in r["checks"]}
+    assert r["ready"] is False
+    assert status["PQE_BOOTSTRAP_ADMIN_KEY"] == "fail"  # terlalu pendek
+    assert status["PQE_SECRET_KEY"] == "fail"  # belum diisi
+    assert status["Jadwal backup"] == "fail"
+    assert status["Tulis bucket engine 'photos-processed'"] == "ok"
+    assert status["Pagar pengaman bucket aplikasi"] == "ok"
+    with pytest.raises(SystemExit) as e:
+        main(["preflight", "--no-silo"])
+    assert e.value.code == 1
+
+    monkeypatch.setenv("PQE_BOOTSTRAP_ADMIN_KEY", "pqe_" + "a1" * 20)
+    monkeypatch.setenv("PQE_SECRET_KEY", "b2" * 20)
+    monkeypatch.setenv("PQE_S3_EVENT_TOKEN", "c3" * 20)
+    reset_settings_cache()
+    nas = tmp_path / "nas"
+    nas.mkdir()
+    _upload(client, admin_headers, samples["pass_small_ok"], "PF1")
+    assert client.put("/v1/admin/settings/backup", json={"enabled": True, "folder_path": str(nas)},
+                      headers=admin_headers).status_code == 200
+    assert backup.maybe_run()["error"] is None
+    r = client.get("/v1/admin/preflight", headers=admin_headers).json()
+    fails = [c for c in r["checks"] if c["status"] == "fail"]
+    assert r["ready"] is True, fails
+    assert {c["check"] for c in r["checks"] if c["status"] == "warn"} >= {"Jenis database", "PUBLIC_BASE_URL"}
+
+
+def test_viewer_can_download_evidence(client, admin_headers, samples):
+    """Finance memakai key viewer (read-only) untuk evidence penagihan; key terikat tenant hanya melihat tenantnya."""
+    _upload(client, admin_headers, samples["pass_sharp_large"], "EV1")
+    viewer = client.post("/v1/admin/api-keys", json={"name": "finance", "role": "viewer"},
+                         headers=admin_headers).json()["api_key"]
+    r = client.get("/v1/evidence/EV1/pdf", headers={"X-API-Key": viewer})
+    assert r.status_code == 200 and r.content[:4] == b"%PDF"
+    assert client.get("/v1/evidence/EV1", headers={"X-API-Key": viewer}).json()["count"] == 1
+    other = client.post("/v1/admin/api-keys", json={"name": "lain", "role": "viewer", "tenant": "uji-coba"},
+                        headers=admin_headers)
+    if other.status_code == 200:  # tenant lain: tidak melihat foto tenant ini
+        assert client.get("/v1/evidence/EV1", headers={"X-API-Key": other.json()["api_key"]}).json()["count"] == 0
