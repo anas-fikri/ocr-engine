@@ -57,9 +57,9 @@ cat <<MSG
 
 Selesai. Langkah berikutnya:
   1. docker compose -f docker-compose.prod.yml up -d --build
-  2. Buka https://$DOMAIN/ui dan masuk dengan API key admin:
-       $(get_kv PQE_BOOTSTRAP_ADMIN_KEY)
-     (simpan di password manager; key ini juga ada di .env)
+  2. Buka https://$DOMAIN/ui dan masuk dengan API key admin. Key tidak dicetak di sini agar tidak
+     ikut tersalin ke chat/tiket; lihat langsung di server lalu simpan di password manager:
+       grep ^PQE_BOOTSTRAP_ADMIN_KEY= .env
   3. Web UI -> Pengaturan SILO: isi key SILO, Test koneksi, Simpan.
   4. Web UI -> Backup NAS: Test NAS, aktifkan, Simpan.
   5. docker compose -f docker-compose.prod.yml exec engine pqe preflight   (harus tanpa ❌)

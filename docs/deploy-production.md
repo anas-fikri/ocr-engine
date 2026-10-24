@@ -79,7 +79,8 @@ scripts/prod-setup.sh photo-quality.pcpexpress.com
 
 Script ini membuat `.env` dengan semua secret acak (password database, API key admin, kunci enkripsi, token event),
 `PQE_ENV=production`, domain HTTPS, dan izin file `600`. Aman dijalankan ulang: secret yang sudah ada tidak diganti.
-Script mencetak **API key admin**: simpan di password manager.
+**API key admin** tidak dicetak (supaya tidak ikut tersalin ke chat atau tiket). Lihat dengan
+`grep ^PQE_BOOTSTRAP_ADMIN_KEY= .env` langsung di server, lalu simpan di password manager. Jangan tempel ke chat.
 
 Lalu edit `.env`:
 
