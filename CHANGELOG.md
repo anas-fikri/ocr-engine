@@ -13,6 +13,14 @@ Kode build berubah di setiap deploy, nomor versi berubah di setiap rilis.
 Rilis dibuat dengan tag git `vX.Y.Z`; server production memakai tag, bukan cabang
 ([deploy-production.md](docs/deploy-production.md#11-operasional)).
 
+## [0.4.1] - 25 Okt 2026 (UAT)
+
+### Perbaikan
+- Web UI: label versi kosong jika langsung masuk dengan API key yang tersimpan di browser (tanpa form login).
+  Sekarang versi selalu dimuat saat halaman dibuka.
+- Web UI dikirim dengan `Cache-Control: no-cache`: setelah deploy, browser langsung memakai `app.js`/`style.css`
+  terbaru (dicek ulang lewat ETag), tidak lagi tampilan lama dari cache.
+
 ## [0.4.0] - 25 Okt 2026 (UAT)
 
 ### Engine

@@ -473,3 +473,11 @@ def test_rejected_archive_is_compressed_review_copy(client, admin_headers):
                       headers=h).status_code == 200
     p = send("RC2")
     assert get_storage().get("ocr", p["archive"]["key"]).data == big and p["archive"]["review_copy"] is None
+
+
+def test_web_ui_is_revalidated_after_deploy(client):
+    """Web UI tidak boleh tertahan di cache browser setelah deploy (versi & fitur baru langsung terlihat)."""
+    for path in ("/ui/", "/ui/app.js", "/ui/style.css"):
+        r = client.get(path)
+        assert r.status_code == 200 and r.headers["Cache-Control"] == "no-cache" and r.headers.get("etag"), path
+    assert "Cache-Control" not in client.get("/healthz").headers
