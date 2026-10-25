@@ -92,8 +92,7 @@ async function boot() {
   route();
 }
 
-$("#login-form").addEventListener("submit", (e) => { e.preventDefault(); saveKey($("#login-key").value.trim()); loadVersion();
-boot(); });
+$("#login-form").addEventListener("submit", (e) => { e.preventDefault(); saveKey($("#login-key").value.trim()); boot(); });
 $("#logout").addEventListener("click", () => { saveKey(null); showLogin(); });
 $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") closeDrawer(); });
@@ -785,4 +784,5 @@ async function system() {
   if (pf) pf.onclick = runPreflight;
 }
 
+loadVersion(); // tampil juga saat langsung masuk dengan API key tersimpan (tanpa form login)
 boot();

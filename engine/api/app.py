@@ -62,6 +62,10 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
         resp = await call_next(request)
         resp.headers["X-PQE-Version"] = __version__  # versi engine yang menjawab (cek setelah upgrade/rollback)
         resp.headers["X-PQE-Build"] = __build__
+        if request.url.path.startswith("/ui"):
+            # Web UI selalu dicek ulang ke server (ETag membuatnya murah): setelah deploy, browser tidak memakai
+            # app.js/style.css lama dari cache sehingga versi & fitur baru langsung terlihat
+            resp.headers["Cache-Control"] = "no-cache"
         return resp
 
     @app.exception_handler(HTTPException)
