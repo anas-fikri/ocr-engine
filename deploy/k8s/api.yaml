@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pqe-api
+  labels: {app: photo-quality-engine, component: api}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: photo-quality-engine, component: api}
+  template:
+    metadata:
+      labels: {app: photo-quality-engine, component: api}
+      annotations: {prometheus.io/scrape: "true", prometheus.io/port: "8000", prometheus.io/path: /metrics}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: api
+          image: photo-quality-engine
+          args: ["pqe", "api"]
+          envFrom:
+            - configMapRef: {name: pqe-config}
+            - secretRef: {name: pqe-secrets}
+          volumeMounts:
+            - {name: tenants, mountPath: /app/config/tenants, readOnly: true}
+            # Backup NAS: pasang volume NAS (NFS/PVC) di /backup pada API (tombol Test NAS) DAN worker (yang menyalin)
+            # - {name: nas, mountPath: /backup}
+          ports: [{containerPort: 8000, name: http}]
+          readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 10, failureThreshold: 3}
+          livenessProbe: {httpGet: {path: /healthz, port: http}, periodSeconds: 20}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "2", memory: 1536Mi}
+      volumes:
+        - name: tenants
+          configMap: {name: pqe-tenants}
+        # - name: nas
+        #   nfs: {server: 192.168.1.20, path: /volume1/pqe-backup}   # atau persistentVolumeClaim: {claimName: pqe-nas}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pqe-api
+spec:
+  selector: {app: photo-quality-engine, component: api}
+  ports: [{port: 80, targetPort: http, name: http}]

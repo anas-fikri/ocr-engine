@@ -1,0 +1,45 @@
+# Engine + PostgreSQL lokal, foto dibaca dari SILO kantor (s3.pcpexpress.com).
+#
+#   cp .env.example .env        # isi AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY service account engine
+#   docker compose -f docker-compose.remote-silo.yml up -d --build
+#
+# Engine hanya MEMBACA bucket aplikasi (AWS_BUCKET) dan menyimpan arsipnya di ENGINE_BUCKET_ARCHIVE (bawaan "ocr").
+
+name: photo-quality-engine-remote
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pqe
+      POSTGRES_USER: pqe
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pqe-local-only}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pqe -d pqe"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  engine:
+    build: .
+    image: photo-quality-engine:local
+    command: ["pqe", "run"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://pqe:${POSTGRES_PASSWORD:-pqe-local-only}@postgres:5432/pqe
+    volumes:
+      - ./config/tenants:/app/config/tenants:ro
+      # Backup NAS: share NAS di-mount di server (SMB/NFS) ke NAS_MOUNT, lalu atur di Web UI -> Backup NAS
+      - ${NAS_MOUNT:-./backup}:/backup
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  pg-data:

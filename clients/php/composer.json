@@ -1,0 +1,17 @@
+{
+  "name": "pcpexpress/photo-quality-client",
+  "description": "Client Photo Quality Engine (tanpa dependency)",
+  "type": "library",
+  "license": "proprietary",
+  "require": {
+    "php": "~8.2.35 || ~8.3.36 || ~8.4.27 || ^8.5.12",
+    "ext-curl": "*",
+    "ext-json": "*"
+  },
+  "autoload": {
+    "classmap": ["PhotoQualityClient.php"]
+  },
+  "scripts": {
+    "test": "php test.php"
+  }
+}

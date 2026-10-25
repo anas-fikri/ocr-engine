@@ -1,0 +1,81 @@
+# Production: engine + PostgreSQL + HTTPS (Caddy). Foto di SILO kantor, backup ke NAS.
+#
+#   scripts/prod-setup.sh photo-quality.pcpexpress.com
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.prod.yml exec engine pqe preflight
+#
+# Panduan lengkap: docs/deploy-production.md
+
+name: photo-quality-engine-prod
+
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "20m", max-file: "5"}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    # 0 = pakai PostgreSQL di host server (scripts/host-postgres-setup.sh), container ini tidak dijalankan
+    scale: ${PQE_BUNDLED_POSTGRES:-1}
+    environment:
+      POSTGRES_DB: pqe
+      POSTGRES_USER: pqe
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?isi POSTGRES_PASSWORD di .env (jalankan scripts/prod-setup.sh)}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pqe -d pqe"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    logging: *logging
+
+  engine:
+    build:
+      context: .
+      args:
+        PQE_BUILD: ${PQE_BUILD:-unknown}   # diisi scripts/deploy.sh dengan commit git
+    image: photo-quality-engine:${PQE_VERSION:-local}
+    command: ["pqe", "run"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    env_file: .env
+    environment:
+      # PQE_DATABASE_URL diisi scripts/host-postgres-setup.sh jika database di host server
+      DATABASE_URL: ${PQE_DATABASE_URL:-postgresql+psycopg://pqe:${POSTGRES_PASSWORD}@postgres:5432/pqe}
+      PQE_ENV: production
+    volumes:
+      - ./config/tenants:/app/config/tenants:ro
+      # share NAS yang di-mount di server (SMB/NFS); atur tujuan di Web UI -> Backup NAS
+      - ${NAS_MOUNT:-./backup}:/backup
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # PostgreSQL di host server
+    ports:
+      - "127.0.0.1:8000:8000"   # hanya dari server ini (debug); akses lain lewat HTTPS
+    restart: unless-stopped
+    logging: *logging
+
+  https:
+    image: docker.io/library/caddy:2.10.2-alpine
+    depends_on:
+      - engine
+    environment:
+      PQE_DOMAIN: ${PQE_DOMAIN:?isi PQE_DOMAIN di .env, contoh photo-quality.pcpexpress.com}
+      PQE_TLS: ${PQE_TLS:-internal}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/https/Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  pg-data:
+  caddy-data:
+  caddy-config:

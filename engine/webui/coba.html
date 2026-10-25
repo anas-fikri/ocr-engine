@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#c8102e">
+  <title>Uji Coba Kamera - Photo Quality Engine</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%23c8102e%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .wrap { max-width: 980px; margin: 0 auto; padding: 16px; display: grid; gap: 14px; }
+    .topbar nav a { font-size: 13px; }
+    .steps { display: grid; gap: 14px; grid-template-columns: 1fr; }
+    @media (min-width: 900px) { .steps { grid-template-columns: 340px 1fr; align-items: start; } .side { position: sticky; top: 64px; } }
+    .side { display: grid; gap: 14px; }
+    .steps > *, .side > *, .form > * { min-width: 0; } /* riwayat (scroll horizontal) tidak boleh melebarkan halaman di HP */
+    .form select { max-width: 100%; }
+    .card h2 { display: flex; align-items: center; gap: 8px; }
+    .num { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; background: var(--brand); color: #fff; font-size: 12px; align-items: center; justify-content: center; }
+    .form { display: grid; gap: 10px; }
+    .form input, .form select { width: 100%; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+    .check input { width: auto; }
+    .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .seg button { background: #fff; color: var(--text); border-radius: 0; padding: 9px 6px; font-size: 13px; }
+    .seg button.on { background: var(--text); color: #fff; }
+    .seg button:disabled { opacity: .4; }
+    .shoot { display: grid; gap: 8px; }
+    .big { padding: 16px; font-size: 16px; font-weight: 600; border-radius: 10px; width: 100%; }
+    .shoot .secondary { width: 100%; padding: 11px; }
+    .hint { font-size: 12px; color: var(--muted); background: #fafbfc; border: 1px dashed var(--line); border-radius: 8px; padding: 8px 10px; }
+    /* tampilan "layar kurir" */
+    .phone { max-width: 360px; margin: 0 auto; border: 10px solid #1d2330; border-radius: 28px; overflow: hidden; background: #f2f3f5; box-shadow: 0 6px 24px rgba(0,0,0,.12); }
+    .phone .bar { background: var(--brand); color: #fff; padding: 10px 14px; font-weight: 600; font-size: 14px; display: flex; justify-content: space-between; }
+    .phone .screen { padding: 14px; display: grid; gap: 10px; min-height: 260px; align-content: start; }
+    .phone img { width: 100%; border-radius: 10px; display: block; max-height: 260px; object-fit: cover; }
+    .msg { border-radius: 12px; padding: 12px; font-size: 14px; display: grid; gap: 6px; }
+    .msg b { font-size: 15px; }
+    .msg.reject { background: var(--reject-bg); color: #7f1d1d; } .msg.notify { background: var(--warn-bg); color: #78350f; }
+    .msg.ok { background: var(--pass-bg); color: #14532d; } .msg.none { background: #e8eaee; color: var(--text); }
+    .msg .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
+    .msg .btns button { padding: 10px 6px; font-size: 13px; }
+    .msg .btns .alt { background: #fff; color: var(--text); border: 1px solid rgba(0,0,0,.15); }
+    .note { font-size: 12px; color: var(--muted); text-align: center; }
+    .compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+    .compare figure { margin: 0; }
+    .compare img { width: 100%; border-radius: 8px; border: 1px solid var(--line); background: #eee; display: block; }
+    .compare figcaption { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 10px 0; }
+    .fact { background: #fafbfc; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+    .fact .l { font-size: 11px; color: var(--muted); } .fact .v { font-weight: 700; font-size: 15px; }
+    .history { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+    .history button { background: #fff; border: 1px solid var(--line); padding: 4px; border-radius: 8px; color: var(--text); font-size: 11px; flex: 0 0 auto; width: 86px; }
+    .history img { width: 76px; height: 56px; object-fit: cover; border-radius: 6px; display: block; margin-bottom: 3px; }
+    /* kamera langsung (layar penuh) */
+    .cam { position: fixed; inset: 0; background: #000; z-index: 30; }
+    .cam video { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+    .cam .ctrl { position: absolute; z-index: 2; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-around; align-items: center; padding: 16px 12px calc(16px + env(safe-area-inset-bottom)); background: rgba(0,0,0,.55); }
+    .cam .ctrl button { background: rgba(255,255,255,.15); color: #fff; border-radius: 999px; padding: 10px 14px; font-size: 13px; }
+    .cam .shutter { width: 72px; height: 72px; border-radius: 50% !important; background: #fff !important; border: 5px solid rgba(255,255,255,.4) !important; padding: 0 !important; }
+    .cam .info { position: absolute; z-index: 2; top: calc(10px + env(safe-area-inset-top)); left: 0; right: 0; text-align: center; color: #fff; font-size: 12px; text-shadow: 0 1px 2px #000; }
+    .busy { text-align: center; padding: 30px 10px; color: var(--muted); }
+    .spinner { width: 34px; height: 34px; border: 4px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 10px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Uji Coba Kamera <span class="ver-pill" data-version></span></div>
+    <nav><a href="./">Web UI</a><a href="guide.html">Panduan</a></nav>
+    <div class="who small"><span id="who"></span> <button id="logout" class="link hidden">Keluar</button></div>
+  </header>
+
+  <!-- login -->
+  <div id="login" class="wrap hidden">
+    <form id="login-form" class="card form" style="max-width:420px;margin:30px auto;width:100%">
+      <h1>Uji coba tanpa aplikasi</h1>
+      <p class="muted">Halaman ini berperan sebagai aplikasi kurir: ambil foto dengan kamera HP, kirim ke engine, lalu lihat
+        apa yang akan tampil di layar kurir beserta detail analisisnya.</p>
+      <label>API key<input id="login-key" type="password" placeholder="pqe_..." autocomplete="off" required></label>
+      <button type="submit">Masuk</button>
+      <p id="login-error" class="error"></p>
+      <p class="muted small">Pakai API key role <b>admin</b>, <b>ops</b>, atau <b>app</b> (role viewer hanya bisa uji cepat).
+        Halaman ini untuk uji internal: jangan bagikan API key ke kurir.</p>
+    </form>
+  </div>
+
+  <div id="app" class="wrap hidden">
+    <div class="steps">
+      <div class="side">
+        <div class="card form">
+          <h2><span class="num">1</span> Pengaturan uji</h2>
+          <div class="seg" id="mode-seg">
+            <button type="button" data-mode="sim">Simulasi aplikasi kurir</button>
+            <button type="button" data-mode="quick">Uji cepat</button>
+          </div>
+          <p class="muted small" id="mode-desc"></p>
+          <label>Tenant<select id="tenant"></select></label>
+          <label>Jenis foto<select id="ptype"></select></label>
+          <label>Tampilkan sebagai mode<select id="view-mode">
+            <option value="">Ikut config tenant</option>
+            <option value="shadow">shadow (kurir tidak melihat apa-apa)</option>
+            <option value="warn">warn (notifikasi, boleh lanjut)</option>
+            <option value="enforce">enforce (REJECT wajib foto ulang)</option>
+          </select></label>
+          <div id="sim-fields" class="form">
+            <div class="row2">
+              <label>No. resi (AWB)<input id="awb"></label>
+              <label>ID kurir<input id="courier" value="UJICOBA"></label>
+            </div>
+            <label class="check"><input type="checkbox" id="gps"> Kirim lokasi GPS HP</label>
+          </div>
+          <label>Bahasa pesan<select id="lang"><option value="id">Indonesia</option><option value="en">English</option></select></label>
+        </div>
+
+        <div class="card">
+          <h2><span class="num">2</span> Ambil foto</h2>
+          <div class="shoot">
+            <button class="big" id="btn-native">📷 Ambil foto</button>
+            <button class="secondary" id="btn-live">🎥 Kamera langsung di browser</button>
+            <button class="secondary" id="btn-gallery">🖼 Pilih dari galeri / file</button>
+            <input id="in-native" type="file" accept="image/*" capture="environment" hidden>
+            <input id="in-gallery" type="file" accept="image/*" hidden>
+            <div class="hint" id="cam-hint"></div>
+          </div>
+        </div>
+
+        <div class="card hidden" id="hist-card">
+          <h2>Riwayat sesi ini</h2>
+          <div class="history" id="history"></div>
+        </div>
+      </div>
+
+      <div class="card" id="result">
+        <h2><span class="num">3</span> Hasil</h2>
+        <div class="empty">Belum ada foto. Ambil foto di langkah 2.<br><br>
+          <span class="small">Tips menguji: foto resi/dokumen yang jelas, lalu coba foto sambil bergerak (buram), di tempat gelap,
+            atau zoom digital berlebihan (pecah) untuk melihat bedanya.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- kamera langsung -->
+  <div id="cam" class="cam hidden">
+    <video id="video" playsinline autoplay muted></video>
+    <div class="info" id="cam-info"></div>
+    <div class="ctrl">
+      <button id="cam-close">Tutup</button>
+      <button id="cam-torch" class="hidden">Lampu</button>
+      <button id="cam-shot" class="shutter" aria-label="Ambil foto"></button>
+      <button id="cam-flip">Balik</button>
+    </div>
+  </div>
+  <canvas id="canvas" hidden></canvas>
+  <div id="toast" class="toast hidden"></div>
+  <script src="coba.js"></script>
+</body>
+</html>

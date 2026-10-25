@@ -1,0 +1,98 @@
+# Profile bawaan. Tenant boleh menimpa sebagian nilai (deep merge) di config tenant.
+# Semua skor bernilai 0-100, makin tinggi makin baik.
+# Skor < reject -> REJECT, skor < warn -> WARN. Lihat docs/configuration.md.
+
+default:
+  mode: shadow
+  checks: [sharpness, resolution, exposure, exif, duplicate, ocr]   # teks (resi/label/dokumen) wajib terbaca di semua jenis foto
+  thresholds:
+    sharpness:    { reject: 25, warn: 50 }
+    resolution:   { reject: 30, warn: 55 }
+    exposure:     { reject: 15, warn: 45 }
+    ocr:          { reject: 40, warn: 65 }
+    authenticity: { reject: null, warn: 75 }   # satu temuan (>= 30 poin) sudah cukup untuk WARN
+  params:
+    sharpness:
+      analysis_long_side_px: 1024
+      low: 4         # variance of Laplacian (skala log) -> skor 0
+      high: 120      # variance of Laplacian -> skor 100
+    resolution:
+      ideal_short_side_px: 1080
+    exif:
+      max_age_hours: 48             # foto lebih tua dari ini saat diterima -> curiga foto lama/galeri
+      captured_at_tolerance_hours: 6
+      gps_tolerance_km: 2
+      dest_radius_km: 1             # foto diambil lebih jauh dari ini dari alamat tujuan (dest_lat/dest_lng) -> curiga
+    duplicate:
+      max_distance: 6               # jarak Hamming pHash dianggap foto yang sama
+  compression:
+    enabled: true
+    format: jpeg
+    target_max_bytes: 1000000
+    skip_if_below_bytes: 1000000
+    max_long_side_px: 2000
+    min_long_side_px: 1024
+    min_quality: 55
+    max_quality: 90
+    guard:
+      min_ssim: 0.90
+  thumbnail:
+    long_side_px: 320
+    quality: 70
+  enhance:
+    enabled: false         # engine tidak memanipulasi gambar: hanya optimasi + kompresi dinamis.
+                           # true = izinkan koreksi pencahayaan dengan kurva global terverifikasi (opsional)
+
+pod_recipient:
+  thresholds:
+    sharpness: { reject: 25, warn: 50 }
+
+pod_document:
+  checks: [sharpness, resolution, exposure, exif, duplicate, ocr]
+  thresholds:
+    sharpness:  { reject: 30, warn: 55 }
+    resolution: { reject: 35, warn: 60 }
+  compression:
+    max_long_side_px: 2400
+    min_long_side_px: 1400
+    min_quality: 70
+    guard:
+      min_ssim: 0.94
+
+invoice:            # invoice, struk, kwitansi, nota: angka & teks wajib terbaca
+  thresholds:
+    sharpness:  { reject: 30, warn: 55 }
+    resolution: { reject: 35, warn: 60 }
+  compression:
+    max_long_side_px: 2400
+    min_long_side_px: 1400
+    min_quality: 70
+    guard:
+      min_ssim: 0.94
+
+accident:           # bukti kecelakaan / kerusakan / insiden: belum tentu ada teks, detail harus tetap jelas
+  text_required: false
+  thresholds:
+    sharpness:  { reject: 20, warn: 45 }
+  compression:
+    max_long_side_px: 2400
+    min_long_side_px: 1400
+    min_quality: 70
+    guard:
+      min_ssim: 0.94
+
+other:              # foto bukti lain yang belum punya jenis sendiri
+  text_required: false
+
+package:
+  thresholds:
+    sharpness: { reject: 20, warn: 45 }
+
+goods:
+  thresholds:
+    sharpness: { reject: 20, warn: 45 }
+
+location:
+  thresholds:
+    sharpness:  { reject: 10, warn: 25 }
+    resolution: { reject: 20, warn: 40 }

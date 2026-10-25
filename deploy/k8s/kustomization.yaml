@@ -1,0 +1,20 @@
+# Deploy (dari root repository), lihat docs/operations.md:
+#   kubectl apply -f deploy/k8s/namespace.yaml
+#   kubectl -n photo-quality create secret generic pqe-secrets --from-literal=...   (lihat secret.example.yaml)
+#   kubectl -n photo-quality create configmap pqe-tenants --from-file=config/tenants/ \
+#       --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl apply -k deploy/k8s
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: photo-quality
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - api.yaml
+  - worker.yaml
+  - ingestor.yaml
+  - ingress.yaml
+images:
+  - name: photo-quality-engine
+    newName: registry.pcpexpress.com/photo-quality-engine   # ganti sesuai registry kantor
+    newTag: "0.1.0"

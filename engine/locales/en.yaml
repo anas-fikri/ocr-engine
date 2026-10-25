@@ -1,0 +1,76 @@
+verdict:
+  PASS: Photo accepted
+  WARN: Photo is not ideal
+  REJECT: Photo rejected
+retake: The photo quality does not meet the requirements. Please retake the photo.
+retake_short: Retake required.
+reasons:
+  BLURRY:
+    message: The photo is blurry
+    suggestion: Hold the phone steady, tap the screen to focus, then retake the photo.
+  LOW_RESOLUTION:
+    message: The photo resolution is too low
+    suggestion: Use the camera directly (not a screenshot/thumbnail) and do not shrink the photo.
+  PIXELATED:
+    message: The photo is pixelated
+    suggestion: Retake with the camera; do not send photos that were compressed repeatedly.
+  HEAVY_COMPRESSION:
+    message: The photo quality is damaged by heavy compression
+    suggestion: Send the original camera photo without compressing it in another app.
+  TOO_DARK:
+    message: The photo is too dark
+    suggestion: Move to a brighter place or turn on the flash.
+  TOO_BRIGHT:
+    message: The photo is too bright
+    suggestion: Avoid direct light into the camera; turn off the flash when too close.
+  GLARE:
+    message: Light reflection covers part of the photo
+    suggestion: Change the angle to avoid reflections from lamps or sunlight.
+  LOW_CONTRAST:
+    message: The photo is faded / low contrast
+    suggestion: Clean the camera lens and shoot in good light.
+  NO_TEXT_DETECTED:
+    message: No readable text was found
+    suggestion: Make sure the receipt/document is fully visible, straight and close to the camera.
+  TEXT_UNREADABLE:
+    message: The text in the photo is hard to read
+    suggestion: Move closer to the receipt/document and make sure it is in focus and well lit.
+  EXIF_MISSING:
+    message: Camera metadata is not available
+    suggestion: No action needed. Information only.
+  EDITING_SOFTWARE:
+    message: The photo appears to have been edited with an editing app
+    suggestion: Send the original photo straight from the camera.
+  OLD_PHOTO:
+    message: The photo was taken long before it was sent
+    suggestion: Take a new photo at handover; do not reuse old gallery photos.
+  CAPTURE_TIME_MISMATCH:
+    message: The photo time does not match the time reported by the app
+    suggestion: Take the photo directly from the app during delivery.
+  GPS_MISMATCH:
+    message: The photo location differs from the delivery location
+    suggestion: Take the photo at the recipient's location.
+  REFERENCE_MISMATCH:
+    message: The barcode in the photo contains a different number than this shipment
+    suggestion: Make sure you photograph the right package/document.
+  FAR_FROM_DESTINATION:
+    message: The photo was taken far from the destination address
+    suggestion: Take the photo at the recipient's address.
+  DUPLICATE_EXACT:
+    message: An identical photo was already used for another delivery
+    suggestion: Every delivery requires a new photo.
+  DUPLICATE_SIMILAR:
+    message: The photo is very similar to another delivery's photo
+    suggestion: Every delivery requires a new photo.
+  OCR_TIMEOUT:
+    message: Text could not be checked in time
+    suggestion: No action needed. Photo quality is still judged by the other checks.
+  OCR_UNAVAILABLE:
+    message: Text check (OCR) is not enabled on this server
+    suggestion: No action needed. Contact the engine admin if OCR is required.
+  COMPRESSION_TARGET_NOT_MET:
+    message: The file size could not reach the target without hurting readability
+    suggestion: No action needed. Readability is prioritised.
+  UNREADABLE_FILE:
+    message: The file cannot be opened as an image
+    suggestion: Retake and resend the photo.
