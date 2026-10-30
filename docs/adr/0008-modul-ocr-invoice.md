@@ -13,16 +13,16 @@ deploy Docker di server 10.3.3.243. Membangun server OCR kedua berarti mengganda
 
 ## Keputusan
 
-1. **Satu engine, dua fungsi.** Modul invoice ditambahkan ke engine yang sama sebagai paket `engine/invoice/` dengan
+1. **Satu engine, dua fungsi.** Modul invoice ditambahkan ke engine yang sama sebagai paket `engine/documents/` dengan
    router, tabel, antrean, dan thread worker **sendiri**. Tabel dan perilaku foto POD tidak diubah.
 2. **Namespace = tenant API key.** Key ICTNotes adalah key role `app` untuk tenant `ictnotes`; semua job, file, dan
    template difilter tenant itu.
 3. **HMAC per key.** Key yang dipakai modul invoice punya `api_secret` (tabel `api_key_secrets`, terenkripsi dengan
    `PQE_SECRET_KEY`). Endpoint foto tetap memakai API key saja (tidak berubah).
-4. **File inbox di PostgreSQL** (`invoice_files`), bukan di SILO: atomik dengan job (alasan yang sama dengan ADR
+4. **File inbox di PostgreSQL** (`document_files`), bukan di SILO: atomik dengan job (alasan yang sama dengan ADR
    0001), invoice tetap bisa diterima walau SILO bermasalah, ikut backup database, dan volumenya kecil. File dihapus
-   setelah `PQE_INVOICE_INBOX_RETENTION_DAYS` (bawaan 30). Jika volume naik jauh (> ±5 GB file aktif), pindahkan ke
-   bucket `ocr` dengan prefix `invoice/` (abstraksi ada di `engine/invoice/store.py`).
+   setelah `PQE_DOCS_INBOX_RETENTION_DAYS` (bawaan 30). Jika volume naik jauh (> ±5 GB file aktif), pindahkan ke
+   bucket `ocr` dengan prefix `invoice/` (abstraksi ada di `engine/documents/store.py`).
 5. **Dokumen diproses di proses anak** (sandbox) dengan batas memori/CPU/waktu, environment tanpa rahasia, dan
    prioritas CPU rendah. Satu dependency baru: `pypdfium2` (PDFium, BSD-3/Apache-2.0) untuk teks + render PDF.
 6. **Tetap rule-based.** Layer 1 teks PDF, layer 2 QR e-Faktur (mati secara bawaan), layer 3 Tesseract, layer 4
@@ -34,8 +34,8 @@ deploy Docker di server 10.3.3.243. Membangun server OCR kedua berarti mengganda
 - (+) Satu server, satu deploy, satu backup, satu dashboard metrik untuk dua fungsi.
 - (+) Bom PDF/gambar hanya mematikan proses anak; worker foto dan API tetap hidup.
 - (−) OCR invoice memakan CPU server yang sama dengan analisis sinkron foto kurir. Dimitigasi: bawaan 1 thread
-  invoice, proses anak `nice 10`, bisa dimatikan total (`PQE_INVOICE_ENABLED=false`) atau dijalankan di container
-  terpisah (`pqe invoice-worker`).
+  invoice, proses anak `nice 10`, bisa dimatikan total (`PQE_DOCS_ENABLED=false`) atau dijalankan di container
+  terpisah (`pqe document-worker`).
 - (−) Database bertambah besar oleh file inbox selama masa retensi (contoh 100 invoice/hari × 1 MB × 30 hari ≈ 3 GB).
 - (−) Ganti `PQE_SECRET_KEY` = semua `api_secret` harus dibuat ulang (sama dengan rahasia Web UI lainnya).
 

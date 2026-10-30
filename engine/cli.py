@@ -104,7 +104,7 @@ def cmd_create_key(a) -> None:
         from engine import secretbox
 
         if a.role != "app" or not a.tenant:
-            sys.exit("--with-secret hanya untuk --role app dengan --tenant (namespace modul invoice)")
+            sys.exit("--with-secret hanya untuk --role app dengan --tenant (namespace modul dokumen)")
         if not secretbox.available():
             sys.exit("PQE_SECRET_KEY belum diisi: api_secret tidak bisa disimpan terenkripsi")
     raw, k = create_api_key(a.name, a.role, a.tenant, a.customer_id, actor="cli")
@@ -112,15 +112,59 @@ def cmd_create_key(a) -> None:
     print("Simpan sekarang, nilai ini tidak bisa dilihat lagi:\n")
     print(f"api_key    = {raw}" if a.with_secret else raw)
     if a.with_secret:
-        from engine.invoice.signing import set_api_secret
+        from engine.documents.signing import set_api_secret
 
         print(f"api_secret = {set_api_secret(k.id, actor='cli')}")
+
+
+CLIENT_TENANT_YAML = """\
+# Client modul dokumen (dibuat oleh pqe create-client). Tidak memantau bucket foto: tenant ini hanya namespace
+# API key (job, file inbox, template penerbit). Referensi field: docs/configuration.md
+code: {code}
+name: {name}
+default_lang: id
+timezone: Asia/Jakarta
+sources: []
+mapping: {{}}
+sinks: []
+callback_hosts: {callback_hosts}
+profiles:
+  default:
+    mode: shadow
+"""
+
+
+def cmd_create_client(a) -> None:
+    """Onboarding satu aplikasi client modul dokumen: tenant (namespace) + API key role app + api_secret HMAC."""
+    import json as _json
+
+    from engine import secretbox
+    from engine.api.auth import create_api_key
+    from engine.bootstrap import bootstrap
+    from engine.documents.signing import set_api_secret
+    from engine.tenants import TenantNotFound, registry, save_tenant
+
+    if not secretbox.available():
+        sys.exit("PQE_SECRET_KEY belum diisi: api_secret tidak bisa disimpan terenkripsi")
+    bootstrap()
+    try:
+        registry.get(a.code)
+        print(f"Tenant '{a.code}' sudah ada, dipakai apa adanya.")
+    except TenantNotFound:
+        hosts = [h.strip() for h in (a.callback_hosts or "").split(",") if h.strip()]
+        save_tenant(CLIENT_TENANT_YAML.format(code=a.code, name=_json.dumps(a.name), callback_hosts=_json.dumps(hosts)),
+                    "cli", create_only=True)
+        print(f"Tenant '{a.code}' dibuat.")
+    raw, k = create_api_key(a.key_name or f"{a.code}-docs", "app", a.code, actor="cli")
+    print(f"API key untuk client '{a.code}' (id={k.id}). Simpan sekarang, tidak bisa dilihat lagi:\n")
+    print(f"api_key    = {raw}")
+    print(f"api_secret = {set_api_secret(k.id, actor='cli')}")
 
 
 def cmd_set_api_secret(a) -> None:
     """Buat/ganti api_secret HMAC untuk API key yang sudah ada (rotasi). Secret lama langsung tidak berlaku."""
     from engine.db import ApiKey, init_db, session_scope
-    from engine.invoice.signing import set_api_secret
+    from engine.documents.signing import set_api_secret
 
     init_db()
     with session_scope() as s:
@@ -133,14 +177,14 @@ def cmd_set_api_secret(a) -> None:
     print(set_api_secret(a.key_id, actor="cli"))
 
 
-def cmd_invoice_worker(a) -> None:
-    """Worker modul invoice saja (container terpisah agar OCR invoice tidak berebut CPU dengan foto)."""
+def cmd_document_worker(a) -> None:
+    """Worker modul dokumen saja (container terpisah agar OCR dokumen tidak berebut CPU dengan foto)."""
     from engine.bootstrap import bootstrap
-    from engine.invoice.worker import InvoiceWorker
+    from engine.documents.worker import DocumentWorker
 
     bootstrap()
     _start_metrics_server()
-    w = InvoiceWorker(concurrency=a.concurrency)
+    w = DocumentWorker(concurrency=a.concurrency)
     w.start()
     _wait_forever(w.stop_event)
 
@@ -395,12 +439,19 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--tenant")
     p.add_argument("--customer-id")
     p.add_argument("--with-secret", action="store_true",
-                   help="Buat juga api_secret HMAC (wajib untuk endpoint dokumen invoice /v1/jobs, /v1/templates)")
+                   help="Buat juga api_secret HMAC (wajib untuk endpoint dokumen /v1/jobs, /v1/templates)")
+
+    p = add("create-client", cmd_create_client,
+            "Daftarkan aplikasi client modul dokumen: tenant + API key + api_secret (sekali jalan)")
+    p.add_argument("--code", required=True, help="Kode tenant/namespace client, contoh aplikasi-keuangan")
+    p.add_argument("--name", required=True, help="Nama aplikasi")
+    p.add_argument("--key-name", help="Nama API key (bawaan <code>-docs)")
+    p.add_argument("--callback-hosts", help="Host callback_url khusus client ini, dipisah koma (opsional)")
 
     p = add("set-api-secret", cmd_set_api_secret, "Buat/ganti api_secret HMAC untuk API key yang sudah ada")
     p.add_argument("key_id", help="id API key (32 karakter hex, tampil saat create-key dan di Web UI)")
 
-    p = add("invoice-worker", cmd_invoice_worker, "Jalankan worker dokumen invoice saja")
+    p = add("document-worker", cmd_document_worker, "Jalankan worker dokumen (OCR invoice dan jenis dokumen lain) saja")
     p.add_argument("--concurrency", type=int, default=None)
 
     p = add("import-tenants", cmd_import_tenants, "Import config tenant dari folder YAML")

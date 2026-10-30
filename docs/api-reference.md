@@ -547,10 +547,10 @@ Namespace (job, file, template) = tenant API key. Setiap request wajib:
 
 | Field | Wajib | Keterangan |
 |---|---|---|
-| `file` | ✓ | PDF, JPEG, atau PNG. Tipe dicek dari **isi file** (magic bytes), bukan nama/Content-Type. Maks. `PQE_INVOICE_MAX_UPLOAD_MB` (20 MB) |
+| `file` | ✓ | PDF, JPEG, atau PNG. Tipe dicek dari **isi file** (magic bytes), bukan nama/Content-Type. Maks. `PQE_DOCS_MAX_UPLOAD_MB` (20 MB) |
 | `document_type` | ✓ | `invoice` (atau jenis dari plugin) |
 | `template_hint` | | NPWP vendor (15/16 digit, titik/strip boleh) jika diketahui → template issuer dipakai |
-| `callback_url` | | Opsional. Host harus ada di `PQE_INVOICE_CALLBACK_HOSTS`. Polling tetap bisa dipakai |
+| `callback_url` | | Opsional. Host harus ada di `PQE_DOCS_CALLBACK_HOSTS`. Polling tetap bisa dipakai |
 
 Respons `202`:
 
@@ -654,18 +654,18 @@ Template issuer di namespace sendiri (`rules` per field: anchor, jenis pola, pos
 | 403 | `FORBIDDEN` | Bukan key role `app` yang terikat tenant |
 | 409 | `TENANT_DISABLED` | Tenant namespace dinonaktifkan |
 | 400 | `INVALID_REQUEST` | Multipart rusak |
-| 413 | `FILE_TOO_LARGE` | Melebihi `PQE_INVOICE_MAX_UPLOAD_MB` |
+| 413 | `FILE_TOO_LARGE` | Melebihi `PQE_DOCS_MAX_UPLOAD_MB` |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | Bukan PDF/JPEG/PNG (dari isi file) atau body bukan multipart |
 | 422 | `ISSUER_MISMATCH`, `ISSUER_IS_BUYER`, `UNSUPPORTED_DOCUMENT_TYPE`, `INVALID_TEMPLATE_HINT`, `FILE_REQUIRED`, `EMPTY_FILE`, `CALLBACK_NOT_ALLOWED`, `VALIDATION_ERROR`, `INVALID_NPWP`, `UNKNOWN_FIELD`, `INVALID_VALUE`, `INVALID_IDEMPOTENCY_KEY`, `IDEMPOTENCY_KEY_REUSED`, `DOCUMENT_TYPE_MISMATCH` | Input tidak valid (lihat `message`) |
-| 429 | `QUEUE_FULL` | Antrean namespace penuh (`PQE_INVOICE_MAX_PENDING_PER_TENANT`) |
+| 429 | `QUEUE_FULL` | Antrean namespace penuh (`PQE_DOCS_MAX_PENDING_PER_TENANT`) |
 | 404 | `JOB_NOT_FOUND`, `TEMPLATE_NOT_FOUND` | Tidak ada / milik namespace lain |
 
 ### Batas
 
 | Batas | Nilai bawaan |
 |---|---|
-| Ukuran file | 20 MB (`PQE_INVOICE_MAX_UPLOAD_MB`) |
-| Halaman PDF | 20 (`PQE_INVOICE_MAX_PAGES`) |
+| Ukuran file | 20 MB (`PQE_DOCS_MAX_UPLOAD_MB`) |
+| Halaman PDF | 20 (`PQE_DOCS_MAX_PAGES`) |
 | Ukuran halaman PDF | ≤ 5.000 pt per sisi |
 | Render PDF scan | 300 dpi, ≤ 40 MP per halaman |
 | Piksel gambar | 50 MP (dicek dari header sebelum decode) |

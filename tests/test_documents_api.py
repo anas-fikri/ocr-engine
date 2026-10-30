@@ -1,4 +1,5 @@
-"""Modul invoice lewat API: kontrak ICTNotes (TBD-OCR-1..9), template + idempotency, callback, retensi, health."""
+"""Modul dokumen lewat API (plugin invoice): kontrak umum per client, template + idempotency, callback, retensi,
+health."""
 
 from __future__ import annotations
 
@@ -10,18 +11,18 @@ from datetime import timedelta
 import httpx
 import pytest
 
-from engine.invoice.worker import InvoiceWorker
+from engine.documents.worker import DocumentWorker
 
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MONEY = re.compile(r"^-?\d+(\.\d{1,2})?$")
 
 
 def work() -> int:
-    return InvoiceWorker(concurrency=0).run_until_empty()
+    return DocumentWorker(concurrency=0).run_until_empty()
 
 
 def corr_key(job_id: str, field: str, extracted, corrected) -> str:
-    """Rumus idempotency_key per koreksi milik klien ICTNotes."""
+    """Contoh rumus idempotency_key per koreksi yang disarankan (engine memperlakukannya sebagai kunci opak)."""
     raw = f"{job_id}\n{field}\n{json.dumps(extracted)}\n{json.dumps(corrected)}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -31,7 +32,7 @@ def request_key(keys: list[str]) -> str:
 
 
 def assert_contract(body: dict) -> None:
-    """Bentuk respons yang diasumsikan klien ICTNotes."""
+    """Bentuk respons yang dijanjikan ke semua client (docs/api-reference.md)."""
     assert set(body) >= {"job_id", "status", "layer", "text", "blocks", "fields", "engine"}
     assert body["status"] == "succeeded" and body["layer"] in ("pdf_text", "ocr")
     assert isinstance(body["engine"], dict) and all(isinstance(v, str) for v in body["engine"].values())
@@ -117,7 +118,7 @@ def test_template_learning_and_reuse(invoice, invoice_docs):
     r = invoice.a.post_json("/v1/templates", payload, {"Idempotency-Key": rk})
     assert r.status_code == 200, r.text
     out = r.json()
-    assert out["template"]["issuer"]["npwp"] == "012345678901000" and out["template"]["version"] == 2
+    assert out["template"]["issuer"]["id"] == "012345678901000" and out["template"]["version"] == 2
     assert all(c["status"] == "applied" and c["learned"] for c in out["corrections"]), out["corrections"]
     assert set(out["template"]["fields"]) >= {"invoice_number", "due_date", "total", "bank_account"}
 
@@ -129,7 +130,7 @@ def test_template_learning_and_reuse(invoice, invoice_docs):
         assert_contract(body)
         f = body["fields"]
         assert body["layer"] == layer and "template" in body["layers"], doc
-        assert body["template"] == {"issuer_npwp": "012345678901000", "version": 2}
+        assert body["template"] == {"issuer_id": "012345678901000", "version": 2}
         assert f["invoice_number"]["value"] == "INV/2026/11/0107", (doc, f["invoice_number"])
         assert f["due_date"]["value"] == "2026-12-16", doc
         assert f["total"]["value"] == "22200000", doc
@@ -171,7 +172,7 @@ def test_template_validation(invoice, invoice_docs):
     bad = dict(payload, corrections=[dict(payload["corrections"][1], corrected="bukan tanggal")])
     assert invoice.a.post_json("/v1/templates", bad).json()["error"]["code"] == "INVALID_VALUE"
     bad = dict(payload, issuer={"npwp": "123"})
-    assert invoice.a.post_json("/v1/templates", bad).json()["error"]["code"] == "INVALID_NPWP"
+    assert invoice.a.post_json("/v1/templates", bad).json()["error"]["code"] == "INVALID_ISSUER"
     bad = dict(payload, job_id="f" * 32)
     assert invoice.a.post_json("/v1/templates", bad).status_code == 404
     r = invoice.a.post_json("/v1/templates", {"issuer": {}})
@@ -199,14 +200,14 @@ def test_get_template(invoice, invoice_docs):
 def test_callback_signed(invoice, invoice_docs, monkeypatch):
     """AC-09: callback ber-HMAC bila didaftarkan; host di luar allowlist ditolak."""
     from engine import settings
-    from engine.invoice import signing
+    from engine.documents import signing
 
-    r = invoice.a.post_job(invoice_docs["pdf"], callback_url="https://ictnotes.test/ocr/callback")
+    r = invoice.a.post_job(invoice_docs["pdf"], callback_url="https://client-a.test/ocr/callback")
     assert r.status_code == 422 and r.json()["error"]["code"] == "CALLBACK_NOT_ALLOWED"
-    monkeypatch.setenv("PQE_INVOICE_CALLBACK_HOSTS", "ictnotes.test")
+    monkeypatch.setenv("PQE_DOCS_CALLBACK_HOSTS", "client-a.test")
     settings.reset_settings_cache()
-    for bad in ("https://evil.test/x", "https://user:pw@ictnotes.test/x", "file:///etc/passwd",
-                "http://ictnotes.test:99999/x"):
+    for bad in ("https://evil.test/x", "https://user:pw@client-a.test/x", "file:///etc/passwd",
+                "http://client-a.test:99999/x"):
         assert invoice.a.post_job(invoice_docs["pdf"], callback_url=bad).status_code == 422, bad
     calls = []
 
@@ -215,9 +216,9 @@ def test_callback_signed(invoice, invoice_docs, monkeypatch):
         return httpx.Response(200)
 
     real = httpx.Client
-    monkeypatch.setattr("engine.invoice.worker.httpx.Client",
+    monkeypatch.setattr("engine.documents.worker.httpx.Client",
                         lambda *a, **kw: real(*a, **{**kw, "transport": httpx.MockTransport(handler)}))
-    jid = invoice.a.post_job(invoice_docs["pdf"], callback_url="https://ictnotes.test/ocr/callback").json()["job_id"]
+    jid = invoice.a.post_job(invoice_docs["pdf"], callback_url="https://client-a.test/ocr/callback").json()["job_id"]
     work()
     assert len(calls) == 1
     req = calls[0]
@@ -231,15 +232,15 @@ def test_callback_signed(invoice, invoice_docs, monkeypatch):
 def test_inbox_retention(invoice, invoice_docs):
     """AC-10: file inbox lebih tua dari retensi dihapus; hasil job tetap; job yang filenya hilang gagal jelas."""
     from engine.db import session_scope, utcnow
-    from engine.invoice import store
-    from engine.invoice.models import InvoiceFile
-    from engine.invoice.worker import retention
+    from engine.documents import store
+    from engine.documents.models import DocumentFile
+    from engine.documents.worker import retention
 
     done = invoice.a.post_job(invoice_docs["pdf"]).json()["job_id"]
     work()
     late = invoice.a.post_job(invoice_docs["pdf"]).json()["job_id"]
     with session_scope() as s:
-        for f in s.query(InvoiceFile).all():
+        for f in s.query(DocumentFile).all():
             f.created_at = utcnow() - timedelta(days=31)
     assert retention()["files"] == 2
     assert store.get(done) is None and store.get(late) is None
@@ -252,7 +253,8 @@ def test_inbox_retention(invoice, invoice_docs):
 def test_healthz_versions(client):
     """AC-11: versi engine + komponen OCR."""
     h = client.get("/healthz").json()
-    assert h["status"] == "ok" and h["invoice"]["enabled"] is True and h["invoice"]["efaktur_qr"] == "off"
+    assert h["status"] == "ok" and h["documents"]["enabled"] is True
+    assert h["documents"]["types"]["invoice"]["efaktur_qr"] == "off" and h["documents"]["types"]["invoice"]["version"]
     assert h["engines"]["pqe"] == h["version"] and h["engines"]["tesserocr"] and h["engines"]["pdfium"]
 
 
@@ -262,7 +264,7 @@ def test_engine_versions_do_not_import_tesserocr_in_threads():
     import subprocess
     import sys
 
-    code = ("import sys, threading\nfrom engine.invoice.process import engine_versions\n"
+    code = ("import sys, threading\nfrom engine.documents.process import engine_versions\n"
             "t = threading.Thread(target=engine_versions); t.start(); t.join()\n"
             "print('tesserocr' in sys.modules, sorted(engine_versions()))")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
@@ -282,8 +284,97 @@ def test_invoice_module_can_be_disabled(env, monkeypatch, disabled):
     from engine import settings
     from engine.api.app import create_app
 
-    monkeypatch.setenv("PQE_INVOICE_ENABLED", "false")
+    monkeypatch.setenv("PQE_DOCS_ENABLED", "false")
     settings.reset_settings_cache()
     with TestClient(create_app(run_bootstrap=False)) as c:
         assert c.post("/v1/jobs").status_code == 404
-        assert c.get("/healthz").json()["invoice"]["enabled"] is False
+        assert c.get("/healthz").json()["documents"]["enabled"] is False
+
+
+# ------------------------------------------------------------------------------------------ engine generik per client
+def test_callback_hosts_are_per_client(invoice, invoice_docs):
+    """Host callback milik satu client (callback_hosts di tenant-nya) tidak bisa dipakai client lain."""
+    from engine.tenants import save_tenant
+    from tests.conftest import OTHER_TENANT_YAML
+
+    save_tenant(OTHER_TENANT_YAML + "callback_hosts: [hooks.client-b.test]\n", "test")
+    url = "https://hooks.client-b.test/ocr"
+    assert invoice.b.post_job(invoice_docs["pdf"], callback_url=url).status_code == 202
+    r = invoice.a.post_job(invoice_docs["pdf"], callback_url=url)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "CALLBACK_NOT_ALLOWED"
+
+
+def test_create_client_cli(invoice, capsys):
+    """Onboarding aplikasi baru tanpa konteks client lain: satu perintah → namespace + key + secret yang langsung
+    bisa dipakai, terisolasi dari client lain."""
+    from conftest import SignedClient
+
+    from engine.cli import main
+
+    main(["create-client", "--code", "aplikasi-baru", "--name", "Aplikasi Baru"])
+    out = capsys.readouterr().out
+    key = next(ln.split("= ")[1] for ln in out.splitlines() if ln.startswith("api_key"))
+    secret = next(ln.split("= ")[1] for ln in out.splitlines() if ln.startswith("api_secret"))
+    c = SignedClient(invoice.client, key.strip(), secret.strip())
+    jid_a = invoice.a.post_job(b"%PDF-1.4\nx").json()["job_id"]
+    assert c.get(f"/v1/jobs/{jid_a}").status_code == 404  # tidak melihat job client lain
+    assert c.get("/v1/jobs/" + "0" * 32).json()["error"]["code"] == "JOB_NOT_FOUND"
+
+
+def _toko_plugin():
+    """Jenis dokumen baru (struk toko) dengan template, tanpa mengubah core: field_kinds + rules.apply_rule."""
+    from engine.documents.plugins import DocumentExtractor
+    from engine.documents.rules import apply_rule
+
+    class Struk(DocumentExtractor):
+        document_type = "struk"
+        version = "1"
+        field_kinds = {"total": "money"}
+
+        def detect(self, doc):
+            return 0.5
+
+        def extract(self, doc, template, hint):
+            fields = {}
+            for name, rule in ((template or {}).get("rules") or {}).items():
+                if name in self.field_kinds and (f := apply_rule(doc, rule)):
+                    fields[name] = f
+            return fields
+
+    return Struk
+
+
+def test_new_document_type_with_templates_without_core_change(invoice, invoice_docs, monkeypatch):
+    import sys
+    import types
+
+    from engine import settings
+    from engine.documents import plugins
+
+    mod = types.ModuleType("pqe_test_struk_plugin")
+    mod.Struk = _toko_plugin()
+    monkeypatch.setitem(sys.modules, "pqe_test_struk_plugin", mod)
+    monkeypatch.setenv("PQE_DOCUMENT_PLUGINS", "pqe_test_struk_plugin:Struk")
+    settings.reset_settings_cache()
+    plugins.registry.cache_clear()
+
+    jid = invoice.a.post_job(invoice_docs["custom_pdf"], document_type="struk",
+                             template_hint="TOKO-01").json()["job_id"]
+    work()
+    assert "total" not in invoice.a.get(f"/v1/jobs/{jid}").json()["fields"]
+    c = {"field": "total", "extracted": None, "corrected": "14430000", "idempotency_key": corr_key(jid, "total", None,
+                                                                                                   "14430000")}
+    r = invoice.a.post_json("/v1/templates", {"document_type": "struk", "issuer": {"id": "TOKO-01"}, "job_id": jid,
+                                              "corrections": [c]})
+    assert r.status_code == 200 and r.json()["corrections"][0]["learned"], r.text
+    assert r.json()["template"]["issuer"] == {"id": "TOKO-01"}
+    jid2 = invoice.a.post_job(invoice_docs["custom2_pdf"], document_type="struk",
+                              template_hint="TOKO-01").json()["job_id"]
+    work()
+    body = invoice.a.get(f"/v1/jobs/{jid2}").json()
+    assert body["fields"]["total"]["value"] == "22200000" and body["template"]["issuer_id"] == "TOKO-01"
+    # field di luar field_kinds plugin ditolak
+    bad = dict(c, field="vendor_npwp")
+    r = invoice.a.post_json("/v1/templates", {"document_type": "struk", "issuer": {"id": "TOKO-01"}, "job_id": jid,
+                                              "corrections": [bad]})
+    assert r.json()["error"]["code"] == "UNKNOWN_FIELD"

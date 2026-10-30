@@ -1,6 +1,6 @@
 """Proses anak untuk membaca dokumen yang tidak dipercaya (PDF/gambar dari vendor).
 
-Proses induk (worker) menjalankan `python -m engine.invoice.sandbox`, mengirim opsi (1 baris JSON) + isi file lewat
+Proses induk (worker) menjalankan `python -m engine.documents.sandbox`, mengirim opsi (1 baris JSON) + isi file lewat
 stdin, dan membaca hasil JSON dari stdout. Di proses anak:
 
 - RLIMIT_AS (memori), RLIMIT_CPU, RLIMIT_FSIZE dipasang sebelum dokumen disentuh: PDF bom / gambar bom membuat proses
@@ -19,7 +19,7 @@ import sys
 from dataclasses import asdict
 from typing import Any
 
-from engine.invoice.reader import Options
+from engine.documents.reader import Options
 
 SAFE_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TESSDATA_PREFIX", "PYTHONPATH", "OMP_THREAD_LIMIT")
 MAX_OUTPUT_BYTES = 32 * 1024 * 1024
@@ -45,7 +45,7 @@ def run(data: bytes, opt: Options, *, memory_mb: int, timeout_sec: int) -> dict[
     header = json.dumps({"options": asdict(opt), "memory_mb": memory_mb, "cpu_sec": max(5, int(timeout_sec * 2 / 3))})
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "engine.invoice.sandbox"],
+            [sys.executable, "-m", "engine.documents.sandbox"],
             input=header.encode() + b"\n" + data,
             capture_output=True,
             timeout=timeout_sec,
@@ -103,7 +103,7 @@ def main() -> int:  # pragma: no cover - dijalankan di proses anak, diuji lewat 
     data = raw[nl + 1:]
     del raw
     _limit(int(header["memory_mb"]), int(header["cpu_sec"]))
-    from engine.invoice.reader import ReadError, read_document
+    from engine.documents.reader import ReadError, read_document
 
     try:
         doc = read_document(data, Options(**header["options"]))

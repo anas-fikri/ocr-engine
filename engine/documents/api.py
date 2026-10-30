@@ -1,7 +1,11 @@
-"""Endpoint modul invoice: POST /v1/jobs, GET /v1/jobs/{id}, POST /v1/templates, GET /v1/templates/{type}/{npwp}.
+"""Endpoint modul dokumen (generik, semua client & jenis dokumen): POST /v1/jobs, GET /v1/jobs/{id},
+POST /v1/templates, GET /v1/templates/{document_type}/{issuer_id}.
 
-Semua endpoint wajib API key + tanda tangan HMAC (signing.py). Body dibaca mentah dengan batas ukuran SEBELUM
-diproses (tanda tangan mencakup hash body), lalu multipart di-parse dari byte yang sudah dibatasi.
+Semua endpoint wajib API key + tanda tangan HMAC (signing.py). Namespace = tenant API key: setiap client hanya melihat
+job, file, dan template miliknya. Pengetahuan tentang jenis dokumen ada di plugin (plugins.py).
+
+Body dibaca mentah dengan batas ukuran SEBELUM diproses (tanda tangan mencakup hash body), lalu multipart di-parse dari
+byte yang sudah dibatasi.
 """
 
 from __future__ import annotations
@@ -22,24 +26,22 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 
 from engine.api.common import api_error
 from engine.db import AuditLog, session_scope
-from engine.invoice import parsing as P
-from engine.invoice import queue, signing, store
-from engine.invoice.document import Document
-from engine.invoice.extract import FIELD_KINDS, FIELDS, npwp_candidates
-from engine.invoice.models import (
-    InvoiceCorrection,
-    InvoiceIdempotency,
-    InvoiceJob,
-    InvoiceNonce,
-    InvoiceTemplate,
+from engine.documents import queue, signing, store
+from engine.documents.document import Document
+from engine.documents.models import (
+    DocumentCorrection,
+    DocumentIdempotency,
+    DocumentJob,
+    DocumentNonce,
+    DocumentTemplate,
 )
-from engine.invoice.plugins import registry
-from engine.invoice.reader import detect_media_type
-from engine.invoice.templates import learn_rule, normalize_value
-from engine.invoice.worker import callback_allowed
+from engine.documents.plugins import get_extractor, registry
+from engine.documents.reader import detect_media_type
+from engine.documents.templates import learn_rule, normalize_value
+from engine.documents.worker import callback_allowed
 from engine.settings import get_settings
 
-router = APIRouter(prefix="/v1", tags=["dokumen (invoice)"])
+router = APIRouter(prefix="/v1", tags=["dokumen"])
 MB = 1024 * 1024
 TEMPLATE_BODY_LIMIT = 256 * 1024
 _KEY = re.compile(r"^[A-Za-z0-9_\-:.]{8,128}$")
@@ -81,7 +83,7 @@ async def _multipart(request: Request, body: bytes) -> dict[str, Any]:
     return out
 
 
-def _job_body(job: InvoiceJob) -> dict[str, Any]:
+def _job_body(job: DocumentJob) -> dict[str, Any]:
     body: dict[str, Any] = {"job_id": job.id, "status": job.status, "document_type": job.document_type,
                             "created_at": job.created_at.isoformat() if job.created_at else None,
                             "finished_at": job.finished_at.isoformat() if job.finished_at else None}
@@ -99,12 +101,13 @@ def _job_body(job: InvoiceJob) -> dict[str, Any]:
         "type": "object", "required": ["file", "document_type"], "properties": {
             "file": {"type": "string", "format": "binary"},
             "document_type": {"type": "string", "example": "invoice"},
-            "template_hint": {"type": "string", "description": "NPWP vendor (15/16 digit) jika diketahui"},
+            "template_hint": {"type": "string", "description": "ID penerbit jika diketahui (invoice: NPWP "
+                                                                  "vendor 15/16 digit)"},
             "callback_url": {"type": "string", "description": "Opsional; host harus ada di "
-                                                              "PQE_INVOICE_CALLBACK_HOSTS"}}}}}}})
+                                                              "PQE_DOCS_CALLBACK_HOSTS"}}}}}}})
 async def create_job(request: Request):
     st = get_settings()
-    caller, body = await _auth(request, st.invoice_max_upload_mb * MB + 64 * 1024)
+    caller, body = await _auth(request, st.docs_max_upload_mb * MB + 64 * 1024)
     replay = await run_in_threadpool(_replayed_job, caller)
     if replay is not None:
         return replay
@@ -127,34 +130,36 @@ def _create_job(caller: signing.SignedCaller, form: dict[str, Any]) -> JSONRespo
         raise api_error(422, "UNSUPPORTED_DOCUMENT_TYPE",
                         f"document_type harus salah satu dari: {', '.join(sorted(registry()))}")
     hint_raw = str(form.get("template_hint") or "").strip()
-    hint = P.normalize_npwp(hint_raw) if hint_raw else None
+    hint = registry()[dtype].normalize_issuer(hint_raw) if hint_raw else None
     if hint_raw and not hint:
-        raise api_error(422, "INVALID_TEMPLATE_HINT", "template_hint harus NPWP 15 atau 16 digit")
+        raise api_error(422, "INVALID_TEMPLATE_HINT", f"template_hint bukan ID penerbit {dtype} yang valid "
+                                                      "(invoice: NPWP 15/16 digit)")
     callback = str(form.get("callback_url") or "").strip() or None
-    if callback and not callback_allowed(callback):
-        raise api_error(422, "CALLBACK_NOT_ALLOWED", "host callback_url tidak ada di PQE_INVOICE_CALLBACK_HOSTS")
+    if callback and not callback_allowed(callback, caller.tenant_code):
+        raise api_error(422, "CALLBACK_NOT_ALLOWED", "host callback_url tidak diizinkan untuk client ini "
+                                                     "(PQE_DOCS_CALLBACK_HOSTS / callback_hosts tenant)")
     f = form.get("file")
     if not isinstance(f, tuple):
         raise api_error(422, "FILE_REQUIRED", "field file wajib (multipart)")
     filename, data = f
     if not data:
         raise api_error(422, "EMPTY_FILE", "file kosong")
-    if len(data) > st.invoice_max_upload_mb * MB:
-        raise api_error(413, "FILE_TOO_LARGE", f"file melebihi {st.invoice_max_upload_mb} MB")
+    if len(data) > st.docs_max_upload_mb * MB:
+        raise api_error(413, "FILE_TOO_LARGE", f"file melebihi {st.docs_max_upload_mb} MB")
     media = detect_media_type(data)
     if media is None:
         raise api_error(415, "UNSUPPORTED_MEDIA_TYPE", "hanya PDF, JPEG, dan PNG (dicek dari isi file)")
     try:
         with session_scope() as s:
-            if queue.pending_count(s, caller.tenant_code) >= st.invoice_max_pending_per_tenant:
+            if queue.pending_count(s, caller.tenant_code) >= st.docs_max_pending_per_tenant:
                 raise api_error(429, "QUEUE_FULL", "antrean dokumen namespace ini penuh; coba lagi nanti")
-            job = InvoiceJob(tenant_code=caller.tenant_code, key_id=caller.principal.key_id, document_type=dtype,
+            job = DocumentJob(tenant_code=caller.tenant_code, key_id=caller.principal.key_id, document_type=dtype,
                              template_hint=hint, filename=store.safe_filename(filename), media_type=media,
                              size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest(), callback_url=callback)
             s.add(job)
             s.flush()
             store.put(s, job.id, data)
-            s.add(InvoiceNonce(signature_sha256=caller.signature_digest, tenant_code=caller.tenant_code,
+            s.add(DocumentNonce(signature_sha256=caller.signature_digest, tenant_code=caller.tenant_code,
                                job_id=job.id, expires_at=caller.replay_until))
             jid = job.id
     except IntegrityError:  # request kembar yang sama persis datang bersamaan: kembalikan job yang menang
@@ -168,10 +173,10 @@ def _create_job(caller: signing.SignedCaller, form: dict[str, Any]) -> JSONRespo
 def _replayed_job(caller: signing.SignedCaller) -> JSONResponse | None:
     """Request dengan tanda tangan yang sama persis (retry jaringan / replay) → job yang sama, bukan job baru."""
     with session_scope() as s:
-        n = s.get(InvoiceNonce, caller.signature_digest)
+        n = s.get(DocumentNonce, caller.signature_digest)
         if n is None or n.tenant_code != caller.tenant_code:
             return None
-        job = s.get(InvoiceJob, n.job_id)
+        job = s.get(DocumentJob, n.job_id)
         status = job.status if job else "queued"
     return JSONResponse({"job_id": n.job_id, "status": status, "poll_url": f"/v1/jobs/{n.job_id}"},
                         status_code=202, headers={"Idempotent-Replayed": "true"})
@@ -187,14 +192,22 @@ def _get_job(caller: signing.SignedCaller, job_id: str) -> JSONResponse:
     if not _JOB_ID.match(job_id):
         raise api_error(404, "JOB_NOT_FOUND", "job tidak ditemukan")
     with session_scope() as s:
-        job = s.scalar(select(InvoiceJob).where(InvoiceJob.id == job_id, InvoiceJob.tenant_code == caller.tenant_code))
+        job = s.scalar(select(DocumentJob).where(DocumentJob.id == job_id,
+                                                 DocumentJob.tenant_code == caller.tenant_code))
         if job is None:  # job namespace lain = tidak ada (tidak membocorkan keberadaannya)
             raise api_error(404, "JOB_NOT_FOUND", "job tidak ditemukan")
         return JSONResponse(_job_body(job))
 
 
 class Issuer(BaseModel):
-    npwp: str = Field(..., max_length=40)
+    """ID penerbit dokumen (format ditentukan plugin; invoice: NPWP). `npwp` diterima sebagai alias `id`."""
+
+    id: str | None = Field(None, max_length=80)
+    npwp: str | None = Field(None, max_length=80)
+
+    @property
+    def value(self) -> str | None:
+        return self.id or self.npwp
 
 
 class Correction(BaseModel):
@@ -205,36 +218,21 @@ class Correction(BaseModel):
 
 
 class TemplateRequest(BaseModel):
-    document_type: str = Field("invoice", max_length=50)
+    document_type: str = Field(..., max_length=50)
     issuer: Issuer
     job_id: str = Field(..., pattern=r"^[0-9a-f]{32}$")
     corrections: list[Correction] = Field(..., max_length=100)
 
 
-def _template_body(t: InvoiceTemplate) -> dict[str, Any]:
-    return {"document_type": t.document_type, "issuer": {"npwp": t.issuer_npwp}, "version": t.version,
+def _template_body(t: DocumentTemplate) -> dict[str, Any]:
+    return {"document_type": t.document_type, "issuer": {"id": t.issuer_id}, "version": t.version,
             "fields": sorted(t.rules or {}), "updated_at": t.updated_at.isoformat() if t.updated_at else None}
 
 
-def _check_issuer(job: InvoiceJob, doc: Document, npwp: str, req: TemplateRequest) -> None:
-    """Template hanya untuk penjual dokumen ini: NPWP issuer harus template_hint job, vendor_npwp hasil job, atau
-    vendor_npwp yang dikoreksi di request ini, dan tidak boleh NPWP di blok identitas pembeli."""
-    cands = npwp_candidates(doc)
-    seller = {v for v, _, _, buyer in cands if not buyer}
-    buyer = {v for v, _, _, b in cands if b}
-    if npwp in seller:
-        return
-    if npwp in buyer:
-        raise api_error(422, "ISSUER_IS_BUYER", "issuer.npwp hanya muncul di identitas pembeli dokumen ini")
-    if npwp == job.template_hint and not seller:  # vendor tanpa NPWP tercetak: percaya hint saat job dikirim
-        return
-    raise api_error(422, "ISSUER_MISMATCH", "issuer.npwp harus NPWP penjual yang tercetak di dokumen job ini "
-                                            "(atau template_hint job bila dokumen tidak mencetak NPWP penjual)")
-
-
-def _apply_corrections(tenant: str, req: TemplateRequest, npwp: str, actor: str) -> dict[str, Any]:
+def _apply_corrections(tenant: str, req: TemplateRequest, issuer: str, actor: str) -> dict[str, Any]:
+    ex = registry()[req.document_type]
     with session_scope() as s:
-        job = s.scalar(select(InvoiceJob).where(InvoiceJob.id == req.job_id, InvoiceJob.tenant_code == tenant))
+        job = s.scalar(select(DocumentJob).where(DocumentJob.id == req.job_id, DocumentJob.tenant_code == tenant))
         if job is None:
             raise api_error(404, "JOB_NOT_FOUND", "job tidak ditemukan")
         if job.status != "succeeded" or not job.result:
@@ -242,12 +240,17 @@ def _apply_corrections(tenant: str, req: TemplateRequest, npwp: str, actor: str)
         if job.document_type != req.document_type:
             raise api_error(422, "DOCUMENT_TYPE_MISMATCH", "document_type berbeda dengan job")
         doc = Document.from_blocks(job.result.get("blocks") or [])
-        _check_issuer(job, doc, npwp, req)
-        t = s.scalar(select(InvoiceTemplate).where(
-            InvoiceTemplate.tenant_code == tenant, InvoiceTemplate.document_type == req.document_type,
-            InvoiceTemplate.issuer_npwp == npwp).with_for_update())
+        err = ex.issuer_check(doc, issuer, job.template_hint)
+        if err == "ISSUER_IS_BUYER":
+            raise api_error(422, err, "issuer hanya muncul di identitas pembeli/penerima dokumen ini")
+        if err:
+            raise api_error(422, err, "issuer bukan penerbit yang tercetak di dokumen job ini (atau template_hint job "
+                                      "bila dokumen tidak mencetak ID penerbit)")
+        t = s.scalar(select(DocumentTemplate).where(
+            DocumentTemplate.tenant_code == tenant, DocumentTemplate.document_type == req.document_type,
+            DocumentTemplate.issuer_id == issuer).with_for_update())
         if t is None:
-            t = InvoiceTemplate(tenant_code=tenant, document_type=req.document_type, issuer_npwp=npwp, rules={},
+            t = DocumentTemplate(tenant_code=tenant, document_type=req.document_type, issuer_id=issuer, rules={},
                                 version=1)
             s.add(t)
             s.flush()
@@ -257,8 +260,8 @@ def _apply_corrections(tenant: str, req: TemplateRequest, npwp: str, actor: str)
         # satu field dipelajari sekali per request (koreksi terakhir menang): biaya belajar terbatas ±15 field
         last_of = {c.field: i for i, c in enumerate(req.corrections)}
         for i, c in enumerate(req.corrections):
-            prev = s.scalar(select(InvoiceCorrection).where(
-                InvoiceCorrection.tenant_code == tenant, InvoiceCorrection.idempotency_key == c.idempotency_key))
+            prev = s.scalar(select(DocumentCorrection).where(
+                DocumentCorrection.tenant_code == tenant, DocumentCorrection.idempotency_key == c.idempotency_key))
             if c.idempotency_key in seen or prev is not None:
                 same = prev is None or (prev.field == c.field and prev.corrected == c.corrected)
                 out.append({"idempotency_key": c.idempotency_key, "field": c.field,
@@ -266,7 +269,7 @@ def _apply_corrections(tenant: str, req: TemplateRequest, npwp: str, actor: str)
                 continue
             seen.add(c.idempotency_key)
             learned, reason = False, None
-            if c.field not in FIELD_KINDS:
+            if c.field not in ex.field_kinds:
                 reason = "FIELD_NOT_LEARNABLE"
             elif last_of[c.field] != i:
                 reason = "SUPERSEDED"
@@ -275,10 +278,11 @@ def _apply_corrections(tenant: str, req: TemplateRequest, npwp: str, actor: str)
                 rules.pop(c.field, None)
                 changed = changed or learned
             else:
-                rule, reason = learn_rule(doc, c.field, normalize_value(c.field, c.corrected), c.extracted)
+                kind = ex.field_kinds[c.field]
+                rule, reason = learn_rule(doc, kind, normalize_value(kind, c.corrected))
                 if rule is not None:
                     rules[c.field], learned, changed = rule, True, True
-            s.add(InvoiceCorrection(tenant_code=tenant, idempotency_key=c.idempotency_key, template_id=t.id,
+            s.add(DocumentCorrection(tenant_code=tenant, idempotency_key=c.idempotency_key, template_id=t.id,
                                     job_id=req.job_id, field=c.field, extracted=c.extracted,
                                     corrected=c.corrected, learned=learned, reason=reason))
             out.append({"idempotency_key": c.idempotency_key, "field": c.field, "status": "applied",
@@ -286,7 +290,7 @@ def _apply_corrections(tenant: str, req: TemplateRequest, npwp: str, actor: str)
         if changed:
             t.rules = rules
             t.version = (t.version or 1) + 1
-        s.add(AuditLog(actor=actor, action="invoice.template", target=f"{tenant}:{req.document_type}:{npwp}",
+        s.add(AuditLog(actor=actor, action="document.template", target=f"{tenant}:{req.document_type}:{issuer}",
                        detail={"job_id": req.job_id, "applied": sum(o["status"] == "applied" for o in out)}))
         s.flush()
         return {"template": _template_body(t), "corrections": out}
@@ -306,8 +310,8 @@ def _update_template(idem: str | None, caller: signing.SignedCaller, body: bytes
     body_hash = hashlib.sha256(body).hexdigest()
     if idem:
         with session_scope() as s:
-            prev = s.scalar(select(InvoiceIdempotency).where(InvoiceIdempotency.tenant_code == tenant,
-                                                             InvoiceIdempotency.key == idem))
+            prev = s.scalar(select(DocumentIdempotency).where(DocumentIdempotency.tenant_code == tenant,
+                                                             DocumentIdempotency.key == idem))
             if prev is not None:
                 if prev.body_sha256 != body_hash:
                     raise api_error(422, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key sudah dipakai untuk body lain")
@@ -319,19 +323,22 @@ def _update_template(idem: str | None, caller: signing.SignedCaller, body: bytes
                         else "JSON terlalu dalam") from None
     if req.document_type not in registry():
         raise api_error(422, "UNSUPPORTED_DOCUMENT_TYPE", f"document_type {req.document_type} tidak terdaftar")
-    npwp = P.normalize_npwp(req.issuer.npwp)
-    if not npwp:
-        raise api_error(422, "INVALID_NPWP", "issuer.npwp harus 15 atau 16 digit")
+    ex = registry()[req.document_type]
+    issuer = ex.normalize_issuer(req.issuer.value)
+    if not issuer:
+        raise api_error(422, "INVALID_ISSUER", f"issuer.id bukan ID penerbit {req.document_type} yang valid "
+                                               "(invoice: NPWP 15/16 digit)")
     for c in req.corrections:
-        if c.field not in FIELDS:
-            raise api_error(422, "UNKNOWN_FIELD", f"field {c.field} tidak dikenal")
-        if c.corrected is not None and c.field in FIELD_KINDS and normalize_value(c.field, c.corrected) is None:
+        if c.field not in ex.fields:
+            raise api_error(422, "UNKNOWN_FIELD", f"field {c.field} tidak dikenal untuk {req.document_type}")
+        kind = ex.field_kinds.get(c.field)
+        if c.corrected is not None and kind and normalize_value(kind, c.corrected) is None:
             raise api_error(422, "INVALID_VALUE", f"nilai corrected untuk {c.field} tidak valid")
         if len(json.dumps(c.corrected, default=str)) > 20_000:
             raise api_error(422, "INVALID_VALUE", f"nilai corrected untuk {c.field} terlalu besar")
     for attempt in (1, 2):  # request kembar bersamaan: yang kalah membaca ulang (key jadi duplicate)
         try:
-            resp = _apply_corrections(tenant, req, npwp, caller.principal.actor)
+            resp = _apply_corrections(tenant, req, issuer, caller.principal.actor)
             break
         except IntegrityError:
             if attempt == 2:
@@ -339,25 +346,26 @@ def _update_template(idem: str | None, caller: signing.SignedCaller, body: bytes
     if idem:
         try:
             with session_scope() as s:
-                s.add(InvoiceIdempotency(tenant_code=tenant, key=idem, body_sha256=body_hash, response=resp))
+                s.add(DocumentIdempotency(tenant_code=tenant, key=idem, body_sha256=body_hash, response=resp))
         except IntegrityError:
             pass
     return JSONResponse(resp)
 
 
-@router.get("/templates/{document_type}/{npwp}", summary="Lihat template issuer di namespace sendiri",
+@router.get("/templates/{document_type}/{issuer_id}", summary="Lihat template penerbit di namespace sendiri",
             responses={401: SIGNED, 404: {}})
-async def get_template(document_type: str, npwp: str, request: Request):
+async def get_template(document_type: str, issuer_id: str, request: Request):
     caller, _ = await _auth(request, 64 * 1024)
-    return await run_in_threadpool(_get_template, caller, document_type, npwp)
+    return await run_in_threadpool(_get_template, caller, document_type, issuer_id)
 
 
-def _get_template(caller: signing.SignedCaller, document_type: str, npwp: str) -> JSONResponse:
-    n = P.normalize_npwp(npwp)
+def _get_template(caller: signing.SignedCaller, document_type: str, issuer_id: str) -> JSONResponse:
+    ex = get_extractor(document_type)
+    n = ex.normalize_issuer(issuer_id) if ex else None
     with session_scope() as s:
-        t = s.scalar(select(InvoiceTemplate).where(
-            InvoiceTemplate.tenant_code == caller.tenant_code, InvoiceTemplate.document_type == document_type,
-            InvoiceTemplate.issuer_npwp == (n or "")))
+        t = s.scalar(select(DocumentTemplate).where(
+            DocumentTemplate.tenant_code == caller.tenant_code, DocumentTemplate.document_type == document_type,
+            DocumentTemplate.issuer_id == (n or "")))
         if t is None:
             raise api_error(404, "TEMPLATE_NOT_FOUND", "template tidak ditemukan")
         return JSONResponse({**_template_body(t), "rules": t.rules})

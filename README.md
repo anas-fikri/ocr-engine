@@ -133,7 +133,7 @@ docs/                 dokumentasi
 | `pqe analyze FOTO...` | Analisis file lokal tanpa server (`--profile`, `--json`, `--out-dir`) |
 | `pqe create-key --name X --role app --tenant T` | Buat API key (`--with-secret`: plus `api_secret` HMAC untuk endpoint dokumen invoice) |
 | `pqe set-api-secret KEY_ID` | Buat/rotasi `api_secret` HMAC untuk key yang sudah ada |
-| `pqe invoice-worker` | Worker dokumen invoice saja (container terpisah, opsional) |
+| `pqe document-worker` | Worker dokumen invoice saja (container terpisah, opsional) |
 | `pqe import-tenants [--force]` | Import config tenant dari `config/tenants/` |
 | `pqe validate-tenant FILE...` | Validasi file config tenant |
 | `pqe preflight [--no-silo] [--json]` | Cek kesiapan production (secret, database, akses baca SILO, tenant, backup NAS, worker, OCR). Exit 1 jika ada yang gagal |

@@ -1,4 +1,4 @@
-"""Photo Quality Engine: deteksi kualitas foto, kompresi dinamis, validasi keaslian, dan OCR dokumen invoice."""
+"""Photo Quality Engine: deteksi kualitas foto, kompresi dinamis, validasi keaslian, dan OCR dokumen (invoice, ...)."""
 
 __version__ = "0.5.0"
 

@@ -160,10 +160,10 @@ class Worker:
             t.start()
         log.info("worker berjalan (%d thread analisis)", self.concurrency)
         st = get_settings()
-        if st.invoice_enabled and st.invoice_worker_concurrency > 0:  # modul invoice: antrean & thread sendiri
-            from engine.invoice.worker import InvoiceWorker
+        if st.docs_enabled and st.docs_worker_concurrency > 0:  # modul dokumen: antrean & thread sendiri
+            from engine.documents.worker import DocumentWorker
 
-            threads += InvoiceWorker(stop_event=self.stop_event).start()
+            threads += DocumentWorker(stop_event=self.stop_event).start()
         return threads
 
     def run_until_empty(self, max_jobs: int = 10_000) -> int:

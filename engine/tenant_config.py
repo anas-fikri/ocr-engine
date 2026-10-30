@@ -142,6 +142,8 @@ class TenantConfig(_Strict):
     mapping: dict[str, list[str]] = {}
     sinks: list[Sink] = []
     profiles: dict[str, dict[str, Any]] = {}
+    # modul dokumen: host callback_url yang boleh dipakai client ini (selain PQE_DOCS_CALLBACK_HOSTS global)
+    callback_hosts: list[str] = []
 
     @field_validator("mapping")
     @classmethod

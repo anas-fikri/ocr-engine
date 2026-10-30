@@ -9,12 +9,12 @@ import zlib
 
 import pytest
 
-from engine.invoice.reader import Options
-from engine.invoice.worker import InvoiceWorker
+from engine.documents.reader import Options
+from engine.documents.worker import DocumentWorker
 
 
 def work() -> int:
-    return InvoiceWorker(concurrency=0).run_until_empty()
+    return DocumentWorker(concurrency=0).run_until_empty()
 
 
 # ---------------------------------------------------------------------------------------------- A1-A3 tanda tangan
@@ -64,7 +64,7 @@ def test_replay_rejected(invoice, invoice_docs):
     import httpx
 
     from engine.db import session_scope
-    from engine.invoice.models import InvoiceJob
+    from engine.documents.models import DocumentJob
 
     req = httpx.Request("POST", "http://t/v1/jobs", files={"file": ("a.pdf", invoice_docs["pdf"])},
                         data={"document_type": "invoice"})
@@ -75,7 +75,7 @@ def test_replay_rejected(invoice, invoice_docs):
     assert first.status_code == again.status_code == 202
     assert again.json()["job_id"] == first.json()["job_id"] and again.headers["Idempotent-Replayed"] == "true"
     with session_scope() as s:
-        assert s.query(InvoiceJob).count() == 1
+        assert s.query(DocumentJob).count() == 1
     # tanda tangan yang sama dari namespace lain tidak bisa dipakai (key lain → secret lain → tanda tangan lain)
     h_b = {**h, "X-Api-Key": invoice.b.key}
     assert invoice.client.post("/v1/jobs", content=body, headers=h_b).status_code == 401
@@ -83,7 +83,7 @@ def test_replay_rejected(invoice, invoice_docs):
 
 def test_key_without_secret_or_wrong_role(invoice, admin_headers):
     from engine.api.auth import create_api_key
-    from engine.invoice.signing import set_api_secret
+    from engine.documents.signing import set_api_secret
 
     raw, _ = create_api_key("tanpa-secret", "app", "test-app")
     c = type(invoice.a)(invoice.client, raw, "apa-saja")
@@ -104,7 +104,7 @@ def test_signature_compare_is_timing_safe():
     """Perbandingan memakai hmac.compare_digest (bukan ==)."""
     import inspect
 
-    from engine.invoice import signing
+    from engine.documents import signing
 
     src = inspect.getsource(signing.verify)
     assert "hmac.compare_digest(" in src and "expected ==" not in src and "== expected" not in src
@@ -121,7 +121,7 @@ def test_namespace_isolation_jobs(invoice, invoice_docs):
 
 def test_namespace_isolation_templates(invoice, invoice_docs):
     """Namespace B tidak bisa memakai job A untuk melatih template, dan template A tidak dipakai untuk job B."""
-    from tests.test_invoice_api import _learn_custom
+    from tests.test_documents_api import _learn_custom
 
     _, payload = _learn_custom(invoice, invoice_docs)
     r = invoice.b.post_json("/v1/templates", payload)
@@ -148,7 +148,7 @@ def test_unsupported_file_rejected(invoice, data, name):
 
 def test_filename_is_not_a_path(invoice, invoice_docs, tmp_path, monkeypatch):
     from engine.db import session_scope
-    from engine.invoice.models import InvoiceJob
+    from engine.documents.models import DocumentJob
 
     cwd = tmp_path / "cwd"
     cwd.mkdir()
@@ -156,7 +156,7 @@ def test_filename_is_not_a_path(invoice, invoice_docs, tmp_path, monkeypatch):
     r = invoice.a.post_job(invoice_docs["pdf"], filename="../../../../tmp/evil\x00\n.pdf")
     assert r.status_code == 202
     with session_scope() as s:
-        job = s.get(InvoiceJob, r.json()["job_id"])
+        job = s.get(DocumentJob, r.json()["job_id"])
         assert "/" not in job.filename and "\x00" not in job.filename and "\n" not in job.filename
     assert list(cwd.iterdir()) == []  # file tidak pernah ditulis ke disk
 
@@ -176,7 +176,7 @@ def _pdf_with_pages(n: int) -> bytes:
 def test_too_many_pages(invoice, monkeypatch):
     from engine import settings
 
-    monkeypatch.setenv("PQE_INVOICE_MAX_PAGES", "2")
+    monkeypatch.setenv("PQE_DOCS_MAX_PAGES", "2")
     settings.reset_settings_cache()
     jid = invoice.a.post_job(_pdf_with_pages(3)).json()["job_id"]
     work()
@@ -186,7 +186,7 @@ def test_too_many_pages(invoice, monkeypatch):
 
 def test_sandbox_memory_bomb():
     """Batas memori proses anak berlaku: dokumen yang butuh memori lebih dari batas → RESOURCE_LIMIT, induk hidup."""
-    from engine.invoice import sandbox
+    from engine.documents import sandbox
 
     with pytest.raises(sandbox.SandboxError) as e:
         sandbox.run(_pdf_with_pages(1), Options(media_type="application/pdf"), memory_mb=64, timeout_sec=60)
@@ -195,7 +195,7 @@ def test_sandbox_memory_bomb():
 
 def test_sandbox_flate_bomb():
     """PDF bom: content stream kecil yang mengembang menjadi ±1 GB. Ditolak/dimatikan, tidak membuat worker jatuh."""
-    from engine.invoice import sandbox
+    from engine.documents import sandbox
 
     payload = zlib.compress(b" " * (1024 * 1024 * 1024), 9)  # ±1 MB terkompres
     objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -233,7 +233,7 @@ def _png_header_only(w: int, h: int) -> bytes:
 @pytest.mark.parametrize("w,h", [(60_000, 60_000), (9_000, 9_000)])
 def test_image_pixel_bomb(w, h):
     """Dimensi dicek dari header sebelum decode (PNG 3,6 GP ditolak tanpa dialokasikan)."""
-    from engine.invoice import sandbox
+    from engine.documents import sandbox
 
     with pytest.raises(sandbox.SandboxError) as e:
         sandbox.run(_png_header_only(w, h), Options(media_type="image/png", max_image_pixels=50_000_000),
@@ -243,8 +243,8 @@ def test_image_pixel_bomb(w, h):
 
 # ---------------------------------------------------------------------------------------------- A9 ReDoS
 def test_shape_regex_is_linear():
-    from engine.invoice import parsing as P
-    from engine.invoice.extract import anchor_regex
+    from engine.documents import parsing as P
+    from engine.documents.rules import anchor_regex
 
     shape = P.shape_of("A" * 30 + "/" + "9" * 30)
     rx = P.shape_regex(shape)
@@ -262,7 +262,7 @@ def test_shape_regex_is_linear():
 
 def test_template_rules_contain_no_client_regex(invoice, invoice_docs):
     """Isi template berasal dari dokumen + jenis pola tetap, bukan dari teks koreksi klien."""
-    from tests.test_invoice_api import _learn_custom, corr_key
+    from tests.test_documents_api import _learn_custom, corr_key
 
     jid, payload = _learn_custom(invoice, invoice_docs)
     evil = "(a+)+$"
@@ -278,7 +278,7 @@ def test_template_rules_contain_no_client_regex(invoice, invoice_docs):
 def test_upload_too_large(invoice, monkeypatch):
     from engine import settings
 
-    monkeypatch.setenv("PQE_INVOICE_MAX_UPLOAD_MB", "1")
+    monkeypatch.setenv("PQE_DOCS_MAX_UPLOAD_MB", "1")
     settings.reset_settings_cache()
     big = b"%PDF-1.4\n" + b"0" * (1024 * 1024 + 100 * 1024)
     r = invoice.a.post_job(big)
@@ -288,7 +288,7 @@ def test_upload_too_large(invoice, monkeypatch):
 def test_queue_full(invoice, invoice_docs, monkeypatch):
     from engine import settings
 
-    monkeypatch.setenv("PQE_INVOICE_MAX_PENDING_PER_TENANT", "1")
+    monkeypatch.setenv("PQE_DOCS_MAX_PENDING_PER_TENANT", "1")
     settings.reset_settings_cache()
     assert invoice.a.post_job(invoice_docs["pdf"]).status_code == 202
     r = invoice.a.post_job(invoice_docs["jpg"], filename="b.jpg")
@@ -297,7 +297,7 @@ def test_queue_full(invoice, invoice_docs, monkeypatch):
 
 
 def test_response_size_capped():
-    from engine.invoice.process import MAX_RESULT_BYTES, cap_result
+    from engine.documents.process import MAX_RESULT_BYTES, cap_result
 
     blocks = [{"page": 1, "text": "x" * 200, "bbox": [0, 0, 1, 1], "confidence": 0.9, "source": "ocr"}] * 20_000
     res = cap_result({"text": "y" * 3_000_000, "blocks": blocks, "fields": {"total": {"value": "1"}}})
@@ -309,7 +309,7 @@ def test_response_size_capped():
 
 # ---------------------------------------------------------------------------------------------- A12-A14
 def test_efaktur_url_allowlist():
-    from engine.invoice.efaktur import parse_qr_url
+    from engine.documents.invoice.efaktur import parse_qr_url
 
     ok = parse_qr_url("http://svc.efaktur.pajak.go.id/validasi/faktur/012345678901000/0102612345678/abc123")
     assert ok == {"url": "https://svc.efaktur.pajak.go.id/validasi/faktur/012345678901000/0102612345678/abc123",
@@ -324,7 +324,7 @@ def test_efaktur_url_allowlist():
 
 
 def test_efaktur_xml_entities_rejected():
-    from engine.invoice.efaktur import _xml_fields
+    from engine.documents.invoice.efaktur import _xml_fields
 
     bomb = b'<?xml version="1.0"?><!DOCTYPE r [<!ENTITY a "aaaa"><!ENTITY b "&a;&a;&a;">]><r><npwpPenjual>&b;' \
            b'</npwpPenjual></r>'
@@ -336,7 +336,7 @@ def test_efaktur_xml_entities_rejected():
 
 
 def test_sandbox_env_has_no_secrets(monkeypatch):
-    from engine.invoice.sandbox import child_env
+    from engine.documents.sandbox import child_env
 
     for k in ("DATABASE_URL", "AWS_SECRET_ACCESS_KEY", "PQE_SECRET_KEY", "PQE_BOOTSTRAP_ADMIN_KEY",
               "POSTGRES_PASSWORD"):
@@ -350,7 +350,7 @@ def test_sandbox_env_has_no_secrets(monkeypatch):
 # ---------------------------------------------------------------------------------------------- temuan audit independen
 def test_template_for_buyer_npwp_rejected(invoice, invoice_docs):
     """H2: template hanya untuk penjual dokumen (bukan NPWP pembeli yang ada di semua invoice masuk)."""
-    from tests.test_invoice_api import _learn_custom
+    from tests.test_documents_api import _learn_custom
 
     _, payload = _learn_custom(invoice, invoice_docs)
     r = invoice.a.post_json("/v1/templates", dict(payload, issuer={"npwp": "02.345.678.9-012.000"}))
@@ -362,12 +362,12 @@ def test_template_for_buyer_npwp_rejected(invoice, invoice_docs):
 def test_template_lookup_ignores_buyer_npwp(invoice, invoice_docs):
     """H2: template issuer X tidak dipakai untuk invoice vendor lain hanya karena NPWP pembeli sama."""
     from engine.db import session_scope
-    from engine.invoice.models import InvoiceTemplate
-    from engine.invoice.synth import SynthInvoice, make_pdf
-    from tests.test_invoice_api import work
+    from engine.documents.invoice.synth import SynthInvoice, make_pdf
+    from engine.documents.models import DocumentTemplate
+    from tests.test_documents_api import work
 
     with session_scope() as s:  # template (rusak) atas NPWP pembeli, mis. dibuat versi lama
-        s.add(InvoiceTemplate(tenant_code="test-app", document_type="invoice", issuer_npwp="023456789012000",
+        s.add(DocumentTemplate(tenant_code="test-app", document_type="invoice", issuer_id="023456789012000",
                               rules={"total": {"kind": "money", "anchor": "pph", "same_line": True}}, version=2))
     other = make_pdf(SynthInvoice(vendor_name="PT Vendor Lain", vendor_npwp="03.456.789.0-123.000"))
     jid = invoice.a.post_job(other).json()["job_id"]
@@ -378,7 +378,7 @@ def test_template_lookup_ignores_buyer_npwp(invoice, invoice_docs):
 
 def test_body_not_read_before_api_key_check(invoice):
     """M2: request tanpa key valid ditolak sebelum body 20 MB dibaca."""
-    from engine.invoice.api import _read_body
+    from engine.documents.api import _read_body
 
     called = []
     orig = _read_body
@@ -387,7 +387,7 @@ def test_body_not_read_before_api_key_check(invoice):
         called.append(limit)
         return await orig(request, limit)
 
-    import engine.invoice.api as api
+    import engine.documents.api as api
 
     api._read_body = spy
     try:
@@ -411,7 +411,7 @@ def test_strict_timestamp_and_signature_format(invoice):
 def test_fair_queue_between_namespaces(invoice, invoice_docs):
     """M1: namespace yang mengantre banyak dokumen tidak membuat namespace lain menunggu di belakangnya."""
     from engine.db import session_scope
-    from engine.invoice import queue
+    from engine.documents import queue
 
     for _ in range(4):
         invoice.b.post_job(invoice_docs["pdf"])
@@ -425,7 +425,7 @@ def test_fair_queue_between_namespaces(invoice, invoice_docs):
 
 def test_idempotency_key_128_chars_and_conflict(invoice, invoice_docs):
     """M4 + L5: key 128 karakter muat; key yang dipakai ulang untuk nilai lain dilaporkan conflict."""
-    from tests.test_invoice_api import _learn_custom
+    from tests.test_documents_api import _learn_custom
 
     _, payload = _learn_custom(invoice, invoice_docs)
     c = dict(payload["corrections"][0], idempotency_key="k" * 128)
@@ -446,10 +446,10 @@ def test_deeply_nested_json_is_422(invoice):
 
 def test_callback_port_and_revoked_key(invoice, monkeypatch, admin_headers):
     from engine import settings
-    from engine.invoice.signing import get_api_secret
-    from engine.invoice.worker import callback_allowed
+    from engine.documents.signing import get_api_secret
+    from engine.documents.worker import callback_allowed
 
-    monkeypatch.setenv("PQE_INVOICE_CALLBACK_HOSTS", "hooks.test,api.test:8443")
+    monkeypatch.setenv("PQE_DOCS_CALLBACK_HOSTS", "hooks.test,api.test:8443")
     settings.reset_settings_cache()
     assert callback_allowed("https://hooks.test/cb") and callback_allowed("https://api.test:8443/cb")
     for bad in ("http://hooks.test:6379/", "http://hooks.test:22/", "https://api.test/cb", "https://api.test:9/x"):
@@ -459,14 +459,14 @@ def test_callback_port_and_revoked_key(invoice, monkeypatch, admin_headers):
 
 
 def test_qr_bad_port_does_not_crash():
-    from engine.invoice.efaktur import parse_qr_url
+    from engine.documents.invoice.efaktur import parse_qr_url
 
     assert parse_qr_url("http://svc.efaktur.pajak.go.id:99999/validasi/faktur/012345678901000/0102612345678/a") \
         is None
 
 
 def test_pdf_header_must_be_at_start():
-    from engine.invoice.reader import detect_media_type
+    from engine.documents.reader import detect_media_type
 
     assert detect_media_type(b"%PDF-1.7\n...") == "application/pdf"
     assert detect_media_type(b"\xef\xbb\xbf%PDF-1.7") == "application/pdf"
@@ -476,7 +476,7 @@ def test_pdf_header_must_be_at_start():
 def test_issuer_must_be_printed_seller(invoice, invoice_docs):
     """Audit putaran 2 (N1): koreksi vendor_npwp / template_hint lain tidak membuka template untuk NPWP yang tidak
     tercetak sebagai penjual di dokumen."""
-    from tests.test_invoice_api import _learn_custom, corr_key, work
+    from tests.test_documents_api import _learn_custom, corr_key, work
 
     jid, payload = _learn_custom(invoice, invoice_docs)
     fake = "099999999999000"
@@ -492,8 +492,8 @@ def test_issuer_must_be_printed_seller(invoice, invoice_docs):
 
 def test_npwp_candidates_linear_per_row():
     """Audit putaran 2 (N2): ribuan NPWP polos di satu baris tidak membuat ekstraksi kuadratik."""
-    from engine.invoice.document import Document
-    from engine.invoice.extract import InvoiceExtractor
+    from engine.documents.document import Document
+    from engine.documents.invoice.extract import InvoiceExtractor
 
     lines = [{"text": "NPWP 0123456789012345" if i == 0 else "0123456789012345",
               "bbox": [i / 4000, 0.5, i / 4000 + 0.0002, 0.51], "conf": 0.99} for i in range(4000)]

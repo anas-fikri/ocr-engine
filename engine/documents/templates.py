@@ -1,6 +1,6 @@
-"""Template issuer (layer 4): belajar dari koreksi pengguna dan menyimpan aturan per field.
+"""Template penerbit (layer 4, generik untuk semua plugin): belajar dari koreksi pengguna, menyimpan aturan per field.
 
-Aturan field (JSON di invoice_templates.rules):
+Aturan field (JSON di document_templates.rules):
     {"kind": "date", "anchor": "jatuh tempo", "anchor_box": [..], "same_line": true, "offset": [dx, dy],
      "value_box": [..], "page": 0, "nth": 0, "shape": "AAA/9999/99"}
 
@@ -11,16 +11,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from engine.invoice import parsing as P
-from engine.invoice.document import Block, Document
-from engine.invoice.extract import FIELD_KINDS, _remainder, anchor_regex, finder
+from engine.documents import parsing as P
+from engine.documents.document import Block, Document
+from engine.documents.rules import _remainder, anchor_regex, finder
 
 MAX_ANCHOR_WORDS = 4
 
 
-def normalize_value(field: str, value: Any) -> Any:
-    """Normalisasi nilai koreksi sesuai jenis field. None = tidak valid."""
-    kind = FIELD_KINDS.get(field)
+def normalize_value(kind: str | None, value: Any) -> Any:
+    """Normalisasi nilai koreksi sesuai jenis nilai field (dari plugin). None = tidak valid."""
     if kind == "date":
         return P.normalize_date(value)
     if kind == "money":
@@ -85,9 +84,8 @@ def _locate(doc: Document, kind: str, target: Any) -> list[tuple[Block, P.Match,
     return out
 
 
-def learn_rule(doc: Document, field: str, corrected: Any, extracted: Any = None) -> tuple[dict | None, str | None]:
+def learn_rule(doc: Document, kind: str | None, corrected: Any) -> tuple[dict | None, str | None]:
     """Buat aturan template dari nilai yang benar. Return (aturan, None) atau (None, alasan)."""
-    kind = FIELD_KINDS.get(field)
     if kind is None:
         return None, "FIELD_NOT_LEARNABLE"
     hits = _locate(doc, kind, corrected)

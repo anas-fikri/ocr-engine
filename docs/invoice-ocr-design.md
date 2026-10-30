@@ -17,7 +17,7 @@ cara integrasi: [integration-guide.md](integration-guide.md#13-integrasi-dokumen
 ## 1. Batasan & prinsip
 
 1. **Fungsi foto POD tidak boleh rusak.** Modul invoice punya router, tabel, antrean, dan thread worker sendiri
-   (`engine/invoice/`). Tidak ada kolom/tabel lama yang diubah; tabel baru dibuat otomatis saat start.
+   (`engine/documents/`). Tidak ada kolom/tabel lama yang diubah; tabel baru dibuat otomatis saat start.
 2. **Yang dipakai ulang:** API key + tenant (namespace), log, metrik Prometheus, `/healthz`, enkripsi rahasia
    (`PQE_SECRET_KEY`), backup database (tabel invoice ikut dump), Docker image & compose.
 3. **Tanpa AI generatif dan tanpa model ML** selain Tesseract (FR-OCR-013). Ekstraksi field memakai aturan
@@ -47,12 +47,12 @@ Status job: `queued` → `running` → `succeeded` | `failed`. Error: `{"error":
 ```mermaid
 erDiagram
     API_KEYS ||--o| API_KEY_SECRETS : "punya api_secret"
-    INVOICE_JOBS ||--o| INVOICE_FILES : "file inbox"
+    DOCS_JOBS ||--o| INVOICE_FILES : "file inbox"
     INVOICE_TEMPLATES ||--o{ INVOICE_CORRECTIONS : "dipelajari dari"
-    INVOICE_JOBS ||--o{ INVOICE_CORRECTIONS : "dikoreksi"
+    DOCS_JOBS ||--o{ INVOICE_CORRECTIONS : "dikoreksi"
 
     API_KEY_SECRETS { string key_id PK  text secret_enc  datetime created_at }
-    INVOICE_JOBS {
+    DOCS_JOBS {
         string id PK
         string tenant_code
         string key_id
@@ -78,20 +78,20 @@ erDiagram
     INVOICE_NONCES { string signature_sha256 PK  string tenant_code  string job_id  datetime expires_at }
 ```
 
-- `invoice_jobs` menyimpan hasil (JSON) di kolom `result`; file asli di `invoice_files` (tabel terpisah supaya
+- `document_jobs` menyimpan hasil (JSON) di kolom `result`; file asli di `document_files` (tabel terpisah supaya
   polling status tidak membaca blob). Antrean memakai pola yang sama dengan [ADR 0001](adr/0001-queue-di-postgres.md)
   (`SELECT ... FOR UPDATE SKIP LOCKED`).
-- Unique: `invoice_templates(tenant_code, document_type, issuer_npwp)`,
-  `invoice_corrections(tenant_code, idempotency_key)`, `invoice_idempotency(tenant_code, key)`.
+- Unique: `document_templates(tenant_code, document_type, issuer_npwp)`,
+  `document_corrections(tenant_code, idempotency_key)`, `document_idempotency(tenant_code, key)`.
 - File inbox disimpan di PostgreSQL (bukan SILO): atomik dengan job, tidak bergantung SILO saat menerima invoice,
   ikut backup database, dan volumenya kecil (puluhan-ratusan invoice/hari, ≤ 20 MB, dihapus setelah
-  `PQE_INVOICE_INBOX_RETENTION_DAYS`). Alasan lengkap di ADR 0008.
+  `PQE_DOCS_INBOX_RETENTION_DAYS`). Alasan lengkap di ADR 0008.
 
 ## 4. Alur pemrosesan (layer 1-4)
 
 ```mermaid
 flowchart TB
-    A[POST /v1/jobs] -->|HMAC ok, ukuran & tipe ok| Q[(invoice_jobs: queued<br/>+ invoice_files)]
+    A[POST /v1/jobs] -->|HMAC ok, ukuran & tipe ok| Q[(document_jobs: queued<br/>+ document_files)]
     Q --> W[Thread worker invoice<br/>claim SKIP LOCKED]
     W --> S{{Proses anak sandbox<br/>RLIMIT memori/CPU, timeout,<br/>env tanpa rahasia, nice}}
     S -->|PDF| P1{Halaman punya<br/>text layer layak?}
@@ -141,7 +141,7 @@ bisa berbeda. Aktifkan hanya setelah izin TBD-15 dikonfirmasi dan diuji dengan f
 
 Grayscale → perbesar bila teks kecil (sisi panjang < 1.600 px) → deskew (estimasi kemiringan yang sama dengan
 analyzer foto) → kontras CLAHE → binarize adaptif → Tesseract `ind+eng` (PSM 3), dibaca per baris beserta kotak dan
-confidence. Batas waktu Tesseract per halaman (`PQE_INVOICE_OCR_PAGE_TIMEOUT_SEC`).
+confidence. Batas waktu Tesseract per halaman (`PQE_DOCS_OCR_PAGE_TIMEOUT_SEC`).
 
 ### 4.4 Layer 4: template issuer
 
@@ -188,7 +188,7 @@ Confidence 0-1 = keyakinan teks sumber (PDF text 0,99; OCR = confidence Tesserac
 ### 4.7 Plugin jenis dokumen (FR-OCR-012)
 
 Setiap jenis dokumen = kelas dengan `document_type`, `version`, `detect(doc) → 0..1`, `extract(doc, template) →
-fields`, `validate(fields) → issues` (`engine/invoice/plugins.py`). Bawaan: `invoice`. Plugin tambahan dimuat dari
+fields`, `validate(fields) → issues` (`engine/documents/plugins.py`). Bawaan: `invoice`. Plugin tambahan dimuat dari
 entry point Python `pqe.document_extractors` atau `PQE_DOCUMENT_PLUGINS=modul:Kelas`. `document_type` yang tidak
 terdaftar ditolak `422 UNSUPPORTED_DOCUMENT_TYPE`.
 
@@ -206,7 +206,7 @@ X-Signature: hex(HMAC-SHA256(api_secret, timestamp + "\n" + METHOD + "\n" + path
   memakai query string. `body` = byte mentah body (multipart apa adanya; GET = body kosong).
 - `api_secret` dibuat engine (`pqe create-key ... --with-secret`), disimpan **terenkripsi** (`PQE_SECRET_KEY`), hanya
   ditampilkan sekali. API key sendiri tetap disimpan sebagai hash.
-- Timestamp di luar ±`PQE_INVOICE_SIGNATURE_WINDOW_SEC` (bawaan 300) → `401 TIMESTAMP_OUT_OF_WINDOW`.
+- Timestamp di luar ±`PQE_DOCS_SIGNATURE_WINDOW_SEC` (bawaan 300) → `401 TIMESTAMP_OUT_OF_WINDOW`.
 - Perbandingan memakai `hmac.compare_digest` (timing-safe).
 - **Replay:** tanda tangan `POST /v1/jobs` dicatat sampai jendela waktu lewat; request dengan tanda tangan yang sama
   persis (replay penyadap atau retry jaringan klien) **tidak membuat job baru**, tetapi mendapat `job_id` yang sama
@@ -224,15 +224,15 @@ X-Signature: hex(HMAC-SHA256(api_secret, timestamp + "\n" + METHOD + "\n" + path
 | A4 | Namespace lain membaca job/template, atau melatih template namespace lain | Semua query difilter tenant dari API key; job/template milik tenant lain → `404` (tidak membocorkan keberadaan) | `test_namespace_isolation_*` |
 | A5 | File berbahaya (EXE/ZIP/HTML berganti nama `.pdf`) | Tipe ditentukan dari **magic bytes** (`%PDF-`, JPEG, PNG), bukan nama/Content-Type → `415` | `test_unsupported_file_rejected` |
 | A6 | PDF bom (stream Flate raksasa, halaman ribuan, ukuran halaman ekstrem) | Batas ukuran upload, batas halaman, batas ukuran halaman & piksel render, proses anak dengan `RLIMIT_AS` + `RLIMIT_CPU` + timeout dinding; job gagal permanen (`RESOURCE_LIMIT`/`PROCESSING_TIMEOUT`/`TOO_MANY_PAGES`), tidak di-retry | `test_sandbox_memory_bomb`, `test_too_many_pages` |
-| A7 | Zip bom / gambar bom (PNG 1×1 → 60.000×60.000) | ZIP tidak diterima; dimensi gambar dicek dari header sebelum decode (`PQE_INVOICE_MAX_IMAGE_PIXELS`) | `test_image_pixel_bomb` |
+| A7 | Zip bom / gambar bom (PNG 1×1 → 60.000×60.000) | ZIP tidak diterima; dimensi gambar dicek dari header sebelum decode (`PQE_DOCS_MAX_IMAGE_PIXELS`) | `test_image_pixel_bomb` |
 | A8 | Path traversal (`filename="../../etc/passwd"`) | Nama file tidak pernah dipakai sebagai path: file disimpan di database, nama hanya dicatat (basename, ≤ 200 karakter) | `test_filename_is_not_a_path` |
 | A9 | ReDoS lewat pola template | Klien tidak bisa mengirim regex. Pola template berasal dari daftar tetap; `shape` dibatasi 40 karakter dan diterjemahkan ke regex linear (kelas karakter + quantifier tetap). Teks yang dicocokkan dipotong per baris | `test_shape_regex_is_linear` |
 | A10b | DoS CPU lewat dokumen kecil berisi ribuan label | Maks. 4.000 blok per dokumen, 5.000 potongan teks per halaman, 30 hit per label, pencarian tetangga ber-indeks (bukan kuadratik); endpoint menjalankan kerja sinkron di threadpool (event loop foto tidak tertahan); belajar template sekali per field per request | `test_extraction_is_not_quadratic` |
 | A16 | Antrean dimonopoli satu namespace | Claim adil: namespace yang paling lama tidak dilayani lebih dulu | `test_fair_queue_between_namespaces` |
 | A17 | Template diracuni (NPWP pembeli / issuer lain / anchor "Rp") | Lihat 4.4 | `test_template_for_buyer_npwp_rejected`, `test_template_lookup_ignores_buyer_npwp`, `test_template_anchor_is_a_real_label` |
-| A10 | DoS: banyak job / file besar | API key & timestamp dicek sebelum body dibaca; ukuran upload ≤ `PQE_INVOICE_MAX_UPLOAD_MB` (dicek dari `Content-Length` sebelum dibaca dan saat streaming), antrean per namespace ≤ `PQE_INVOICE_MAX_PENDING_PER_TENANT` → `429 QUEUE_FULL`, worker invoice terpisah dengan prioritas CPU rendah | `test_upload_too_large`, `test_queue_full` |
+| A10 | DoS: banyak job / file besar | API key & timestamp dicek sebelum body dibaca; ukuran upload ≤ `PQE_DOCS_MAX_UPLOAD_MB` (dicek dari `Content-Length` sebelum dibaca dan saat streaming), antrean per namespace ≤ `PQE_DOCS_MAX_PENDING_PER_TENANT` → `429 QUEUE_FULL`, worker invoice terpisah dengan prioritas CPU rendah | `test_upload_too_large`, `test_queue_full` |
 | A11 | Respons raksasa (klien membatasi 1 MB) | `text` dan `blocks` dipotong agar JSON ≤ ±900 KB (`truncated: true`) | `test_response_size_capped` |
-| A12 | SSRF lewat `callback_url` / QR e-Faktur | Callback hanya ke host di `PQE_INVOICE_CALLBACK_HOSTS` (kosong = callback ditolak); QR hanya ke host DJP di allowlist, HTTPS, tanpa redirect | `test_callback_host_not_allowed`, `test_efaktur_url_allowlist` |
+| A12 | SSRF lewat `callback_url` / QR e-Faktur | Callback hanya ke host di `PQE_DOCS_CALLBACK_HOSTS` (kosong = callback ditolak); QR hanya ke host DJP di allowlist, HTTPS, tanpa redirect | `test_callback_host_not_allowed`, `test_efaktur_url_allowlist` |
 | A13 | XXE / XML bom dari respons e-Faktur | `defusedxml` + batas ukuran respons | `test_efaktur_xml_entities_rejected` |
 | A14 | Kebocoran rahasia lewat proses anak | Environment proses anak hanya `PATH`, `HOME`, `LANG`, `TESSDATA_PREFIX`, `OMP_THREAD_LIMIT`, `PYTHONPATH`; tidak ada `DATABASE_URL`/AWS/`PQE_*` | `test_sandbox_env_has_no_secrets` |
 | A15 | Idempotency disalahgunakan (key sama, isi beda) | `Idempotency-Key` sama + body beda → `422 IDEMPOTENCY_KEY_REUSED`; key per koreksi diterapkan paling banyak sekali per namespace | `test_template_idempotency_*` |
@@ -252,17 +252,17 @@ diperbaiki dan punya test regresi (bagian "temuan audit independen" di `tests/te
 
 | Batas | Nilai | Variabel |
 |---|---|---|
-| Ukuran file | 20 MB | `PQE_INVOICE_MAX_UPLOAD_MB` |
-| Halaman PDF | 20 | `PQE_INVOICE_MAX_PAGES` |
+| Ukuran file | 20 MB | `PQE_DOCS_MAX_UPLOAD_MB` |
+| Halaman PDF | 20 | `PQE_DOCS_MAX_PAGES` |
 | Ukuran halaman PDF | ≤ 5.000 pt per sisi (±176 cm) | tetap |
-| Render PDF | 300 dpi, maks. 40 MP per halaman | `PQE_INVOICE_RENDER_DPI` |
-| Piksel gambar | 50 MP | `PQE_INVOICE_MAX_IMAGE_PIXELS` |
-| Memori proses anak | 1.536 MB (address space) | `PQE_INVOICE_SANDBOX_MEMORY_MB` |
-| CPU / waktu proses anak | 120 dtk CPU / 180 dtk dinding | `PQE_INVOICE_SANDBOX_TIMEOUT_SEC` |
-| Antrean per namespace | 200 job (queued + running) | `PQE_INVOICE_MAX_PENDING_PER_TENANT` |
+| Render PDF | 300 dpi, maks. 40 MP per halaman | `PQE_DOCS_RENDER_DPI` |
+| Piksel gambar | 50 MP | `PQE_DOCS_MAX_IMAGE_PIXELS` |
+| Memori proses anak | 1.536 MB (address space) | `PQE_DOCS_SANDBOX_MEMORY_MB` |
+| CPU / waktu proses anak | 120 dtk CPU / 180 dtk dinding | `PQE_DOCS_SANDBOX_TIMEOUT_SEC` |
+| Antrean per namespace | 200 job (queued + running) | `PQE_DOCS_MAX_PENDING_PER_TENANT` |
 | Ukuran respons | ±900 KB (text & blocks dipotong) | tetap |
-| Retensi file inbox | 30 hari | `PQE_INVOICE_INBOX_RETENTION_DAYS` |
-| Retensi hasil job | 365 hari | `PQE_INVOICE_RESULT_RETENTION_DAYS` |
+| Retensi file inbox | 30 hari | `PQE_DOCS_INBOX_RETENTION_DAYS` |
+| Retensi hasil job | 365 hari | `PQE_DOCS_RESULT_RETENTION_DAYS` |
 
 ## 7. Acceptance criteria
 

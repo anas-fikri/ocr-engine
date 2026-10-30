@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from engine.invoice import parsing as P
-from engine.invoice.document import Document
+from engine.documents import parsing as P
+from engine.documents.document import Document
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -64,7 +64,7 @@ def _doc(lines: list[tuple[str, list[float]]]) -> Document:
 
 
 def test_cross_check_flags_inconsistent_total():
-    from engine.invoice.extract import InvoiceExtractor
+    from engine.documents.invoice.extract import InvoiceExtractor
 
     doc = _doc([("PT Vendor Fiktif", [0.1, 0.05, 0.4, 0.07]),
                 ("DPP: Rp 1.000.000", [0.5, 0.5, 0.9, 0.52]),
@@ -79,7 +79,7 @@ def test_cross_check_flags_inconsistent_total():
 
 
 def test_buyer_npwp_is_not_vendor_npwp():
-    from engine.invoice.extract import InvoiceExtractor
+    from engine.documents.invoice.extract import InvoiceExtractor
 
     doc = _doc([("Kepada: PT Pembeli", [0.1, 0.05, 0.4, 0.07]),
                 ("NPWP Pembeli: 02.345.678.9-012.000", [0.1, 0.08, 0.5, 0.1]),
@@ -92,7 +92,7 @@ class ReceiptExtractor:
 
 
 def _receipt_plugin():
-    from engine.invoice.plugins import DocumentExtractor, Field
+    from engine.documents.plugins import DocumentExtractor, Field
 
     class Receipt(DocumentExtractor):
         document_type = "receipt"
@@ -118,9 +118,9 @@ def test_plugin_registry(invoice, monkeypatch):
     import types
 
     from engine import settings
-    from engine.invoice import plugins
-    from engine.invoice.synth import make_pdf
-    from engine.invoice.worker import InvoiceWorker
+    from engine.documents import plugins
+    from engine.documents.invoice.synth import make_pdf
+    from engine.documents.worker import DocumentWorker
 
     mod = types.ModuleType("pqe_test_receipt_plugin")
     mod.Receipt = _receipt_plugin()
@@ -131,7 +131,7 @@ def test_plugin_registry(invoice, monkeypatch):
     assert set(plugins.registry()) == {"invoice", "receipt"}  # plugin rusak dilewati, tidak menjatuhkan engine
     r = invoice.a.post_job(make_pdf(), document_type="receipt")
     assert r.status_code == 202
-    InvoiceWorker(concurrency=0).run_until_empty()
+    DocumentWorker(concurrency=0).run_until_empty()
     body = invoice.a.get(f"/v1/jobs/{r.json()['job_id']}").json()
     assert body["document_type"] == "receipt" and body["engine"]["extractor.receipt"] == "7"
     assert body["fields"]["total"]["value"] == "14430000"
@@ -149,7 +149,7 @@ DJP_XML = b"""<?xml version="1.0" encoding="UTF-8"?><resValidateFakturPm>
 
 @pytest.fixture(scope="module")
 def efaktur_pdf():
-    from engine.invoice.synth import SynthInvoice, make_pdf
+    from engine.documents.invoice.synth import SynthInvoice, make_pdf
 
     # QR berisi NPWP benar, teks invoice sengaja salah cetak DPP agar terlihat QR yang dipakai
     return make_pdf(SynthInvoice(qr_text=QR, dpp="13.000.001"))
@@ -163,22 +163,23 @@ def _set_mode(monkeypatch, mode: str) -> None:
 
 
 def test_efaktur_off_by_default(invoice, efaktur_pdf):
-    from engine.invoice.worker import InvoiceWorker
+    from engine.documents.worker import DocumentWorker
 
     jid = invoice.a.post_job(efaktur_pdf).json()["job_id"]
-    InvoiceWorker(concurrency=0).run_until_empty()
+    DocumentWorker(concurrency=0).run_until_empty()
     body = invoice.a.get(f"/v1/jobs/{jid}").json()
     assert "efaktur_qr" not in body["layers"] and "efaktur" not in body
     assert body["fields"]["dpp"]["value"] == "13000001"
 
 
 def test_efaktur_decode_mode(invoice, efaktur_pdf, monkeypatch):
-    from engine.invoice.worker import InvoiceWorker
+    from engine.documents.worker import DocumentWorker
 
     _set_mode(monkeypatch, "decode")
-    monkeypatch.setattr("engine.invoice.efaktur.httpx.Client", lambda *a, **k: pytest.fail("decode tanpa jaringan"))
+    monkeypatch.setattr("engine.documents.invoice.efaktur.httpx.Client",
+                        lambda *a, **k: pytest.fail("decode tanpa jaringan"))
     jid = invoice.a.post_job(efaktur_pdf).json()["job_id"]
-    InvoiceWorker(concurrency=0).run_until_empty()
+    DocumentWorker(concurrency=0).run_until_empty()
     body = invoice.a.get(f"/v1/jobs/{jid}").json()
     assert "efaktur_qr" in body["layers"] and body["efaktur"]["nomor_faktur"] == "0102612345678"
     assert body["fields"]["vendor_npwp"] == {"value": "012345678901000", "confidence": 0.99,
@@ -186,7 +187,7 @@ def test_efaktur_decode_mode(invoice, efaktur_pdf, monkeypatch):
 
 
 def test_efaktur_lookup_mode(invoice, efaktur_pdf, monkeypatch):
-    from engine.invoice.worker import InvoiceWorker
+    from engine.documents.worker import DocumentWorker
 
     _set_mode(monkeypatch, "lookup")
     seen = []
@@ -196,10 +197,10 @@ def test_efaktur_lookup_mode(invoice, efaktur_pdf, monkeypatch):
         return httpx.Response(200, content=DJP_XML)
 
     real = httpx.Client
-    monkeypatch.setattr("engine.invoice.efaktur.httpx.Client",
+    monkeypatch.setattr("engine.documents.invoice.efaktur.httpx.Client",
                         lambda *a, **kw: real(*a, **{**kw, "transport": httpx.MockTransport(djp)}))
     jid = invoice.a.post_job(efaktur_pdf).json()["job_id"]
-    InvoiceWorker(concurrency=0).run_until_empty()
+    DocumentWorker(concurrency=0).run_until_empty()
     body = invoice.a.get(f"/v1/jobs/{jid}").json()
     f = body["fields"]
     assert seen == [QR.replace("http://", "https://")]  # selalu HTTPS
@@ -215,13 +216,13 @@ def test_efaktur_lookup_mode(invoice, efaktur_pdf, monkeypatch):
 
 def test_efaktur_qr_cannot_override_printed_npwp(invoice, monkeypatch):
     """QR dikendalikan pembuat dokumen: NPWP di QR yang berbeda dengan NPWP tercetak tidak dipercaya 0,99."""
-    from engine.invoice.synth import SynthInvoice, make_pdf
-    from engine.invoice.worker import InvoiceWorker
+    from engine.documents.invoice.synth import SynthInvoice, make_pdf
+    from engine.documents.worker import DocumentWorker
 
     _set_mode(monkeypatch, "decode")
     fake = QR.replace("012345678901000", "099999999999000")
     jid = invoice.a.post_job(make_pdf(SynthInvoice(qr_text=fake))).json()["job_id"]
-    InvoiceWorker(concurrency=0).run_until_empty()
+    DocumentWorker(concurrency=0).run_until_empty()
     body = invoice.a.get(f"/v1/jobs/{jid}").json()
     assert body["fields"]["vendor_npwp"]["value"] == "012345678901000"
     assert body["fields"]["vendor_npwp"]["confidence"] < 0.6
@@ -229,7 +230,7 @@ def test_efaktur_qr_cannot_override_printed_npwp(invoice, monkeypatch):
 
 
 def test_efaktur_lookup_failure_falls_back(invoice, efaktur_pdf, monkeypatch):
-    from engine.invoice.worker import InvoiceWorker
+    from engine.documents.worker import DocumentWorker
 
     _set_mode(monkeypatch, "lookup")
     real = httpx.Client
@@ -237,10 +238,10 @@ def test_efaktur_lookup_failure_falls_back(invoice, efaktur_pdf, monkeypatch):
     def down(req):
         raise httpx.ConnectError("DJP tidak bisa dihubungi")
 
-    monkeypatch.setattr("engine.invoice.efaktur.httpx.Client",
+    monkeypatch.setattr("engine.documents.invoice.efaktur.httpx.Client",
                         lambda *a, **kw: real(*a, **{**kw, "transport": httpx.MockTransport(down)}))
     jid = invoice.a.post_job(efaktur_pdf).json()["job_id"]
-    InvoiceWorker(concurrency=0).run_until_empty()
+    DocumentWorker(concurrency=0).run_until_empty()
     body = invoice.a.get(f"/v1/jobs/{jid}").json()
     assert body["status"] == "succeeded" and body["efaktur"]["lookup_error"] == "ConnectError"
     assert body["fields"]["vendor_npwp"]["source"] == "efaktur_qr" and body["fields"]["dpp"]["value"] == "13000001"
@@ -250,8 +251,8 @@ def test_efaktur_lookup_failure_falls_back(invoice, efaktur_pdf, monkeypatch):
 def _pdf_rows(rows) -> Document:
     from fpdf import FPDF
 
-    from engine.invoice import sandbox
-    from engine.invoice.reader import Options
+    from engine.documents import sandbox
+    from engine.documents.reader import Options
 
     p = FPDF(format="A4", unit="mm")
     p.add_page()
@@ -291,7 +292,7 @@ def _pdf_rows(rows) -> Document:
 ])
 def test_layouts_never_return_wrong_value(name, rows, expect):
     """Lebih baik field kosong daripada salah dengan confidence tinggi (temuan H5 audit)."""
-    from engine.invoice.extract import InvoiceExtractor
+    from engine.documents.invoice.extract import InvoiceExtractor
 
     fields = InvoiceExtractor().extract(_pdf_rows(rows), None, None)
     for k, v in expect.items():
@@ -302,7 +303,7 @@ def test_extraction_is_not_quadratic():
     """PDF kecil berisi ribuan label "Total" tidak boleh menahan worker (temuan H3 audit: 8k blok = 34 dtk)."""
     import time
 
-    from engine.invoice.extract import InvoiceExtractor
+    from engine.documents.invoice.extract import InvoiceExtractor
 
     lines = [{"text": "Total", "bbox": [(i % 1000) / 1000, 0.5, (i % 1000) / 1000 + 0.0005, 0.51], "conf": 0.99}
              for i in range(20_000)]
@@ -315,18 +316,20 @@ def test_extraction_is_not_quadratic():
 
 def test_template_anchor_is_a_real_label(invoice_docs):
     """Sel "Rp" di sebelah nilai bukan anchor (temuan H1: template memilih baris uang yang salah)."""
-    from engine.invoice import sandbox
-    from engine.invoice.extract import InvoiceExtractor
-    from engine.invoice.reader import Options
-    from engine.invoice.synth import Line, SynthInvoice, make_pdf
-    from engine.invoice.templates import learn_rule
+    from engine.documents import sandbox
+    from engine.documents.invoice.extract import InvoiceExtractor
+    from engine.documents.invoice.synth import Line, SynthInvoice, make_pdf
+    from engine.documents.reader import Options
+    from engine.documents.templates import learn_rule
 
     def read(pdf):
         return Document.from_read(sandbox.run(pdf, Options(media_type="application/pdf"), memory_mb=1536,
                                               timeout_sec=60))
 
     first = read(invoice_docs["custom_pdf"])
-    rules = {f: learn_rule(first, f, v)[0] for f, v in (("total", "14430000"), ("wht_amount", "260000"),
+    from engine.documents.invoice.extract import FIELD_KINDS
+
+    rules = {f: learn_rule(first, FIELD_KINDS[f], v)[0] for f, v in (("total", "14430000"), ("wht_amount", "260000"),
                                                         ("vat_amount", "1430000"))}
     assert rules["total"]["anchor"] == "wajib dibayar" and rules["wht_amount"]["anchor"] == "pph"
     lines = [Line(f"Item {k}", "1", "1.000.000", "1.000.000") for k in range(5)]  # layout bergeser 2 baris

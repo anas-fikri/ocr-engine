@@ -28,11 +28,11 @@ Rilis dibuat dengan tag git `vX.Y.Z`; server production memakai tag, bukan caban
   dipelajari dari koreksi pengguna. Validasi silang subtotal/DPP/PPN/total. Tanpa AI generatif / model ML.
 - Dokumen dibaca di proses anak dengan batas memori, CPU, dan waktu, environment tanpa rahasia, prioritas CPU rendah
   (PDF bom / gambar bom → `RESOURCE_LIMIT`, worker tetap hidup). Tipe file dari magic bytes.
-- Callback ber-HMAC opsional (host di `PQE_INVOICE_CALLBACK_HOSTS`), retensi file inbox 30 hari dan hasil 365 hari,
-  plugin jenis dokumen (`PQE_DOCUMENT_PLUGINS` / entry point `pqe.document_extractors`), `pqe invoice-worker`.
+- Callback ber-HMAC opsional (host di `PQE_DOCS_CALLBACK_HOSTS`), retensi file inbox 30 hari dan hasil 365 hari,
+  plugin jenis dokumen (`PQE_DOCUMENT_PLUGINS` / entry point `pqe.document_extractors`), `pqe document-worker`.
 - `/healthz` menampilkan versi tesserocr (Tesseract) & PDFium dan status modul invoice; `pqe preflight` memeriksa modul invoice.
-- Metrik baru: `pqe_invoice_jobs_total`, `pqe_invoice_seconds`, `pqe_invoice_queue_depth`,
-  `pqe_invoice_auth_failures_total`, `pqe_invoice_callbacks_total`.
+- Metrik baru: `pqe_document_jobs_total`, `pqe_document_seconds`, `pqe_document_queue_depth`,
+  `pqe_document_auth_failures_total`, `pqe_document_callbacks_total`.
 - Dependency baru: `pypdfium2` (BSD-3/Apache-2.0). Tenant contoh `config/tenants/ictnotes.yaml`.
 
 ## [0.4.1] - 25 Okt 2026 (UAT)

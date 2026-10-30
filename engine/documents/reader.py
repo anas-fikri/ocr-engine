@@ -21,7 +21,7 @@ from PIL import Image
 MAX_PAGE_POINTS = 5000  # sisi halaman PDF maks. (pt, 1/72 inci): ±176 cm
 MAX_RENDER_PIXELS = 40_000_000
 MIN_TEXT_CHARS = 20
-MAX_RECTS_PER_PAGE = 5000  # potongan teks PDF per halaman (invoice wajar < 1.000)
+MAX_RECTS_PER_PAGE = 5000  # potongan teks PDF per halaman (dokumen bisnis wajar < 1.000)
 MAX_LINES_TOTAL = 8000  # baris yang dikirim ke proses induk (keluaran sandbox tetap kecil)
 MIN_ALNUM_RATIO = 0.5
 OCR_MIN_SIDE = 1600  # teks kecil: perbesar dulu supaya tinggi huruf cukup untuk Tesseract

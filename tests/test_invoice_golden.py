@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import pytest
 
-from engine.invoice import sandbox
-from engine.invoice.document import Document
-from engine.invoice.extract import InvoiceExtractor
-from engine.invoice.reader import Options, detect_media_type
-from engine.invoice.templates import learn_rule, normalize_value
+from engine.documents import sandbox
+from engine.documents.document import Document
+from engine.documents.invoice.extract import FIELD_KINDS, InvoiceExtractor
+from engine.documents.reader import Options, detect_media_type
+from engine.documents.templates import learn_rule, normalize_value
 
 STANDARD = {
     "vendor_npwp": "012345678901000", "vendor_name": "PT Contoh Sinar Abadi", "bank_account": "1234567890",
@@ -63,7 +63,7 @@ def test_digital_pdf_golden(invoice_docs):
 @pytest.mark.parametrize("variant", ["jpg", "shaded"])
 def test_scanned_image_golden(invoice_docs, variant):
     """AC-05: scan miring + noise (+ bayangan foto HP) → deskew, ratakan, binarize, Tesseract ind+eng."""
-    from engine.invoice.synth import scan_of
+    from engine.documents.invoice.synth import scan_of
 
     data = invoice_docs["jpg"] if variant == "jpg" else scan_of(invoice_docs["pdf"], angle=-4, shade=True, seed=3)
     doc = read(data)
@@ -91,11 +91,12 @@ def test_template_learning_fixes_field(invoice_docs):
     assert not set(missing) & set(generic)
     rules = {}
     for field, value in missing.items():
-        rule, reason = learn_rule(first, field, normalize_value(field, value))
+        kind = FIELD_KINDS[field]
+        rule, reason = learn_rule(first, kind, normalize_value(kind, value))
         assert rule is not None, (field, reason)
         assert rule["anchor"]  # label dokumen ("ref dokumen", "batas bayar", ...) menjadi anchor
         rules[field] = rule
-    template = {"issuer_npwp": "012345678901000", "version": 2, "rules": rules}
+    template = {"issuer_id": "012345678901000", "version": 2, "rules": rules}
     expected = {"invoice_number": "INV/2026/11/0107", "due_date": "2026-12-16", "total": "22200000",
                 "bank_account": "1234567890", "dpp": "20000000", "vat_amount": "2200000", "wht_amount": "400000",
                 "invoice_date": "2026-11-16", "period_start": "2026-11-01", "period_end": "2026-11-30"}

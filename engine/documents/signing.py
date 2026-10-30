@@ -1,4 +1,4 @@
-"""Tanda tangan HMAC request modul invoice (FR-OCR-008) dan api_secret per API key.
+"""Tanda tangan HMAC request modul dokumen (FR-OCR-008) dan api_secret per API key.
 
 Kanonik (sama untuk request ke engine dan callback dari engine):
 
@@ -23,7 +23,7 @@ from engine import metrics, secretbox
 from engine.api.auth import Principal, _lookup
 from engine.api.common import api_error
 from engine.db import ApiKey, AuditLog, session_scope, utcnow
-from engine.invoice.models import ApiKeySecret
+from engine.documents.models import ApiKeySecret
 from engine.settings import get_settings
 from engine.tenants import TenantNotFound, registry
 
@@ -73,7 +73,7 @@ class SignedCaller:
 
 
 def _deny(status: int, code: str, message: str):
-    metrics.INVOICE_AUTH_FAILURES.labels(code=code).inc()
+    metrics.DOCS_AUTH_FAILURES.labels(code=code).inc()
     return api_error(status, code, message)
 
 
@@ -106,7 +106,7 @@ def precheck(request: Request) -> Precheck:
         raise _deny(401, "SIGNATURE_REQUIRED", "header X-Timestamp dan X-Signature wajib")
     if not _TS.match(ts):
         raise _deny(401, "TIMESTAMP_OUT_OF_WINDOW", "X-Timestamp harus Unix detik (angka saja)")
-    window = get_settings().invoice_signature_window_sec
+    window = get_settings().docs_signature_window_sec
     if abs(time.time() - int(ts)) > window:
         raise _deny(401, "TIMESTAMP_OUT_OF_WINDOW", f"X-Timestamp di luar ±{window} detik dari jam server")
     if not _SIG.match(sig):
@@ -137,6 +137,6 @@ def verify(request: Request, body: bytes, pre: Precheck | None = None) -> Signed
     if not t.enabled:
         raise _deny(409, "TENANT_DISABLED", f"tenant {p.tenant_code} sedang dinonaktifkan")
     request.state.principal = p
-    window = get_settings().invoice_signature_window_sec
+    window = get_settings().docs_signature_window_sec
     return SignedCaller(p, p.tenant_code, secret, hashlib.sha256(expected.encode()).hexdigest(),
                         datetime.fromtimestamp(int(ts) + window + 5, UTC))

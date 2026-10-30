@@ -154,26 +154,27 @@ def run(check_silo: bool = True) -> dict[str, Any]:
     except Exception as e:  # OCR opsional
         out.append(_item("Worker", "OCR (Tesseract)", "warn", str(e)[:200]))
 
-    # ---- modul dokumen invoice (ADR 0008): hanya ok/warn, tidak menghalangi go-live fungsi foto
-    if s.invoice_enabled:
-        from engine.invoice.process import engine_versions
+    # ---- modul dokumen (ADR 0008/0009): hanya ok/warn, tidak menghalangi go-live fungsi foto
+    if s.docs_enabled:
+        from engine.documents.process import engine_versions
 
         v = engine_versions()
-        out.append(_item("Dokumen invoice", "Pembaca PDF (PDFium) & OCR", "ok" if v.get("pdfium") and
+        out.append(_item("Modul dokumen", "Pembaca PDF (PDFium) & OCR", "ok" if v.get("pdfium") and
                          v.get("tesserocr") else "warn", ", ".join(f"{k} {x}" for k, x in v.items()),
                          "Pakai image engine terbaru (pypdfium2 + Tesseract)."))
         from sqlalchemy import func, select
 
-        from engine.invoice.models import ApiKeySecret
+        from engine.documents.models import ApiKeySecret
 
         with session_scope() as sess:
             n = sess.scalar(select(func.count()).select_from(ApiKeySecret)) or 0
-        out.append(_item("Dokumen invoice", "API key ber-api_secret", "ok" if n else "warn", f"{n} key",
-                         "pqe create-key --name ictnotes-prod --role app --tenant ictnotes --with-secret"))
-        out.append(_item("Dokumen invoice", "QR e-Faktur", "ok" if s.invoice_efaktur_qr == "off" else "warn",
+        out.append(_item("Modul dokumen", "API key ber-api_secret", "ok" if n else "warn", f"{n} key",
+                         "pqe create-client --code <kode-aplikasi> --name \"Nama Aplikasi\""))
+        out.append(_item("Modul dokumen", "Plugin invoice: QR e-Faktur",
+                         "ok" if s.invoice_efaktur_qr == "off" else "warn",
                          s.invoice_efaktur_qr, "Aktifkan (decode/lookup) hanya setelah izin TBD-15 dikonfirmasi."))
     else:
-        out.append(_item("Dokumen invoice", "Modul", "ok", "dimatikan (PQE_INVOICE_ENABLED=false)"))
+        out.append(_item("Modul dokumen", "Modul", "ok", "dimatikan (PQE_DOCS_ENABLED=false)"))
 
     counts = {k: sum(1 for i in out if i["status"] == k) for k in ("ok", "warn", "fail")}
     return {"ready": counts["fail"] == 0, "counts": counts, "checks": out}

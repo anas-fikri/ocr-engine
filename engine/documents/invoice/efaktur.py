@@ -21,8 +21,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from engine.invoice import parsing as P
-from engine.invoice.plugins import Field
+from engine.documents import parsing as P
+from engine.documents.plugins import Field
 from engine.settings import get_settings
 
 log = logging.getLogger(__name__)
@@ -119,3 +119,23 @@ def extract(qr_texts: list[str], client: httpx.Client | None = None) -> tuple[di
                 fields["vendor_name"] = Field(x["namaPenjual"], QR_CONF, "efaktur_qr", "qr")
         return fields, info
     return {}, {"mode": m, "qr_found": bool(qr_texts)}
+
+
+def merge(fields: dict, qr_fields: dict) -> list[dict[str, Any]]:
+    """Gabungkan field QR e-Faktur dengan hasil baca dokumen. Isi QR dikendalikan pembuat dokumen (bisa QR faktur
+    lain), jadi QR tidak menimpa nilai tercetak yang berbeda: nilai sama → confidence naik; field kosong → diisi dari
+    QR (0,9); berbeda → nilai tercetak dipertahankan, confidence turun, dilaporkan EFAKTUR_MISMATCH."""
+    issues = []
+    for name, q in qr_fields.items():
+        cur = fields.get(name)
+        if cur is None:
+            q.confidence = 0.9
+            fields[name] = q
+        elif P.norm_text(str(cur.value)) == P.norm_text(str(q.value)):
+            cur.confidence = max(cur.confidence, q.confidence)
+            cur.method, cur.source = "qr", q.source
+        else:
+            cur.confidence *= 0.6
+            issues.append({"code": "EFAKTUR_MISMATCH", "fields": [name],
+                           "message": f"nilai di QR e-Faktur ({q.value}) berbeda dengan yang tercetak"})
+    return issues

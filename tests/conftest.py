@@ -133,7 +133,7 @@ profiles:
 
 
 class SignedClient:
-    """Klien uji yang menandatangani request seperti adapter ICTNotes (X-Api-Key + X-Timestamp + X-Signature)."""
+    """Klien uji yang menandatangani request seperti client modul dokumen (X-Api-Key + X-Timestamp + X-Signature)."""
 
     def __init__(self, client, key: str, secret: str) -> None:
         self.c, self.key, self.secret = client, key, secret
@@ -141,7 +141,7 @@ class SignedClient:
     def headers(self, method: str, path: str, body: bytes, ts: int | None = None) -> dict[str, str]:
         import time
 
-        from engine.invoice.signing import sign
+        from engine.documents.signing import sign
 
         ts_s = str(int(time.time()) if ts is None else ts)
         return {"X-Api-Key": self.key, "X-Timestamp": ts_s, "X-Signature": sign(self.secret, ts_s, method, path, body)}
@@ -173,8 +173,8 @@ def invoice(env, client, monkeypatch):
 
     from engine import settings
     from engine.api.auth import create_api_key
-    from engine.invoice import plugins
-    from engine.invoice.signing import set_api_secret
+    from engine.documents import plugins
+    from engine.documents.signing import set_api_secret
     from engine.tenants import save_tenant
 
     monkeypatch.setenv("PQE_SECRET_KEY", "test-secret-key-for-invoice")
@@ -192,7 +192,7 @@ def invoice(env, client, monkeypatch):
 @pytest.fixture(scope="session")
 def invoice_docs():
     """Invoice sintetis (tanpa data nyata) dipakai bersama antar test."""
-    from engine.invoice.synth import Line, SynthInvoice, make_pdf, scan_of
+    from engine.documents.invoice.synth import Line, SynthInvoice, make_pdf, scan_of
 
     std = make_pdf(SynthInvoice())
     english = SynthInvoice(layout="english", vendor_name="Contoh Global Ltd", invoice_number="CG-2026-0007",

@@ -1,4 +1,4 @@
-"""Tabel modul invoice. Semua tabel baru: tabel foto POD tidak diubah (dibuat otomatis oleh init_db)."""
+"""Tabel modul dokumen. Semua tabel baru: tabel foto POD tidak diubah (dibuat otomatis oleh init_db)."""
 
 from __future__ import annotations
 
@@ -19,18 +19,18 @@ class ApiKeySecret(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
-class InvoiceJob(Base):
-    __tablename__ = "invoice_jobs"
+class DocumentJob(Base):
+    __tablename__ = "document_jobs"
     __table_args__ = (
-        Index("ix_invoice_job_claim", "status", "run_after"),
-        Index("ix_invoice_job_tenant", "tenant_code", "created_at"),
-        Index("ix_invoice_job_callback", "callback_status", "callback_next_at"),
+        Index("ix_document_job_claim", "status", "run_after"),
+        Index("ix_document_job_tenant", "tenant_code", "created_at"),
+        Index("ix_document_job_callback", "callback_status", "callback_next_at"),
     )
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     tenant_code: Mapped[str] = mapped_column(String(64))
     key_id: Mapped[str] = mapped_column(String(32))  # API key pembuat job (secret callback)
     document_type: Mapped[str] = mapped_column(String(50))
-    template_hint: Mapped[str | None] = mapped_column(String(32))
+    template_hint: Mapped[str | None] = mapped_column(String(64))
     filename: Mapped[str | None] = mapped_column(String(200))
     media_type: Mapped[str] = mapped_column(String(50))
     size_bytes: Mapped[int] = mapped_column(Integer)
@@ -55,33 +55,33 @@ class InvoiceJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class InvoiceFile(Base):
-    """File inbox. Dipisah dari invoice_jobs agar polling status tidak membaca blob; dihapus setelah retensi."""
+class DocumentFile(Base):
+    """File inbox. Dipisah dari document_jobs agar polling status tidak membaca blob; dihapus setelah retensi."""
 
-    __tablename__ = "invoice_files"
+    __tablename__ = "document_files"
     job_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     content: Mapped[bytes] = mapped_column(LargeBinary)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
-class InvoiceTemplate(Base):
-    __tablename__ = "invoice_templates"
-    __table_args__ = (UniqueConstraint("tenant_code", "document_type", "issuer_npwp", name="uq_invoice_template"),)
+class DocumentTemplate(Base):
+    __tablename__ = "document_templates"
+    __table_args__ = (UniqueConstraint("tenant_code", "document_type", "issuer_id", name="uq_document_template"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_code: Mapped[str] = mapped_column(String(64))
     document_type: Mapped[str] = mapped_column(String(50))
-    issuer_npwp: Mapped[str] = mapped_column(String(16))
+    issuer_id: Mapped[str] = mapped_column(String(64))  # dinormalisasi plugin (invoice: NPWP digit saja)
     rules: Mapped[dict] = mapped_column(JSONType, default=dict)  # {field: aturan} lihat templates.py
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
-class InvoiceCorrection(Base):
+class DocumentCorrection(Base):
     """Riwayat koreksi pengguna. Unique per (tenant, idempotency_key): setiap key diterapkan paling banyak sekali."""
 
-    __tablename__ = "invoice_corrections"
-    __table_args__ = (UniqueConstraint("tenant_code", "idempotency_key", name="uq_invoice_correction_key"),)
+    __tablename__ = "document_corrections"
+    __table_args__ = (UniqueConstraint("tenant_code", "idempotency_key", name="uq_document_correction_key"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_code: Mapped[str] = mapped_column(String(64))
     idempotency_key: Mapped[str] = mapped_column(String(128))
@@ -95,11 +95,11 @@ class InvoiceCorrection(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
-class InvoiceIdempotency(Base):
+class DocumentIdempotency(Base):
     """Respons POST /v1/templates per header Idempotency-Key (request diulang → respons yang sama)."""
 
-    __tablename__ = "invoice_idempotency"
-    __table_args__ = (UniqueConstraint("tenant_code", "key", name="uq_invoice_idempotency"),)
+    __tablename__ = "document_idempotency"
+    __table_args__ = (UniqueConstraint("tenant_code", "key", name="uq_document_idempotency"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_code: Mapped[str] = mapped_column(String(64))
     key: Mapped[str] = mapped_column(String(128))
@@ -108,11 +108,11 @@ class InvoiceIdempotency(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
-class InvoiceNonce(Base):
+class DocumentNonce(Base):
     """Tanda tangan POST /v1/jobs yang sudah diterima, sampai jendela waktunya lewat. Request yang sama persis
     (replay atau retry jaringan) mengembalikan job yang sama, bukan job baru."""
 
-    __tablename__ = "invoice_nonces"
+    __tablename__ = "document_nonces"
     signature_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_code: Mapped[str] = mapped_column(String(64))
     job_id: Mapped[str] = mapped_column(String(32))
