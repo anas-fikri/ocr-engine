@@ -617,9 +617,9 @@ Koreksi pengguna → engine belajar/mengupdate template issuer di namespace send
 ```
 
 - `job_id` wajib, milik namespace sendiri, status `succeeded` (`404 JOB_NOT_FOUND` / `409 JOB_NOT_READY`).
-- `issuer.npwp` harus NPWP **penjual** job itu: `template_hint` job, `vendor_npwp` hasil job, atau `vendor_npwp` yang
-  dikoreksi di request yang sama (`422 ISSUER_MISMATCH`), dan tidak boleh hanya muncul di identitas pembeli
-  (`422 ISSUER_IS_BUYER`). Template dipakai untuk job yang `template_hint`-nya atau `vendor_npwp`-nya sama; NPWP
+- `issuer.npwp` harus NPWP **penjual** yang tercetak di dokumen job itu (atau `template_hint` job bila dokumen tidak
+  mencetak NPWP penjual sama sekali), selain itu `422 ISSUER_MISMATCH`; NPWP di identitas pembeli →
+  `422 ISSUER_IS_BUYER`. Template dipakai untuk job yang `template_hint`-nya atau `vendor_npwp`-nya sama; NPWP
   pembeli tidak pernah memilih template.
 - Satu field dipelajari sekali per request (koreksi terakhir untuk field itu; sebelumnya `reason: SUPERSEDED`).
 - `idempotency_key` per koreksi (16-128 karakter `[A-Za-z0-9_-]`) diterapkan **paling banyak sekali** per namespace;

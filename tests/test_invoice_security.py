@@ -354,7 +354,7 @@ def test_template_for_buyer_npwp_rejected(invoice, invoice_docs):
 
     _, payload = _learn_custom(invoice, invoice_docs)
     r = invoice.a.post_json("/v1/templates", dict(payload, issuer={"npwp": "02.345.678.9-012.000"}))
-    assert r.status_code == 422 and r.json()["error"]["code"] == "ISSUER_MISMATCH"
+    assert r.status_code == 422 and r.json()["error"]["code"] == "ISSUER_IS_BUYER"
     r = invoice.a.post_json("/v1/templates", dict(payload, issuer={"npwp": "099999999999000"}))
     assert r.status_code == 422 and r.json()["error"]["code"] == "ISSUER_MISMATCH"
 
@@ -471,3 +471,33 @@ def test_pdf_header_must_be_at_start():
     assert detect_media_type(b"%PDF-1.7\n...") == "application/pdf"
     assert detect_media_type(b"\xef\xbb\xbf%PDF-1.7") == "application/pdf"
     assert detect_media_type(b"<html>" + b" " * 100 + b"%PDF-1.7") is None
+
+
+def test_issuer_must_be_printed_seller(invoice, invoice_docs):
+    """Audit putaran 2 (N1): koreksi vendor_npwp / template_hint lain tidak membuka template untuk NPWP yang tidak
+    tercetak sebagai penjual di dokumen."""
+    from tests.test_invoice_api import _learn_custom, corr_key, work
+
+    jid, payload = _learn_custom(invoice, invoice_docs)
+    fake = "099999999999000"
+    c = {"field": "vendor_npwp", "extracted": "012345678901000", "corrected": fake,
+         "idempotency_key": corr_key(jid, "vendor_npwp", "012345678901000", fake)}
+    r = invoice.a.post_json("/v1/templates", dict(payload, issuer={"npwp": fake}, corrections=[c]))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "ISSUER_MISMATCH"
+    jid2 = invoice.a.post_job(invoice_docs["custom_pdf"], template_hint="08.888.888.8-888.000").json()["job_id"]
+    work()
+    r = invoice.a.post_json("/v1/templates", dict(payload, job_id=jid2, issuer={"npwp": "088888888888000"}))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "ISSUER_MISMATCH"
+
+
+def test_npwp_candidates_linear_per_row():
+    """Audit putaran 2 (N2): ribuan NPWP polos di satu baris tidak membuat ekstraksi kuadratik."""
+    from engine.invoice.document import Document
+    from engine.invoice.extract import InvoiceExtractor
+
+    lines = [{"text": "NPWP 0123456789012345" if i == 0 else "0123456789012345",
+              "bbox": [i / 4000, 0.5, i / 4000 + 0.0002, 0.51], "conf": 0.99} for i in range(4000)]
+    doc = Document.from_read({"pages": [{"index": 0, "source": "pdf_text", "lines": lines}]})
+    t0 = time.perf_counter()
+    InvoiceExtractor().extract(doc, None, None)
+    assert time.perf_counter() - t0 < 2.0

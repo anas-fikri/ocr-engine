@@ -219,15 +219,17 @@ def _template_body(t: InvoiceTemplate) -> dict[str, Any]:
 def _check_issuer(job: InvoiceJob, doc: Document, npwp: str, req: TemplateRequest) -> None:
     """Template hanya untuk penjual dokumen ini: NPWP issuer harus template_hint job, vendor_npwp hasil job, atau
     vendor_npwp yang dikoreksi di request ini, dan tidak boleh NPWP di blok identitas pembeli."""
-    extracted = ((job.result or {}).get("fields") or {}).get("vendor_npwp", {}).get("value")
-    corrected = [P.normalize_npwp(c.corrected) for c in req.corrections
-                 if c.field == "vendor_npwp" and c.corrected is not None]
-    if npwp not in {job.template_hint, extracted, *corrected}:
-        raise api_error(422, "ISSUER_MISMATCH", "issuer.npwp bukan NPWP penjual job ini (template_hint, vendor_npwp "
-                                                "hasil job, atau koreksi vendor_npwp di request yang sama)")
     cands = npwp_candidates(doc)
-    if cands and all(buyer for v, _, _, buyer in cands if v == npwp) and any(v == npwp for v, *_ in cands):
+    seller = {v for v, _, _, buyer in cands if not buyer}
+    buyer = {v for v, _, _, b in cands if b}
+    if npwp in seller:
+        return
+    if npwp in buyer:
         raise api_error(422, "ISSUER_IS_BUYER", "issuer.npwp hanya muncul di identitas pembeli dokumen ini")
+    if npwp == job.template_hint and not seller:  # vendor tanpa NPWP tercetak: percaya hint saat job dikirim
+        return
+    raise api_error(422, "ISSUER_MISMATCH", "issuer.npwp harus NPWP penjual yang tercetak di dokumen job ini "
+                                            "(atau template_hint job bila dokumen tidak mencetak NPWP penjual)")
 
 
 def _apply_corrections(tenant: str, req: TemplateRequest, npwp: str, actor: str) -> dict[str, Any]:

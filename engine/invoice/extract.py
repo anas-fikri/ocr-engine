@@ -192,16 +192,15 @@ def npwp_candidates(doc: Document) -> list[tuple[str, Block, bool, bool]]:
     bukan kandidat."""
     buyer = buyer_zone(doc)
     out = []
-    for b in doc.blocks:
-        ms = P.find_npwp(b.text)
-        if not ms:
-            continue
-        labeled = bool(re.search(r"npwp", b.text, re.I) or any(re.search(r"npwp", o.text, re.I)
-                                                               for o in doc.left_of(b)))
-        for m in ms:
-            formatted = not m.raw.isdigit()
-            if labeled or formatted:
-                out.append((m.value, b, labeled, b.id in buyer))
+    for row in doc.rows():  # satu kali jalan per baris: label "NPWP" di kiri berlaku untuk blok di kanannya
+        label_seen = False
+        for b in row:
+            has_label = bool(re.search(r"npwp", P._cut(b.text), re.I))
+            labeled, label_seen = has_label or label_seen, label_seen or has_label
+            for m in P.find_npwp(b.text):
+                formatted = not m.raw.isdigit()
+                if labeled or formatted:
+                    out.append((m.value, b, labeled, b.id in buyer))
     return sorted(out, key=lambda c: (c[1].page, c[1].bbox[1]))
 
 
@@ -256,10 +255,8 @@ def _currency(doc: Document) -> Field | None:
 
 
 def _period(doc: Document) -> tuple[Field | None, Field | None]:
-    for b in doc.blocks:
-        m = PERIOD_LABEL.search(P._cut(b.text))
-        if not m:
-            continue
+    hits = [(b, m) for b in doc.blocks if (m := PERIOD_LABEL.search(P._cut(b.text)))][:MAX_LABEL_HITS]
+    for b, m in hits:
         segs = [(b, _remainder(b.text, m.end()))] + [(o, o.text) for o in doc.right_of(b)[:2]]
         for src, text in segs:
             conf = min(b.conf, src.conf) * C_SAME_BLOCK
