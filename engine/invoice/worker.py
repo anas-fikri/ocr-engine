@@ -27,14 +27,18 @@ def callback_hosts() -> set[str]:
 
 
 def callback_allowed(url: str) -> bool:
-    """Cegah SSRF: hanya http(s) ke host yang ada di PQE_INVOICE_CALLBACK_HOSTS, tanpa user:password."""
+    """Cegah SSRF: hanya http(s) ke host di PQE_INVOICE_CALLBACK_HOSTS, tanpa user:password. Entri `host` = port
+    bawaan (80/443) saja; port lain harus ditulis eksplisit `host:port`."""
     try:
         u = urlsplit(url)
-        _ = u.port  # port tidak valid → ValueError
+        port = u.port  # port tidak valid → ValueError
     except ValueError:
         return False
-    return (u.scheme in ("http", "https") and bool(u.hostname) and u.hostname.lower() in callback_hosts()
-            and not u.username and not u.password and len(url) <= 1000)
+    if u.scheme not in ("http", "https") or not u.hostname or u.username or u.password or len(url) > 1000:
+        return False
+    host = u.hostname.lower()
+    allowed = callback_hosts()
+    return (host in allowed and port in (None, 80, 443)) or (port is not None and f"{host}:{port}" in allowed)
 
 
 def deliver_callbacks(limit: int = 20, client: httpx.Client | None = None) -> int:

@@ -15,8 +15,8 @@ MONTHS = {
     "mar": 3, "maret": 3, "march": 3, "apr": 4, "april": 4, "mei": 5, "may": 5,
     "jun": 6, "juni": 6, "june": 6, "jul": 7, "juli": 7, "july": 7, "agu": 8, "agt": 8, "ags": 8, "agus": 8,
     "agustus": 8, "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9, "okt": 10, "oktober": 10,
-    "oct": 10, "october": 10, "nov": 11, "nopember": 11, "november": 11, "des": 12, "desember": 12, "dec": 12,
-    "december": 12,
+    "oct": 10, "october": 10, "nov": 11, "nop": 11, "nopember": 11, "november": 11, "des": 12, "desember": 12,
+    "dec": 12, "december": 12,
 }
 _MONTH_RE = "|".join(sorted(MONTHS, key=len, reverse=True))
 
@@ -120,10 +120,14 @@ def money_from_raw(raw: str) -> str | None:
     elif dots or commas:
         sep = "." if dots else ","
         parts = s.split(sep)
-        if len(parts) > 2 or len(parts[-1]) == 3:  # 1.234.567 / 1,500 → pemisah ribuan
+        if len(parts[-1]) == 3:  # 1.234.567 / 1,500 → pemisah ribuan
             s = s.replace(sep, "")
-        else:  # 1500,5 / 12.75 → desimal
+        elif len(parts) > 2 and all(len(p) == 3 for p in parts[1:-1]):  # 1.234.56 → ribuan + desimal terakhir
+            s = "".join(parts[:-1]) + "." + parts[-1]
+        elif len(parts) == 2:  # 1500,5 / 12.75 → desimal
             s = s.replace(sep, ".")
+        else:  # pola pemisah tidak wajar: bukan nominal
+            return None
     if len(s) > 22:  # > 10^18: bukan nominal invoice (dan melewati presisi Decimal bawaan)
         return None
     try:
@@ -230,7 +234,8 @@ def find_doc_numbers(text: str) -> list[Match]:
     out = []
     for m in _DOCNO.finditer(text):
         tok = m[1]
-        if any(c.isdigit() for c in tok) and not find_dates(tok):
+        whole_date = any(d.start == 0 and d.end == len(tok) for d in find_dates(tok))
+        if any(c.isdigit() for c in tok) and not whole_date:  # "INV-15-10-26" nomor dokumen, "15-10-26" tanggal
             out.append(Match(tok, m.start(), m.end(), tok))
     return out
 

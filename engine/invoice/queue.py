@@ -7,7 +7,7 @@ from datetime import timedelta
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from engine.db import utcnow
+from engine.db import as_aware, utcnow
 from engine.invoice.models import InvoiceJob
 from engine.jobs import WORKER_ID
 from engine.settings import get_settings
@@ -16,7 +16,7 @@ MAX_ATTEMPTS = 3
 # error pembacaan dokumen yang akan sama lagi jika diulang (bom, terenkripsi, terlalu besar): tidak di-retry
 PERMANENT = {"UNSUPPORTED_MEDIA_TYPE", "UNREADABLE_FILE", "PDF_ENCRYPTED", "TOO_MANY_PAGES", "PAGE_TOO_LARGE",
              "IMAGE_TOO_LARGE", "RESOURCE_LIMIT", "PROCESSING_TIMEOUT", "FILE_EXPIRED", "OCR_UNAVAILABLE",
-             "UNSUPPORTED_DOCUMENT_TYPE"}
+             "UNSUPPORTED_DOCUMENT_TYPE", "READ_ERROR"}
 
 
 def pending_count(s: Session, tenant: str) -> int:
@@ -25,9 +25,22 @@ def pending_count(s: Session, tenant: str) -> int:
 
 
 def claim(s: Session) -> InvoiceJob | None:
+    """Ambil job berikutnya secara adil antar-namespace: namespace yang paling lama tidak dilayani dulu, lalu job
+    tertua di namespace itu. Satu namespace yang mengantre ratusan dokumen tidak membuat namespace lain menunggu."""
     now = utcnow()
-    job = s.scalar(select(InvoiceJob).where(InvoiceJob.status == "queued", InvoiceJob.run_after <= now)
-                   .order_by(InvoiceJob.created_at).limit(1).with_for_update(skip_locked=True))
+    ready = (InvoiceJob.status == "queued", InvoiceJob.run_after <= now)
+    tenants = s.scalars(select(InvoiceJob.tenant_code).where(*ready).distinct().limit(100)).all()
+    served = dict(s.execute(select(InvoiceJob.tenant_code, func.max(InvoiceJob.started_at))
+                            .where(InvoiceJob.tenant_code.in_(tenants)).group_by(InvoiceJob.tenant_code)).all())
+    order = sorted(tenants, key=lambda t: (served.get(t) is not None, as_aware(served.get(t)) or now))
+    job = None
+    for t in order + [None]:  # None = cadangan global (semua kandidat sedang dikunci worker lain)
+        q = select(InvoiceJob).where(*ready)
+        if t is not None:
+            q = q.where(InvoiceJob.tenant_code == t)
+        job = s.scalar(q.order_by(InvoiceJob.created_at).limit(1).with_for_update(skip_locked=True))
+        if job is not None:
+            break
     if job is None:
         return None
     job.status, job.locked_at, job.locked_by = "running", now, WORKER_ID

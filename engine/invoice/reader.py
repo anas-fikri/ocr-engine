@@ -21,6 +21,8 @@ from PIL import Image
 MAX_PAGE_POINTS = 5000  # sisi halaman PDF maks. (pt, 1/72 inci): ±176 cm
 MAX_RENDER_PIXELS = 40_000_000
 MIN_TEXT_CHARS = 20
+MAX_RECTS_PER_PAGE = 5000  # potongan teks PDF per halaman (invoice wajar < 1.000)
+MAX_LINES_TOTAL = 8000  # baris yang dikirim ke proses induk (keluaran sandbox tetap kecil)
 MIN_ALNUM_RATIO = 0.5
 OCR_MIN_SIDE = 1600  # teks kecil: perbesar dulu supaya tinggi huruf cukup untuk Tesseract
 OCR_MAX_SIDE = 4200
@@ -47,12 +49,12 @@ class Options:
 
 def detect_media_type(data: bytes) -> str | None:
     """Tipe file dari magic bytes (bukan nama file / Content-Type yang bisa dipalsukan)."""
-    head = data[:1024]
-    if head.startswith(b"\xff\xd8\xff"):
+    if data.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
-    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
-    if b"%PDF-" in head:  # spesifikasi PDF mengizinkan sampah sebelum header di 1 KB pertama
+    # header PDF harus di awal (boleh didahului BOM/spasi); "%PDF-" di tengah 1 KB pertama ditolak (file polyglot)
+    if data[:16].lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"%PDF-"):
         return "application/pdf"
     return None
 
@@ -225,7 +227,7 @@ def _pdf_text_lines(page) -> tuple[list[dict[str, Any]], str]:
     tp = page.get_textpage()
     try:
         segs = []
-        for i in range(min(tp.count_rects(), 20_000)):
+        for i in range(min(tp.count_rects(), MAX_RECTS_PER_PAGE)):
             x0, b, x1, t = tp.get_rect(i)
             text = " ".join((tp.get_text_bounded(x0, b, x1, t) or "").split())
             if not text:
@@ -329,5 +331,9 @@ def read_document(data: bytes, opt: Options) -> dict[str, Any]:
         raise ReadError("UNSUPPORTED_MEDIA_TYPE", "hanya PDF, JPEG, dan PNG")
     os.environ.setdefault("OMP_THREAD_LIMIT", "1")
     out = read_pdf(data, opt) if kind == "application/pdf" else read_image(data, opt)
+    budget = MAX_LINES_TOTAL
+    for p in out["pages"]:
+        p["lines"] = p["lines"][:max(0, budget)]
+        budget -= len(p["lines"])
     out["versions"] = versions()
     return out

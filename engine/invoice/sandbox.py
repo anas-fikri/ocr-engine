@@ -64,16 +64,16 @@ def run(data: bytes, opt: Options, *, memory_mb: int, timeout_sec: int) -> dict[
             try:
                 res = json.loads(out)
                 if not res.get("ok"):
-                    raise SandboxError(res.get("code", "PROCESSING_ERROR"), res.get("message", ""))
+                    raise SandboxError(res.get("code", "READ_ERROR"), res.get("message", ""))
             except ValueError:
                 pass
-        raise SandboxError("PROCESSING_ERROR", f"proses pembaca dokumen gagal (exit {proc.returncode})")
+        raise SandboxError("READ_ERROR", f"proses pembaca dokumen gagal (exit {proc.returncode})")
     try:
         res = json.loads(out)
     except ValueError as e:
-        raise SandboxError("PROCESSING_ERROR", "keluaran pembaca dokumen tidak valid") from e
+        raise SandboxError("READ_ERROR", "keluaran pembaca dokumen tidak valid") from e
     if not res.get("ok"):
-        raise SandboxError(res.get("code", "PROCESSING_ERROR"), res.get("message", ""))
+        raise SandboxError(res.get("code", "READ_ERROR"), res.get("message", ""))
     return res["document"]
 
 
@@ -112,6 +112,8 @@ def main() -> int:  # pragma: no cover - dijalankan di proses anak, diuji lewat 
         res = {"ok": False, "code": e.code, "message": str(e)}
     except MemoryError:
         res = {"ok": False, "code": "RESOURCE_LIMIT", "message": "dokumen melewati batas memori saat dibaca"}
+    except Exception as e:  # bug/format aneh di PDFium/Pillow: gagal permanen, tanpa detail internal
+        res = {"ok": False, "code": "READ_ERROR", "message": f"dokumen tidak bisa dibaca ({type(e).__name__})"}
     sys.stdout.write(json.dumps(res, ensure_ascii=False))
     sys.stdout.flush()
     return 0

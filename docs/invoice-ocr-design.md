@@ -37,7 +37,7 @@ Semua endpoint invoice wajib **API key + tanda tangan HMAC** (bagian 5.1). Names
 | `POST` | `/v1/jobs` | Kirim file (PDF/JPEG/PNG) + `document_type` (+ `template_hint`, `callback_url` opsional). Membuat job async | `202 {"job_id", "status": "queued"}` |
 | `GET` | `/v1/jobs/{id}` | Status job; setelah selesai: `text`, `blocks` (koordinat), `fields` (+ confidence), `layer` | `200` |
 | `POST` | `/v1/templates` | Koreksi dari pengguna → engine belajar/mengupdate template issuer (idempotent) | `200` |
-| `GET` | `/v1/templates/{npwp}` | Lihat template issuer di namespace sendiri (debug/audit) | `200` |
+| `GET` | `/v1/templates/{document_type}/{npwp}` | Lihat template issuer di namespace sendiri (debug/audit) | `200` |
 | `GET` | `/healthz` | (diperluas) versi engine + versi Tesseract/PDFium + status modul invoice | `200` |
 
 Status job: `queued` → `running` → `succeeded` | `failed`. Error: `{"error": {"code", "message"}}`.
@@ -131,7 +131,9 @@ scan). Satu dokumen boleh campuran.
 | `decode` | QR dibaca **lokal saja**; dari URL QR diambil NPWP penjual & nomor faktur. Tidak ada koneksi keluar |
 | `lookup` | Seperti `decode`, lalu URL validasi DJP dipanggil untuk NPWP penjual, nama, DPP, PPN, tanggal faktur. Hanya host di `PQE_INVOICE_EFAKTUR_HOSTS`, HTTPS, tanpa redirect, timeout 10 detik, respons ≤ 256 KB, XML di-parse dengan `defusedxml` |
 
-Field dari QR (confidence 0,99) menimpa hasil OCR untuk `vendor_npwp`, `dpp`, `vat_amount`, `invoice_date`. Format
+Isi QR dikendalikan pembuat dokumen (bisa QR milik faktur lain), jadi QR **tidak** menimpa nilai tercetak yang
+berbeda: sama → confidence 0,99; field kosong → diisi dari QR (0,9); berbeda → nilai tercetak dipertahankan,
+confidence turun, `EFAKTUR_MISMATCH`. Format
 respons DJP diasumsikan format e-Faktur 3.x (`resValidateFakturPm`); **belum diverifikasi ke DJP** dan format Coretax
 bisa berbeda. Aktifkan hanya setelah izin TBD-15 dikonfirmasi dan diuji dengan faktur asli di server.
 
@@ -151,8 +153,11 @@ Template per **(namespace, document_type, NPWP issuer)**. Setiap aturan field be
 - posisi relatif: `same_line` (nilai di kanan label) atau `offset` (jarak pusat nilai dari pusat label, koordinat
   0-1), plus `value_box` (posisi absolut) sebagai cadangan bila label tidak ditemukan.
 
-Klien **tidak pernah** mengirim regex. Template dipakai bila `template_hint` cocok, atau bila salah satu NPWP di
-dokumen cocok dengan template yang ada di namespace yang sama.
+Klien **tidak pernah** mengirim regex. Template dipakai bila `template_hint` cocok, atau bila `vendor_npwp` hasil
+aturan umum cocok (bukan sembarang NPWP di dokumen: NPWP pembeli ada di semua invoice masuk). Anchor harus label
+sungguhan (minimal 3 huruf, bukan "Rp"/kode mata uang). Hasil yang hanya berdasar posisi (`value_box`, tanpa anchor)
+hanya mengisi field yang kosong. Template hanya bisa dibuat untuk NPWP penjual job (`ISSUER_MISMATCH`,
+`ISSUER_IS_BUYER`).
 
 **Belajar dari koreksi** (`POST /v1/templates`): untuk setiap koreksi, engine mencari nilai `corrected` di blok teks
 hasil job (`job_id`, harus milik namespace yang sama). Jika ketemu, label di kiri/atasnya menjadi anchor dan posisinya
@@ -222,7 +227,10 @@ X-Signature: hex(HMAC-SHA256(api_secret, timestamp + "\n" + METHOD + "\n" + path
 | A7 | Zip bom / gambar bom (PNG 1×1 → 60.000×60.000) | ZIP tidak diterima; dimensi gambar dicek dari header sebelum decode (`PQE_INVOICE_MAX_IMAGE_PIXELS`) | `test_image_pixel_bomb` |
 | A8 | Path traversal (`filename="../../etc/passwd"`) | Nama file tidak pernah dipakai sebagai path: file disimpan di database, nama hanya dicatat (basename, ≤ 200 karakter) | `test_filename_is_not_a_path` |
 | A9 | ReDoS lewat pola template | Klien tidak bisa mengirim regex. Pola template berasal dari daftar tetap; `shape` dibatasi 40 karakter dan diterjemahkan ke regex linear (kelas karakter + quantifier tetap). Teks yang dicocokkan dipotong per baris | `test_shape_regex_is_linear` |
-| A10 | DoS: banyak job / file besar | Ukuran upload ≤ `PQE_INVOICE_MAX_UPLOAD_MB` (dicek dari `Content-Length` sebelum dibaca dan saat streaming), antrean per namespace ≤ `PQE_INVOICE_MAX_PENDING_PER_TENANT` → `429 QUEUE_FULL`, worker invoice terpisah dengan prioritas CPU rendah | `test_upload_too_large`, `test_queue_full` |
+| A10b | DoS CPU lewat dokumen kecil berisi ribuan label | Maks. 4.000 blok per dokumen, 5.000 potongan teks per halaman, 30 hit per label, pencarian tetangga ber-indeks (bukan kuadratik); endpoint menjalankan kerja sinkron di threadpool (event loop foto tidak tertahan); belajar template sekali per field per request | `test_extraction_is_not_quadratic` |
+| A16 | Antrean dimonopoli satu namespace | Claim adil: namespace yang paling lama tidak dilayani lebih dulu | `test_fair_queue_between_namespaces` |
+| A17 | Template diracuni (NPWP pembeli / issuer lain / anchor "Rp") | Lihat 4.4 | `test_template_for_buyer_npwp_rejected`, `test_template_lookup_ignores_buyer_npwp`, `test_template_anchor_is_a_real_label` |
+| A10 | DoS: banyak job / file besar | API key & timestamp dicek sebelum body dibaca; ukuran upload ≤ `PQE_INVOICE_MAX_UPLOAD_MB` (dicek dari `Content-Length` sebelum dibaca dan saat streaming), antrean per namespace ≤ `PQE_INVOICE_MAX_PENDING_PER_TENANT` → `429 QUEUE_FULL`, worker invoice terpisah dengan prioritas CPU rendah | `test_upload_too_large`, `test_queue_full` |
 | A11 | Respons raksasa (klien membatasi 1 MB) | `text` dan `blocks` dipotong agar JSON ≤ ±900 KB (`truncated: true`) | `test_response_size_capped` |
 | A12 | SSRF lewat `callback_url` / QR e-Faktur | Callback hanya ke host di `PQE_INVOICE_CALLBACK_HOSTS` (kosong = callback ditolak); QR hanya ke host DJP di allowlist, HTTPS, tanpa redirect | `test_callback_host_not_allowed`, `test_efaktur_url_allowlist` |
 | A13 | XXE / XML bom dari respons e-Faktur | `defusedxml` + batas ukuran respons | `test_efaktur_xml_entities_rejected` |
@@ -232,6 +240,13 @@ X-Signature: hex(HMAC-SHA256(api_secret, timestamp + "\n" + METHOD + "\n" + path
 Risiko sisa (dicatat, belum dimitigasi): proses anak masih bisa membuka koneksi jaringan (perlu network namespace /
 seccomp di level container bila diinginkan); PDFium adalah kode C++ (bug memori PDFium dibatasi oleh isolasi proses,
 user non-root container, dan batas sumber daya, bukan dicegah).
+
+### 5.3 Verifikasi independen
+
+Setelah implementasi, subagent terpisah (tidak ikut menulis kode) menyerang modul ini: 14 temuan (5 high: template
+memilih nilai salah lewat anchor "Rp", template berbasis NPWP pembeli, ekstraksi kuadratik di proses induk, endpoint
+template memblokir event loop, beberapa layout menghasilkan nilai salah dengan confidence tinggi). Semua sudah
+diperbaiki dan punya test regresi (bagian "temuan audit independen" di `tests/test_invoice_*.py`).
 
 ## 6. Batas (bawaan)
 

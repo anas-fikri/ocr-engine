@@ -87,7 +87,7 @@ def test_template_learning_fixes_field(invoice_docs):
     first = read(invoice_docs["custom_pdf"])
     generic = extract(first)["fields"]
     missing = {"invoice_number": "INV/2026/10/0042", "due_date": "2026-11-14", "total": "14430000",
-               "bank_account": "1234567890"}
+               "bank_account": "1234567890", "invoice_date": "2026-10-15"}  # "Tgl. Cetak" bukan label tanggal invoice
     assert not set(missing) & set(generic)
     rules = {}
     for field, value in missing.items():

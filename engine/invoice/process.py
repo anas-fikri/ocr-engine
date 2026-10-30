@@ -62,6 +62,26 @@ def find_template(tenant: str, document_type: str, npwps: list[str]) -> dict[str
     return None
 
 
+def merge_qr(fields: dict, qr_fields: dict) -> list[dict[str, Any]]:
+    """Gabungkan field QR e-Faktur dengan hasil baca dokumen. Isi QR dikendalikan pembuat dokumen (bisa QR faktur
+    lain), jadi QR tidak menimpa nilai tercetak yang berbeda: nilai sama → confidence naik; field kosong → diisi dari
+    QR (0,9); berbeda → nilai tercetak dipertahankan, confidence turun, dilaporkan EFAKTUR_MISMATCH."""
+    issues = []
+    for name, q in qr_fields.items():
+        cur = fields.get(name)
+        if cur is None:
+            q.confidence = 0.9
+            fields[name] = q
+        elif P.norm_text(str(cur.value)) == P.norm_text(str(q.value)):
+            cur.confidence = max(cur.confidence, q.confidence)
+            cur.method, cur.source = "qr", q.source
+        else:
+            cur.confidence *= 0.6
+            issues.append({"code": "EFAKTUR_MISMATCH", "fields": [name],
+                           "message": f"nilai di QR e-Faktur ({q.value}) berbeda dengan yang tercetak"})
+    return issues
+
+
 def cap_result(result: dict[str, Any]) -> dict[str, Any]:
     """Potong text & blocks agar JSON hasil ≤ MAX_RESULT_BYTES (field tidak pernah dipotong)."""
     text, blocks = result["text"], result["blocks"]
@@ -80,12 +100,17 @@ def build_result(doc: Document, document_type: str, hint: str | None, tenant: st
     ex = get_extractor(document_type)
     if ex is None:
         raise sandbox.SandboxError("UNSUPPORTED_DOCUMENT_TYPE", f"document_type {document_type} tidak terdaftar")
-    npwps = ([hint] if hint else []) + [m.value for b in doc.blocks for m in P.find_npwp(b.text)]  # type: ignore[misc]
+    # template dicari dari hint, lalu NPWP PENJUAL hasil aturan umum. Bukan semua NPWP di dokumen: NPWP pembeli
+    # (perusahaan sendiri, ada di semua invoice masuk) akan membuat satu template dipakai untuk semua vendor.
+    fields = ex.extract(doc, None, hint)
+    vendor = fields.get("vendor_npwp")
+    npwps = [n for n in (hint, vendor.value if vendor else None) if n]
     template = find_template(tenant, document_type, list(dict.fromkeys(npwps)))
-    fields = ex.extract(doc, template, hint)
+    if template:
+        fields = ex.extract(doc, template, hint)
     qr_fields, qr_info = efaktur.extract(doc.qr)
-    fields.update(qr_fields)
-    issues = ex.validate(fields)
+    qr_issues = merge_qr(fields, qr_fields)
+    issues = ex.validate(fields) + qr_issues
     score = ex.detect(doc)
     if score < 0.2:
         issues.append({"code": "NOT_LIKELY_DOCUMENT_TYPE", "fields": [],
@@ -95,7 +120,7 @@ def build_result(doc: Document, document_type: str, hint: str | None, tenant: st
     layers = list(sources)
     if qr_fields:
         layers.append("efaktur_qr")
-    if any(f.method == "template" for f in fields.values()):
+    if any(f.method in ("template", "position") for f in fields.values()):
         layers.append("template")
     result = {
         "document_type": document_type,

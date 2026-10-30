@@ -43,12 +43,13 @@ def allowed_hosts() -> set[str]:
 def parse_qr_url(text: str) -> dict[str, str] | None:
     """URL QR e-Faktur yang valid & host-nya diizinkan → {"url", "npwp", "nomor_faktur"}. Selain itu None."""
     try:
-        u = urlsplit(text.strip())
+        u = urlsplit(text.strip()[:2000])
+        port = u.port  # port tidak valid ("99999") → ValueError
     except ValueError:
         return None
     if u.scheme not in ("http", "https") or not u.hostname or u.hostname.lower() not in allowed_hosts():
         return None
-    if u.port not in (None, 80, 443) or u.username or u.password or u.query or u.fragment:
+    if port not in (None, 80, 443) or u.username or u.password or u.query or u.fragment:
         return None
     m = _PATH.match(u.path)
     if not m:

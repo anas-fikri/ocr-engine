@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -53,9 +54,13 @@ def set_api_secret(key_id: str, actor: str = "system") -> str:
 
 
 def get_api_secret(key_id: str) -> str | None:
+    """Secret milik key yang masih aktif (key dicabut → None: request & callback berhenti)."""
     with session_scope() as s:
         row = s.get(ApiKeySecret, key_id)
-        return secretbox.decrypt(row.secret_enc) if row else None
+        key = s.get(ApiKey, key_id)
+        if row is None or key is None or key.revoked_at is not None:
+            return None
+        return secretbox.decrypt(row.secret_enc)
 
 
 @dataclass
@@ -72,30 +77,56 @@ def _deny(status: int, code: str, message: str):
     return api_error(status, code, message)
 
 
-def verify(request: Request, body: bytes) -> SignedCaller:
-    """Verifikasi API key + tanda tangan. Dipanggil di awal setiap endpoint invoice (body sudah dibaca, dibatasi)."""
+_TS = re.compile(r"^\d{1,12}$")
+_SIG = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+@dataclass
+class Precheck:
+    principal: Principal
+    secret: str
+    timestamp: str
+    signature: str
+
+
+def signed_path(request: Request) -> str:
+    """Path persis seperti dikirim klien (belum di-decode, tanpa query): yang ditandatangani klien."""
+    raw = request.scope.get("raw_path")
+    return raw.decode("latin-1") if raw else request.url.path
+
+
+def precheck(request: Request) -> Precheck:
+    """Cek header, timestamp, API key, dan api_secret SEBELUM body dibaca: request tanpa key valid tidak bisa membuat
+    server membaca body 20 MB."""
     h = request.headers
     raw_key, ts, sig = h.get("x-api-key"), h.get("x-timestamp"), h.get("x-signature")
     if not raw_key:
         raise _deny(401, "UNAUTHORIZED", "API key wajib (header X-Api-Key)")
     if not ts or not sig:
         raise _deny(401, "SIGNATURE_REQUIRED", "header X-Timestamp dan X-Signature wajib")
+    if not _TS.match(ts):
+        raise _deny(401, "TIMESTAMP_OUT_OF_WINDOW", "X-Timestamp harus Unix detik (angka saja)")
+    window = get_settings().invoice_signature_window_sec
+    if abs(time.time() - int(ts)) > window:
+        raise _deny(401, "TIMESTAMP_OUT_OF_WINDOW", f"X-Timestamp di luar ±{window} detik dari jam server")
+    if not _SIG.match(sig):
+        raise _deny(401, "INVALID_SIGNATURE", "X-Signature harus hex HMAC-SHA256 (64 karakter)")
     p = _lookup(raw_key)
     if p is None:
         raise _deny(401, "UNAUTHORIZED", "API key tidak valid atau sudah dicabut")
-    try:
-        ts_int = int(ts)
-    except ValueError:
-        raise _deny(401, "TIMESTAMP_OUT_OF_WINDOW", "X-Timestamp harus Unix detik") from None
-    window = get_settings().invoice_signature_window_sec
-    if abs(time.time() - ts_int) > window:
-        raise _deny(401, "TIMESTAMP_OUT_OF_WINDOW", f"X-Timestamp di luar ±{window} detik dari jam server")
     secret = get_api_secret(p.key_id)
     if not secret:
         raise _deny(403, "SIGNATURE_NOT_ENABLED",
                     "API key ini belum punya api_secret (buat dengan: pqe create-key ... --with-secret)")
-    expected = sign(secret, ts, request.method, request.url.path, body)
-    if not hmac.compare_digest(expected, sig.strip().lower()):
+    return Precheck(p, secret, ts, sig.lower())
+
+
+def verify(request: Request, body: bytes, pre: Precheck | None = None) -> SignedCaller:
+    """Verifikasi tanda tangan atas body yang sudah dibaca (dibatasi), lalu role & tenant."""
+    pre = pre or precheck(request)
+    p, secret, ts = pre.principal, pre.secret, pre.timestamp
+    expected = sign(secret, ts, request.method, signed_path(request), body)
+    if not hmac.compare_digest(expected, pre.signature):
         raise _deny(401, "INVALID_SIGNATURE", "X-Signature tidak cocok")
     if p.role != "app" or not p.tenant_code:
         raise _deny(403, "FORBIDDEN", "endpoint dokumen hanya untuk API key role app yang terikat tenant")
@@ -106,6 +137,6 @@ def verify(request: Request, body: bytes) -> SignedCaller:
     if not t.enabled:
         raise _deny(409, "TENANT_DISABLED", f"tenant {p.tenant_code} sedang dinonaktifkan")
     request.state.principal = p
+    window = get_settings().invoice_signature_window_sec
     return SignedCaller(p, p.tenant_code, secret, hashlib.sha256(expected.encode()).hexdigest(),
-                        datetime.fromtimestamp(ts_int + window + 5, UTC))
-
+                        datetime.fromtimestamp(int(ts) + window + 5, UTC))

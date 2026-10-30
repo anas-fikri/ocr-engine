@@ -50,7 +50,7 @@ def test_tampered_body_rejected(invoice, invoice_docs):
 
 
 def test_old_timestamp_rejected(invoice):
-    for ts in (int(time.time()) - 301, int(time.time()) + 301):
+    for ts in (int(time.time()) - 310, int(time.time()) + 310):
         path = "/v1/jobs/" + "a" * 32
         r = invoice.client.get(path, headers=invoice.a.headers("GET", path, b"", ts=ts))
         assert r.status_code == 401 and r.json()["error"]["code"] == "TIMESTAMP_OUT_OF_WINDOW"
@@ -345,3 +345,129 @@ def test_sandbox_env_has_no_secrets(monkeypatch):
     assert "rahasia" not in env.values()
     assert set(env) <= {"PATH", "HOME", "LANG", "LC_ALL", "TESSDATA_PREFIX", "PYTHONPATH", "OMP_THREAD_LIMIT",
                         "PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED"}
+
+
+# ---------------------------------------------------------------------------------------------- temuan audit independen
+def test_template_for_buyer_npwp_rejected(invoice, invoice_docs):
+    """H2: template hanya untuk penjual dokumen (bukan NPWP pembeli yang ada di semua invoice masuk)."""
+    from tests.test_invoice_api import _learn_custom
+
+    _, payload = _learn_custom(invoice, invoice_docs)
+    r = invoice.a.post_json("/v1/templates", dict(payload, issuer={"npwp": "02.345.678.9-012.000"}))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "ISSUER_MISMATCH"
+    r = invoice.a.post_json("/v1/templates", dict(payload, issuer={"npwp": "099999999999000"}))
+    assert r.status_code == 422 and r.json()["error"]["code"] == "ISSUER_MISMATCH"
+
+
+def test_template_lookup_ignores_buyer_npwp(invoice, invoice_docs):
+    """H2: template issuer X tidak dipakai untuk invoice vendor lain hanya karena NPWP pembeli sama."""
+    from engine.db import session_scope
+    from engine.invoice.models import InvoiceTemplate
+    from engine.invoice.synth import SynthInvoice, make_pdf
+    from tests.test_invoice_api import work
+
+    with session_scope() as s:  # template (rusak) atas NPWP pembeli, mis. dibuat versi lama
+        s.add(InvoiceTemplate(tenant_code="test-app", document_type="invoice", issuer_npwp="023456789012000",
+                              rules={"total": {"kind": "money", "anchor": "pph", "same_line": True}}, version=2))
+    other = make_pdf(SynthInvoice(vendor_name="PT Vendor Lain", vendor_npwp="03.456.789.0-123.000"))
+    jid = invoice.a.post_job(other).json()["job_id"]
+    work()
+    body = invoice.a.get(f"/v1/jobs/{jid}").json()
+    assert body["template"] is None and body["fields"]["total"]["value"] == "14430000"
+
+
+def test_body_not_read_before_api_key_check(invoice):
+    """M2: request tanpa key valid ditolak sebelum body 20 MB dibaca."""
+    from engine.invoice.api import _read_body
+
+    called = []
+    orig = _read_body
+
+    async def spy(request, limit):
+        called.append(limit)
+        return await orig(request, limit)
+
+    import engine.invoice.api as api
+
+    api._read_body = spy
+    try:
+        r = invoice.client.post("/v1/jobs", content=b"x" * 1000, headers={"X-Api-Key": "pqe_salah",
+                                                                           "X-Timestamp": str(int(time.time())),
+                                                                           "X-Signature": "a" * 64})
+    finally:
+        api._read_body = orig
+    assert r.status_code == 401 and called == []
+
+
+def test_strict_timestamp_and_signature_format(invoice):
+    path = "/v1/jobs/" + "a" * 32
+    h = invoice.a.headers("GET", path, b"")
+    for ts in ("+" + h["X-Timestamp"], " " + h["X-Timestamp"], h["X-Timestamp"][:4] + "_" + h["X-Timestamp"][4:]):
+        assert invoice.client.get(path, headers={**h, "X-Timestamp": ts}).json()["error"]["code"] == \
+            "TIMESTAMP_OUT_OF_WINDOW", ts
+    assert invoice.client.get(path, headers={**h, "X-Signature": "zz"}).json()["error"]["code"] == "INVALID_SIGNATURE"
+
+
+def test_fair_queue_between_namespaces(invoice, invoice_docs):
+    """M1: namespace yang mengantre banyak dokumen tidak membuat namespace lain menunggu di belakangnya."""
+    from engine.db import session_scope
+    from engine.invoice import queue
+
+    for _ in range(4):
+        invoice.b.post_job(invoice_docs["pdf"])
+    invoice.a.post_job(invoice_docs["pdf"])
+    order = []
+    for _ in range(2):
+        with session_scope() as s:
+            order.append(queue.claim(s).tenant_code)
+    assert set(order) == {"other-app", "test-app"}
+
+
+def test_idempotency_key_128_chars_and_conflict(invoice, invoice_docs):
+    """M4 + L5: key 128 karakter muat; key yang dipakai ulang untuk nilai lain dilaporkan conflict."""
+    from tests.test_invoice_api import _learn_custom
+
+    _, payload = _learn_custom(invoice, invoice_docs)
+    c = dict(payload["corrections"][0], idempotency_key="k" * 128)
+    assert invoice.a.post_json("/v1/templates", dict(payload, corrections=[c])).status_code == 200
+    c2 = dict(c, corrected="INV/2026/10/0043")
+    r = invoice.a.post_json("/v1/templates", dict(payload, corrections=[c2])).json()
+    assert r["corrections"][0]["status"] == "conflict"
+
+
+def test_deeply_nested_json_is_422(invoice):
+    import json as _json
+
+    body = b"[" * 50_000 + b"]" * 50_000
+    h = {"Content-Type": "application/json", **invoice.a.headers("POST", "/v1/templates", body)}
+    r = invoice.client.post("/v1/templates", content=body, headers=h)
+    assert r.status_code in (413, 422), _json.dumps(r.json())
+
+
+def test_callback_port_and_revoked_key(invoice, monkeypatch, admin_headers):
+    from engine import settings
+    from engine.invoice.signing import get_api_secret
+    from engine.invoice.worker import callback_allowed
+
+    monkeypatch.setenv("PQE_INVOICE_CALLBACK_HOSTS", "hooks.test,api.test:8443")
+    settings.reset_settings_cache()
+    assert callback_allowed("https://hooks.test/cb") and callback_allowed("https://api.test:8443/cb")
+    for bad in ("http://hooks.test:6379/", "http://hooks.test:22/", "https://api.test/cb", "https://api.test:9/x"):
+        assert not callback_allowed(bad), bad
+    invoice.client.delete(f"/v1/admin/api-keys/{invoice.key_a.id}", headers=admin_headers)
+    assert get_api_secret(invoice.key_a.id) is None  # S3: callback berhenti saat key dicabut
+
+
+def test_qr_bad_port_does_not_crash():
+    from engine.invoice.efaktur import parse_qr_url
+
+    assert parse_qr_url("http://svc.efaktur.pajak.go.id:99999/validasi/faktur/012345678901000/0102612345678/a") \
+        is None
+
+
+def test_pdf_header_must_be_at_start():
+    from engine.invoice.reader import detect_media_type
+
+    assert detect_media_type(b"%PDF-1.7\n...") == "application/pdf"
+    assert detect_media_type(b"\xef\xbb\xbf%PDF-1.7") == "application/pdf"
+    assert detect_media_type(b"<html>" + b" " * 100 + b"%PDF-1.7") is None

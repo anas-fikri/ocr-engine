@@ -531,7 +531,9 @@ Namespace (job, file, template) = tenant API key. Setiap request wajib:
 | `X-Timestamp` | Unix detik saat request dibuat. Beda dengan jam server > ±300 dtk → `401 TIMESTAMP_OUT_OF_WINDOW` |
 | `X-Signature` | `hex(HMAC-SHA256(api_secret, timestamp + "\n" + METHOD + "\n" + path + "\n" + hex(sha256(body))))` |
 
-- `path` = path URL **tanpa** query string, persis seperti dikirim (contoh `/v1/jobs/3f2a...`). `METHOD` huruf besar.
+- `path` = path URL **tanpa** query string, persis seperti dikirim (belum di-decode; contoh `/v1/jobs/3f2a...`).
+  `METHOD` huruf besar. `X-Timestamp` angka saja; `X-Signature` 64 karakter hex.
+- API key, timestamp, dan keberadaan `api_secret` dicek **sebelum** body dibaca.
 - `body` = byte mentah body (multipart apa adanya; GET = kosong, `sha256("")` =
   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
 - `api_secret` dipakai sebagai string UTF-8 apa adanya (64 karakter hex).
@@ -587,8 +589,8 @@ Status `queued` → `running` → `succeeded` | `failed`. Job milik namespace la
 | `layers` | Semua layer yang dipakai: `pdf_text`, `ocr`, `efaktur_qr` (layer 2), `template` (layer 4) |
 | `text` | Teks penuh urut baca; antarhalaman dipisah `\f` |
 | `blocks` | Baris teks dengan `bbox` relatif halaman `[x0, y0, x1, y1]` (0-1, kiri atas = 0,0), `page` mulai 1 |
-| `fields` | `{nama: {value, confidence 0-1, source, method}}`. Field yang tidak ditemukan **tidak ada** (bukan `null`). `method`: `label`, `template`, `hint`, `guess`, `table`, `qr` |
-| `validation` | Hasil validasi silang (`DPP_MISMATCH`, `VAT_MISMATCH`, `TOTAL_MISMATCH`, `LINES_MISMATCH`, `DUE_BEFORE_INVOICE`, `PERIOD_INVERTED`, `NOT_LIKELY_DOCUMENT_TYPE`). Field terkait diturunkan confidence-nya |
+| `fields` | `{nama: {value, confidence 0-1, source, method}}`. Field yang tidak ditemukan **tidak ada** (bukan `null`). `method`: `label`, `template` (anchor template), `position` (posisi template saja, hanya mengisi field kosong), `hint`, `guess`, `table`, `qr` |
+| `validation` | Hasil validasi silang (`DPP_MISMATCH`, `VAT_MISMATCH`, `TOTAL_MISMATCH`, `LINES_MISMATCH`, `DUE_BEFORE_INVOICE`, `PERIOD_INVERTED`, `NOT_LIKELY_DOCUMENT_TYPE`, `EFAKTUR_MISMATCH` (nilai QR e-Faktur beda dengan cetakan: cetakan dipertahankan)). Field terkait diturunkan confidence-nya |
 | `truncated` | `true` jika `text`/`blocks` dipotong agar respons ≤ ±900 KB (field tidak pernah dipotong) |
 | `error` | Hanya saat `failed`: `{"code", "message"}` |
 
@@ -598,8 +600,9 @@ Nama field: `vendor_npwp`, `vendor_name`, `bank_account`, `invoice_number`, `inv
 desimal** (`"1234567.89"`, `"1500000"`, tidak pernah float); NPWP & rekening digit saja.
 
 Kode `error.code` job gagal: `UNREADABLE_FILE`, `PDF_ENCRYPTED`, `TOO_MANY_PAGES`, `PAGE_TOO_LARGE`,
-`IMAGE_TOO_LARGE`, `RESOURCE_LIMIT` (melewati batas memori/CPU, misal PDF bom), `PROCESSING_TIMEOUT`, `FILE_EXPIRED`
-(file inbox sudah dihapus retensi sebelum diproses), `OCR_UNAVAILABLE`, `PROCESSING_ERROR` (dicoba ulang 3×).
+`IMAGE_TOO_LARGE`, `RESOURCE_LIMIT` (melewati batas memori/CPU, misal PDF bom), `PROCESSING_TIMEOUT`, `READ_ERROR`
+(pembaca dokumen gagal pada file ini), `FILE_EXPIRED` (file inbox sudah dihapus retensi sebelum diproses),
+`OCR_UNAVAILABLE`, `PROCESSING_ERROR` (gangguan engine, dicoba ulang 3×). Selain `PROCESSING_ERROR` semuanya permanen.
 
 ### `POST /v1/templates`
 
@@ -614,6 +617,11 @@ Koreksi pengguna → engine belajar/mengupdate template issuer di namespace send
 ```
 
 - `job_id` wajib, milik namespace sendiri, status `succeeded` (`404 JOB_NOT_FOUND` / `409 JOB_NOT_READY`).
+- `issuer.npwp` harus NPWP **penjual** job itu: `template_hint` job, `vendor_npwp` hasil job, atau `vendor_npwp` yang
+  dikoreksi di request yang sama (`422 ISSUER_MISMATCH`), dan tidak boleh hanya muncul di identitas pembeli
+  (`422 ISSUER_IS_BUYER`). Template dipakai untuk job yang `template_hint`-nya atau `vendor_npwp`-nya sama; NPWP
+  pembeli tidak pernah memilih template.
+- Satu field dipelajari sekali per request (koreksi terakhir untuk field itu; sebelumnya `reason: SUPERSEDED`).
 - `idempotency_key` per koreksi (16-128 karakter `[A-Za-z0-9_-]`) diterapkan **paling banyak sekali** per namespace;
   engine tidak menghitung ulang hash-nya (diperlakukan sebagai kunci opak).
 - `corrected: null` = hapus aturan field itu dari template. `field` di luar daftar → `422 UNKNOWN_FIELD`; nilai tidak
@@ -627,7 +635,7 @@ Respons `200`:
  "corrections": [{"idempotency_key": "9b1c...", "field": "total", "status": "applied", "learned": true, "reason": null}]}
 ```
 
-`status`: `applied` | `duplicate`. `learned: false` + `reason`: `VALUE_NOT_FOUND_IN_DOCUMENT` (nilai benar tidak
+`status`: `applied` | `duplicate` | `conflict` (key sudah dipakai untuk nilai lain; tidak diterapkan). `learned: false` + `reason`: `VALUE_NOT_FOUND_IN_DOCUMENT` (nilai benar tidak
 ditemukan di teks dokumen, misal OCR salah baca), `FIELD_NOT_LEARNABLE` (`lines`), `RULE_REMOVED`.
 
 ### `GET /v1/templates/{document_type}/{npwp}`
@@ -648,7 +656,7 @@ Template issuer di namespace sendiri (`rules` per field: anchor, jenis pola, pos
 | 400 | `INVALID_REQUEST` | Multipart rusak |
 | 413 | `FILE_TOO_LARGE` | Melebihi `PQE_INVOICE_MAX_UPLOAD_MB` |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | Bukan PDF/JPEG/PNG (dari isi file) atau body bukan multipart |
-| 422 | `UNSUPPORTED_DOCUMENT_TYPE`, `INVALID_TEMPLATE_HINT`, `FILE_REQUIRED`, `EMPTY_FILE`, `CALLBACK_NOT_ALLOWED`, `VALIDATION_ERROR`, `INVALID_NPWP`, `UNKNOWN_FIELD`, `INVALID_VALUE`, `INVALID_IDEMPOTENCY_KEY`, `IDEMPOTENCY_KEY_REUSED`, `DOCUMENT_TYPE_MISMATCH` | Input tidak valid (lihat `message`) |
+| 422 | `ISSUER_MISMATCH`, `ISSUER_IS_BUYER`, `UNSUPPORTED_DOCUMENT_TYPE`, `INVALID_TEMPLATE_HINT`, `FILE_REQUIRED`, `EMPTY_FILE`, `CALLBACK_NOT_ALLOWED`, `VALIDATION_ERROR`, `INVALID_NPWP`, `UNKNOWN_FIELD`, `INVALID_VALUE`, `INVALID_IDEMPOTENCY_KEY`, `IDEMPOTENCY_KEY_REUSED`, `DOCUMENT_TYPE_MISMATCH` | Input tidak valid (lihat `message`) |
 | 429 | `QUEUE_FULL` | Antrean namespace penuh (`PQE_INVOICE_MAX_PENDING_PER_TENANT`) |
 | 404 | `JOB_NOT_FOUND`, `TEMPLATE_NOT_FOUND` | Tidak ada / milik namespace lain |
 
@@ -669,7 +677,8 @@ Template issuer di namespace sendiri (`rules` per field: anchor, jenis pola, pos
 Jika `callback_url` dikirim, setelah job selesai engine mengirim `POST` JSON
 `{"event": "job.finished", "job_id", "status", "document_type"}` (tanpa hasil; ambil dengan `GET /v1/jobs/{id}`)
 dengan header `X-Timestamp` dan `X-Signature` = HMAC yang sama (`api_secret` key pembuat job, `path` = path
-`callback_url`). Balas 2xx; gagal dicoba ulang 6× dengan jeda bertambah (maks. 1 jam). Tanpa redirect.
+`callback_url`). Balas 2xx; gagal dicoba ulang 6× dengan jeda bertambah (maks. 1 jam). Tanpa redirect. Key dicabut →
+callback berhenti. Host di allowlist hanya port 80/443; port lain harus ditulis `host:port` di allowlist.
 
 ## Operasional
 

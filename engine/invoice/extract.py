@@ -28,7 +28,7 @@ MONEY_FIELDS = tuple(f for f, k in FIELD_KINDS.items() if k == "money")
 
 # faktor keyakinan metode (dikalikan confidence teks sumber)
 C_SAME_BLOCK, C_RIGHT, C_BELOW = 0.85, 0.82, 0.72
-C_TEMPLATE_ANCHOR, C_TEMPLATE_POS = 0.95, 0.8
+C_TEMPLATE_ANCHOR, C_TEMPLATE_POS = 0.95, 0.6
 CURRENCIES = ("IDR", "USD", "SGD", "EUR", "JPY", "CNY", "AUD", "MYR", "HKD", "GBP")
 
 BUYER = re.compile(r"pembeli|buyer|customer|pelanggan|kepada|bill\s*to|ship\s*to|lawan\s*transaksi|penerima|"
@@ -42,7 +42,7 @@ class Spec:
     kind: str
     labels: list[str]
     exclude: str | None = None
-    pick: str = "first"  # first | last (mis. "Total" polos: ambil yang paling bawah)
+    pick: str = "first"  # first | last | max (total: nilai terbesar di antara baris "total" yang setara)
 
 
 SPECS: dict[str, Spec] = {
@@ -55,7 +55,8 @@ SPECS: dict[str, Spec] = {
         r"tanggal\s*(?:invoice|faktur|tagihan|dokumen|kwitansi)|tgl\.?\s*(?:invoice|faktur|tagihan|dokumen)",
         r"invoice\s*date|date\s*of\s*invoice|billing\s*date",
         r"\btanggal\b|\btgl\b|\bdate\b",
-    ], exclude=r"jatuh|tempo|\bdue\b|periode|period|masa|cetak\s*ulang"),
+    ], exclude=r"jatuh|tempo|\bdue\b|periode|period|masa|cetak|\bpo\b|order|pesanan|kirim|delivery|pengiriman|"
+               r"faktur\s*pajak|lahir|terima|received"),
     "due_date": Spec("date", [
         r"jatuh\s*tempo|due\s*date|payment\s*due|batas\s*(?:waktu\s*)?pembayaran",
         r"\bdue\b",
@@ -68,11 +69,12 @@ SPECS: dict[str, Spec] = {
     "wht_amount": Spec("money", [r"\bpph(?![a-z])(?:\s*(?:pasal|ps)?\.?\s*(?:4\s*\(?2\)?|15|21|22|23|26)(?!\d))?"
                                 r"|withholding|\bwht\b|pemotongan\s*pajak"], exclude=r"npwp"),
     "total": Spec("money", [
-        r"grand\s*total|total\s*(?:tagihan|bayar|pembayaran|invoice|amount|due|keseluruhan)|"
-        r"jumlah\s*(?:tagihan|yang\s*harus\s*dibayar|dibayar|total)|amount\s*due|balance\s*due|total\s*akhir",
-        r"\btotal\b",
-    ], exclude=r"sub\s*-?\s*total|total\s*(?:harga|dpp|ppn|pph|diskon|qty|item|berat)", pick="last"),
-    "bank_account": Spec("account", [
+        r"grand\s*total|total\s*(?:tagihan|bayar|pembayaran|invoice|amount|keseluruhan|akhir)|"
+        r"jumlah\s*(?:tagihan|yang\s*harus\s*dibayar|total)",
+        r"\btotal\b|amount\s*due|balance\s*due",
+    ], exclude=r"sub\s*-?\s*total|total\s*(?:harga|dpp|ppn|pph|vat|tax|pajak|diskon|discount|qty|item|berat|paid)|"
+               r"amount\s*paid|sudah\s*dibayar|uang\s*muka|down\s*payment", pick="max"),
+    "bank_account": Spec("account", [  # nomor telepon di baris yang sama dipotong (_find_account)
         r"no(?:mor)?\.?\s*rek(?:ening)?\b\.?|\brekening\b|account\s*(?:no|number)|\ba/c\b|acc(?:ount)?\.?\s*no",
     ]),
 }
@@ -81,14 +83,24 @@ _RANGE_DM = re.compile(rf"(?<!\d)(\d{{1,2}})\s*(?:-|–|s/?d|sampai|to)\s*(\d{{1
                        re.I)
 
 
+MAX_LABEL_HITS = 30  # blok berlabel sama yang diperiksa per label (dokumen berisi ribuan "Total" tidak jadi lambat)
+_PHONE = re.compile(r"\b(?:telp|tel|phone|hubungi|hp|wa|whatsapp|fax|faks|email|cs)\b", re.I)
+_NOISE = re.compile(r"\b(?:rp|idr|usd)\b\.?|[^0-9a-z%]+", re.I)  # "Diskon 10%": persen = isi, bukan kosong
+
+
 def finder(kind: str) -> Callable[[str], list[P.Match]]:
-    return {"date": P.find_dates, "money": P.find_money, "npwp": P.find_npwp, "account": P.find_account,
+    return {"date": P.find_dates, "money": P.find_money, "npwp": P.find_npwp, "account": _find_account,
             "docno": P.find_doc_numbers, "text": _find_text, "currency": _find_currency}[kind]
+
+
+def _find_account(text: str) -> list[P.Match]:
+    m = _PHONE.search(text)
+    return P.find_account(text[: m.start()] if m else text)
 
 
 def _find_text(text: str) -> list[P.Match]:
     t = text.strip(" :.-#\t")
-    if sum(c.isalpha() for c in t) < 3:
+    if sum(c.isalpha() for c in t) < 3 or DOC_WORDS.match(t):
         return []
     start = text.find(t)
     return [P.Match(t[:200], start, start + len(t), t)]
@@ -119,30 +131,34 @@ def _remainder(text: str, end: int) -> str:
 def _by_label(doc: Document, spec: Spec, skip: set[int] | None = None) -> Field | None:
     for label in spec.labels:
         rx = re.compile(label, re.I)
-        found: list[Field] = []
+        hits = []
         for b in doc.blocks:
             if skip and b.id in skip:
                 continue
             m = rx.search(P._cut(b.text))
-            if not m or (spec.exclude and re.search(spec.exclude, b.text, re.I)):
-                continue
-            f = _value_near(doc, b, m.end(), spec.kind)
-            if f:
-                found.append(f)
+            if m and not (spec.exclude and re.search(spec.exclude, P._cut(b.text), re.I)):
+                hits.append((b, m))
+        hits = hits[:MAX_LABEL_HITS] if spec.pick == "first" else hits[-MAX_LABEL_HITS:]
+        found = [f for b, m in hits if (f := _value_near(doc, b, m.end(), spec.kind))]
         if found:
+            if spec.pick == "max":
+                return max(found, key=lambda f: P.to_decimal(f.value) or 0)
             return found[-1] if spec.pick == "last" else found[0]
     return None
 
 
 def _value_near(doc: Document, b: Block, label_end: int, kind: str) -> Field | None:
-    v = _value_in(_remainder(b.text, label_end), kind)
+    rest = _remainder(b.text, label_end)
+    v = _value_in(rest, kind)
     if v:
         return Field(v.value, b.conf * C_SAME_BLOCK, b.source, "label", [b.id])
     for o in doc.right_of(b)[:2]:
         v = _value_in(o.text, kind)
         if v:
             return Field(v.value, min(b.conf, o.conf) * C_RIGHT, o.source, "label", [b.id, o.id])
-    if kind != "text":
+    # label sudah diikuti isi yang bukan nilai (mis. "Diskon 10%", "No. Rek: a.n. PT X"): jangan ambil nilai baris
+    # di bawahnya, karena itu milik label lain
+    if kind != "text" and not _NOISE.sub("", rest):
         for o in doc.below(b)[:1]:
             v = _value_in(o.text, kind)
             if v and not re.search(r"[a-z]{4,}\s*:", o.text, re.I):  # baris bawah adalah label lain
@@ -150,35 +166,65 @@ def _value_near(doc: Document, b: Block, label_end: int, kind: str) -> Field | N
     return None
 
 
-def _vendor_npwp(doc: Document, hint: str | None) -> Field | None:
-    cands = []
+def buyer_zone(doc: Document) -> set[int]:
+    """Blok milik identitas pembeli: blok berlabel pembeli/"Kepada" + blok di kanannya + beberapa baris di bawahnya
+    (sampai ketemu nama badan usaha lain atau label penjual)."""
+    ids: set[int] = set()
+    for b in doc.blocks[:MAX_LABEL_HITS * 10]:
+        if not BUYER.search(P._cut(b.text)):
+            continue
+        ids.add(b.id)
+        ids.update(o.id for o in doc.right_of(b))
+        seen_entity = bool(ENTITY.search(b.text))
+        for o in doc.below(b, 5):
+            if re.search(r"penjual|seller|vendor|supplier|dari\b|from\b", o.text, re.I):
+                break
+            if ENTITY.search(o.text):
+                if seen_entity:
+                    break
+                seen_entity = True
+            ids.add(o.id)
+    return ids
+
+
+def npwp_candidates(doc: Document) -> list[tuple[str, Block, bool, bool]]:
+    """(npwp, blok, berlabel NPWP, zona pembeli). 16/15 digit polos tanpa label NPWP (nomor VA, NIK, rekening)
+    bukan kandidat."""
+    buyer = buyer_zone(doc)
+    out = []
     for b in doc.blocks:
-        for m in P.find_npwp(b.text):
-            near_buyer = BUYER.search(b.text) or any(BUYER.search(o.text) for o in doc.blocks
-                                                     if o.id != b.id and b.same_row(o) and o.bbox[2] <= b.bbox[0])
-            cands.append((m.value, b, bool(near_buyer)))
+        ms = P.find_npwp(b.text)
+        if not ms:
+            continue
+        labeled = bool(re.search(r"npwp", b.text, re.I) or any(re.search(r"npwp", o.text, re.I)
+                                                               for o in doc.left_of(b)))
+        for m in ms:
+            formatted = not m.raw.isdigit()
+            if labeled or formatted:
+                out.append((m.value, b, labeled, b.id in buyer))
+    return sorted(out, key=lambda c: (c[1].page, c[1].bbox[1]))
+
+
+def _vendor_npwp(doc: Document, hint: str | None) -> Field | None:
+    cands = npwp_candidates(doc)
     if hint:
-        for v, b, _ in cands:
+        for v, b, _, _ in cands:
             if v == hint:
                 return Field(v, b.conf * 0.97, b.source, "hint", [b.id])
-    for v, b, buyer in sorted(cands, key=lambda c: (c[1].page, c[1].bbox[1])):
+    for v, b, labeled, buyer in cands:
         if not buyer:
-            labeled = re.search(r"npwp", b.text, re.I)
             return Field(v, b.conf * (0.8 if labeled else 0.6), b.source, "label" if labeled else "guess", [b.id])
     return None
 
 
 def _vendor_name(doc: Document) -> Field | None:
-    f = _by_label(doc, Spec("text", [r"nama\s*(?:penjual|pkp|vendor|supplier|perusahaan)|\bvendor\b|\bsupplier\b|"
-                                     r"\bpenjual\b|\bdari\b|\bfrom\b"], exclude=r"npwp|alamat|address"))
+    # label harus di awal blok dan berbentuk label ("Penjual:", "From"), bukan kata di dalam nama ("PT Penjual Jaya")
+    f = _by_label(doc, Spec("text", [r"^\s*(?:nama\s*(?:penjual|pkp|vendor|supplier|perusahaan)|vendor|supplier|"
+                                     r"penjual|dari|from)\s*(?::|$)"], exclude=r"npwp|alamat|address"))
     if f:
         return f
     first = [b for b in doc.blocks if b.page == 0 and b.bbox[1] < 0.3]
-    buyer_ids = set()
-    for b in first:
-        if BUYER.search(b.text):
-            buyer_ids.add(b.id)
-            buyer_ids.update(o.id for o in doc.below(b, 2.5) + doc.right_of(b))
+    buyer_ids = buyer_zone(doc)
     pool = [b for b in sorted(first, key=lambda x: x.bbox[1]) if b.id not in buyer_ids
             and not DOC_WORDS.match(b.text.strip(" :.")) and sum(c.isalpha() for c in b.text) >= 4
             and not re.search(r"npwp|alamat|jl\.|jalan|telp|phone|email|@|www\.", b.text, re.I)]
@@ -349,8 +395,8 @@ def apply_rule(doc: Document, rule: dict[str, Any]) -> Field | None:
         inside.sort(key=lambda o: abs(o.cy - (box[1] + box[3]) / 2) + abs(o.bbox[2] - box[2]))
         for o in inside:
             v = _value_in(o.text, kind, shape, nth)
-            if v:
-                return Field(v.value, o.conf * C_TEMPLATE_POS, o.source, "template", [o.id])
+            if v:  # tanpa anchor: posisi saja (layout bisa bergeser), hanya mengisi field yang kosong
+                return Field(v.value, o.conf * C_TEMPLATE_POS, o.source, "position", [o.id])
     return None
 
 
@@ -466,7 +512,7 @@ class InvoiceExtractor(DocumentExtractor):
                 if name not in FIELD_KINDS:
                     continue
                 f = apply_rule(doc, rule)
-                if f:
+                if f and (f.method == "template" or name not in fields):
                     fields[name] = f
         return fields
 

@@ -42,16 +42,37 @@ def _same(kind: str, found: Any, target: Any) -> bool:
     return found == target
 
 
+NOT_ANCHOR = {"rp", "idr", "usd", "sgd", "eur", "a", "n", "an", "no", "ke", "di", "the", "of"}
+
+
 def _anchor_text(text: str) -> str | None:
-    words = P.norm_label(text).split()
-    words = [w for w in words if not w.isdigit()][-MAX_ANCHOR_WORDS:]
-    a = " ".join(words)
-    return a if sum(c.isalpha() for c in a) >= 2 else None
+    """Label yang layak jadi anchor: kata (bukan angka/mata uang/kata sambung), minimal 3 huruf. "Rp" di sel
+    sebelah nilai bukan label: anchor seperti itu cocok dengan semua baris uang dan memilih nilai yang salah."""
+    words = [w for w in P.norm_label(text).split() if not w.isdigit() and w not in NOT_ANCHOR]
+    a = " ".join(words[-MAX_ANCHOR_WORDS:])
+    return a if sum(c.isalpha() for c in a) >= 3 else None
+
+
+def _prefilter(kind: str, target: Any):
+    """Cek substring murah sebelum regex per blok (belajar template tetap cepat pada dokumen ribuan blok)."""
+    t = str(target)
+    if kind in ("docno", "text", "account", "npwp"):
+        key = P.norm_text(t)
+        return lambda text: key in P.norm_text(text)
+    if kind == "money":
+        key = P.digits(t.split(".")[0]).lstrip("0") or "0"
+        return lambda text: key in P.digits(text)
+    if kind == "date":
+        return lambda text: t[:4] in text or t[2:4] in text
+    return lambda text: True
 
 
 def _locate(doc: Document, kind: str, target: Any) -> list[tuple[Block, P.Match, int]]:
     out = []
+    keep = _prefilter(kind, target)
     for b in doc.blocks:
+        if not keep(b.text):
+            continue
         if kind == "text":  # teks bebas: harus sebagian besar isi blok, bukan potongan pendek yang kebetulan ada
             nt, nb = P.norm_text(str(target)), P.norm_text(b.text)
             if len(nt) >= 4 and nt in nb and len(nt) >= 0.5 * len(nb):

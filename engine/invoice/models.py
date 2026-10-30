@@ -84,7 +84,7 @@ class InvoiceCorrection(Base):
     __table_args__ = (UniqueConstraint("tenant_code", "idempotency_key", name="uq_invoice_correction_key"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_code: Mapped[str] = mapped_column(String(64))
-    idempotency_key: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
     template_id: Mapped[int | None] = mapped_column(Integer, index=True)
     job_id: Mapped[str] = mapped_column(String(32), index=True)
     field: Mapped[str] = mapped_column(String(50))

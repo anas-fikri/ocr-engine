@@ -97,7 +97,7 @@ def _learn_custom(invoice, docs) -> tuple[str, dict]:
     jid = invoice.a.post_job(docs["custom_pdf"], template_hint="012345678901000").json()["job_id"]
     work()
     body = invoice.a.get(f"/v1/jobs/{jid}").json()
-    for missing in ("invoice_number", "due_date", "total", "bank_account"):
+    for missing in ("invoice_number", "due_date", "total", "bank_account", "invoice_date"):
         assert missing not in body["fields"], missing
     corrections = []
     for field, value in (("invoice_number", "INV/2026/10/0042"), ("due_date", "2026-11-14"), ("total", "14430000"),

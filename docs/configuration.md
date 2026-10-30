@@ -226,7 +226,7 @@ tenant: [`config/tenants/ictnotes.yaml`](../config/tenants/ictnotes.yaml).
 | `PQE_INVOICE_RESULT_RETENTION_DAYS` | `365` | Hasil job (`invoice_jobs`) yang selesai lebih tua dari ini dihapus | Sesuai kebijakan retensi finance |
 | `PQE_INVOICE_EFAKTUR_QR` | `off` | Layer 2 QR e-Faktur: `off` / `decode` (QR dibaca lokal, NPWP penjual + nomor faktur, tanpa jaringan) / `lookup` (+ panggil validasi DJP untuk DPP, PPN, tanggal) | **Biarkan `off`** sampai izin TBD-15 dikonfirmasi; `lookup` butuh akses keluar ke DJP |
 | `PQE_INVOICE_EFAKTUR_HOSTS` | `svc.efaktur.pajak.go.id,efaktur.pajak.go.id` | Host QR e-Faktur yang diterima (allowlist; selalu dipanggil lewat HTTPS, tanpa redirect) | Jika DJP mengganti domain |
-| `PQE_INVOICE_CALLBACK_HOSTS` | kosong | Host yang boleh menjadi `callback_url` (dipisah koma). Kosong = callback ditolak `422 CALLBACK_NOT_ALLOWED` (cegah SSRF) | Isi host aplikasi klien jika memakai callback |
+| `PQE_INVOICE_CALLBACK_HOSTS` | kosong | Host yang boleh menjadi `callback_url` (dipisah koma). `host` = hanya port 80/443; port lain tulis `host:port`. Kosong = callback ditolak `422 CALLBACK_NOT_ALLOWED` (cegah SSRF) | Isi host aplikasi klien jika memakai callback |
 | `PQE_DOCUMENT_PLUGINS` | kosong | Plugin jenis dokumen tambahan `paket.modul:Kelas,...` (selain entry point `pqe.document_extractors`) | Saat menambah jenis dokumen baru |
 
 `api_secret` untuk tanda tangan HMAC dibuat per API key (`pqe create-key ... --with-secret` atau

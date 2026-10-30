@@ -203,10 +203,29 @@ def test_efaktur_lookup_mode(invoice, efaktur_pdf, monkeypatch):
     body = invoice.a.get(f"/v1/jobs/{jid}").json()
     f = body["fields"]
     assert seen == [QR.replace("http://", "https://")]  # selalu HTTPS
-    assert f["dpp"]["value"] == "13000000" and f["dpp"]["source"] == "efaktur_qr"
-    assert f["vat_amount"]["value"] == "1430000" and f["invoice_date"]["value"] == "2026-10-15"
-    assert f["vendor_name"]["value"] == "PT CONTOH SINAR ABADI"
+    # nilai QR yang sama dengan cetakan → confidence 0,99 dari QR
+    assert f["vat_amount"] == {"value": "1430000", "confidence": 0.99, "source": "efaktur_qr", "method": "qr"}
+    assert f["invoice_date"]["value"] == "2026-10-15" and f["invoice_date"]["method"] == "qr"
+    # QR berbeda dengan cetakan → cetakan dipertahankan, confidence turun, dilaporkan (QR bisa milik faktur lain)
+    assert f["dpp"]["value"] == "13000001" and f["dpp"]["confidence"] < 0.6
+    assert {"code": "EFAKTUR_MISMATCH", "fields": ["dpp"]}.items() <= next(
+        i for i in body["validation"] if i["code"] == "EFAKTUR_MISMATCH").items()
     assert body["efaktur"]["status"] == "Faktur Pajak Normal"
+
+
+def test_efaktur_qr_cannot_override_printed_npwp(invoice, monkeypatch):
+    """QR dikendalikan pembuat dokumen: NPWP di QR yang berbeda dengan NPWP tercetak tidak dipercaya 0,99."""
+    from engine.invoice.synth import SynthInvoice, make_pdf
+    from engine.invoice.worker import InvoiceWorker
+
+    _set_mode(monkeypatch, "decode")
+    fake = QR.replace("012345678901000", "099999999999000")
+    jid = invoice.a.post_job(make_pdf(SynthInvoice(qr_text=fake))).json()["job_id"]
+    InvoiceWorker(concurrency=0).run_until_empty()
+    body = invoice.a.get(f"/v1/jobs/{jid}").json()
+    assert body["fields"]["vendor_npwp"]["value"] == "012345678901000"
+    assert body["fields"]["vendor_npwp"]["confidence"] < 0.6
+    assert any(i["code"] == "EFAKTUR_MISMATCH" for i in body["validation"])
 
 
 def test_efaktur_lookup_failure_falls_back(invoice, efaktur_pdf, monkeypatch):
@@ -225,3 +244,93 @@ def test_efaktur_lookup_failure_falls_back(invoice, efaktur_pdf, monkeypatch):
     body = invoice.a.get(f"/v1/jobs/{jid}").json()
     assert body["status"] == "succeeded" and body["efaktur"]["lookup_error"] == "ConnectError"
     assert body["fields"]["vendor_npwp"]["source"] == "efaktur_qr" and body["fields"]["dpp"]["value"] == "13000001"
+
+
+# ---------------------------------------------------------------------------------------------- temuan audit independen
+def _pdf_rows(rows) -> Document:
+    from fpdf import FPDF
+
+    from engine.invoice import sandbox
+    from engine.invoice.reader import Options
+
+    p = FPDF(format="A4", unit="mm")
+    p.add_page()
+    p.set_auto_page_break(False)
+    p.set_font("Helvetica", "", 10)
+    for x, y, t in rows:
+        p.set_xy(x, y)
+        p.cell(0, 6, t)
+    raw = sandbox.run(bytes(p.output()), Options(media_type="application/pdf"), memory_mb=1536, timeout_sec=60)
+    return Document.from_read(raw)
+
+
+@pytest.mark.parametrize("name,rows,expect", [
+    ("buyer block on top", [(15, 10, "Kepada Yth."), (15, 16, "PT Pembeli Besar"),
+                            (15, 22, "NPWP: 02.345.678.9-012.000"), (15, 40, "PT Penjual Kecil"),
+                            (15, 46, "NPWP: 01.234.567.8-901.000"), (140, 40, "INVOICE")],
+     {"vendor_npwp": "012345678901000", "vendor_name": "PT Penjual Kecil"}),
+    ("16-digit VA is not NPWP", [(15, 10, "CV Kecil"), (120, 40, "Kepada: PT Pembeli"),
+                                 (120, 46, "NPWP Pembeli: 02.345.678.9-012.000"),
+                                 (15, 120, "Virtual Account BCA: 8808123456789012")],
+     {"vendor_npwp": None}),
+    ("PO date is not invoice date", [(15, 30, "Tanggal PO: 01/09/2026"), (15, 36, "No. Invoice: INV-1"),
+                                     (15, 42, "Tanggal: 15/10/2026")], {"invoice_date": "2026-10-15"}),
+    ("date-like invoice number", [(15, 30, "No. Invoice: INV-15-10-26"), (15, 36, "PO No: PO-998877")],
+     {"invoice_number": "INV-15-10-26"}),
+    ("discount percent without amount", [(120, 72, "Subtotal 1.000.000"), (120, 78, "Diskon 10%"),
+                                         (120, 84, "DPP 900.000")], {"discount": None}),
+    ("phone after account label", [(15, 40, "No. Rekening: a.n. PT Penjual, hubungi 021-5551234"),
+                                   (15, 46, "BCA 123-456-7890")], {"bank_account": None}),
+    ("balance due 0 after payment", [(120, 80, "Subtotal 1.000.000"), (120, 86, "VAT 11% 110.000"),
+                                     (120, 92, "Total 1.110.000"), (120, 98, "Amount Paid 1.110.000"),
+                                     (120, 104, "Balance Due 0")], {"total": "1110000"}),
+    ("total VAT row last", [(120, 80, "Subtotal 1.000.000"), (120, 86, "Total 1.110.000"),
+                            (120, 92, "Total VAT 110.000")], {"total": "1110000"}),
+    ("malformed thousands", [(120, 80, "Subtotal: 1.234.56")], {"subtotal": "1234.56"}),
+    ("Nop month", [(15, 36, "Due Date: 14 Nop 2026")], {"due_date": "2026-11-14"}),
+])
+def test_layouts_never_return_wrong_value(name, rows, expect):
+    """Lebih baik field kosong daripada salah dengan confidence tinggi (temuan H5 audit)."""
+    from engine.invoice.extract import InvoiceExtractor
+
+    fields = InvoiceExtractor().extract(_pdf_rows(rows), None, None)
+    for k, v in expect.items():
+        assert (fields[k].value if k in fields else None) == v, (name, k)
+
+
+def test_extraction_is_not_quadratic():
+    """PDF kecil berisi ribuan label "Total" tidak boleh menahan worker (temuan H3 audit: 8k blok = 34 dtk)."""
+    import time
+
+    from engine.invoice.extract import InvoiceExtractor
+
+    lines = [{"text": "Total", "bbox": [(i % 1000) / 1000, 0.5, (i % 1000) / 1000 + 0.0005, 0.51], "conf": 0.99}
+             for i in range(20_000)]
+    doc = Document.from_read({"pages": [{"index": 0, "source": "pdf_text", "lines": lines}]})
+    assert doc.truncated and len(doc.blocks) == 4000
+    t0 = time.perf_counter()
+    InvoiceExtractor().extract(doc, None, None)
+    assert time.perf_counter() - t0 < 2.0
+
+
+def test_template_anchor_is_a_real_label(invoice_docs):
+    """Sel "Rp" di sebelah nilai bukan anchor (temuan H1: template memilih baris uang yang salah)."""
+    from engine.invoice import sandbox
+    from engine.invoice.extract import InvoiceExtractor
+    from engine.invoice.reader import Options
+    from engine.invoice.synth import Line, SynthInvoice, make_pdf
+    from engine.invoice.templates import learn_rule
+
+    def read(pdf):
+        return Document.from_read(sandbox.run(pdf, Options(media_type="application/pdf"), memory_mb=1536,
+                                              timeout_sec=60))
+
+    first = read(invoice_docs["custom_pdf"])
+    rules = {f: learn_rule(first, f, v)[0] for f, v in (("total", "14430000"), ("wht_amount", "260000"),
+                                                        ("vat_amount", "1430000"))}
+    assert rules["total"]["anchor"] == "wajib dibayar" and rules["wht_amount"]["anchor"] == "pph"
+    lines = [Line(f"Item {k}", "1", "1.000.000", "1.000.000") for k in range(5)]  # layout bergeser 2 baris
+    other = SynthInvoice(layout="custom", lines=lines, subtotal="5.000.000", discount="", dpp="5.000.000",
+                         vat="550.000", wht="100.000", total="5.550.000")
+    f = InvoiceExtractor().extract(read(make_pdf(other)), {"rules": rules}, None)
+    assert (f["total"].value, f["vat_amount"].value, f["wht_amount"].value) == ("5550000", "550000", "100000")
