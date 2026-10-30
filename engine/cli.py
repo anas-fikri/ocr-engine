@@ -100,10 +100,49 @@ def cmd_create_key(a) -> None:
     from engine.db import init_db
 
     init_db()
+    if a.with_secret:
+        from engine import secretbox
+
+        if a.role != "app" or not a.tenant:
+            sys.exit("--with-secret hanya untuk --role app dengan --tenant (namespace modul invoice)")
+        if not secretbox.available():
+            sys.exit("PQE_SECRET_KEY belum diisi: api_secret tidak bisa disimpan terenkripsi")
     raw, k = create_api_key(a.name, a.role, a.tenant, a.customer_id, actor="cli")
-    print(f"API key dibuat untuk '{k.name}' (role={k.role}, tenant={k.tenant_code or '-'}).")
+    print(f"API key dibuat untuk '{k.name}' (role={k.role}, tenant={k.tenant_code or '-'}, id={k.id}).")
     print("Simpan sekarang, nilai ini tidak bisa dilihat lagi:\n")
-    print(raw)
+    print(f"api_key    = {raw}" if a.with_secret else raw)
+    if a.with_secret:
+        from engine.invoice.signing import set_api_secret
+
+        print(f"api_secret = {set_api_secret(k.id, actor='cli')}")
+
+
+def cmd_set_api_secret(a) -> None:
+    """Buat/ganti api_secret HMAC untuk API key yang sudah ada (rotasi). Secret lama langsung tidak berlaku."""
+    from engine.db import ApiKey, init_db, session_scope
+    from engine.invoice.signing import set_api_secret
+
+    init_db()
+    with session_scope() as s:
+        k = s.get(ApiKey, a.key_id)
+        if k is None or k.revoked_at is not None:
+            sys.exit(f"API key id {a.key_id} tidak ada / sudah dicabut (lihat id di Web UI API key)")
+        if k.role != "app" or not k.tenant_code:
+            sys.exit("api_secret hanya untuk API key role app yang terikat tenant")
+    print("api_secret baru (simpan sekarang, tidak bisa dilihat lagi):\n")
+    print(set_api_secret(a.key_id, actor="cli"))
+
+
+def cmd_invoice_worker(a) -> None:
+    """Worker modul invoice saja (container terpisah agar OCR invoice tidak berebut CPU dengan foto)."""
+    from engine.bootstrap import bootstrap
+    from engine.invoice.worker import InvoiceWorker
+
+    bootstrap()
+    _start_metrics_server()
+    w = InvoiceWorker(concurrency=a.concurrency)
+    w.start()
+    _wait_forever(w.stop_event)
 
 
 def cmd_import_tenants(a) -> None:
@@ -355,6 +394,14 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--role", required=True, choices=["admin", "ops", "viewer", "app", "customer"])
     p.add_argument("--tenant")
     p.add_argument("--customer-id")
+    p.add_argument("--with-secret", action="store_true",
+                   help="Buat juga api_secret HMAC (wajib untuk endpoint dokumen invoice /v1/jobs, /v1/templates)")
+
+    p = add("set-api-secret", cmd_set_api_secret, "Buat/ganti api_secret HMAC untuk API key yang sudah ada")
+    p.add_argument("key_id", help="id API key (32 karakter hex, tampil saat create-key dan di Web UI)")
+
+    p = add("invoice-worker", cmd_invoice_worker, "Jalankan worker dokumen invoice saja")
+    p.add_argument("--concurrency", type=int, default=None)
 
     p = add("import-tenants", cmd_import_tenants, "Import config tenant dari folder YAML")
     p.add_argument("--dir")

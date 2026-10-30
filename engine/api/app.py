@@ -28,6 +28,7 @@ API Photo Quality Engine: deteksi foto buram/pecah/gelap, kompresi dinamis, vali
 dan bukti pengiriman (evidence) untuk penagihan.
 
 **Autentikasi:** kirim header `X-API-Key: pqe_xxx` (atau `Authorization: Bearer pqe_xxx`).
+Endpoint dokumen invoice (`/v1/jobs`, `/v1/templates`) juga wajib `X-Timestamp` + `X-Signature` (HMAC).
 
 **Bahasa pesan:** header `Accept-Language: id` / `en`, atau query `?lang=en`.
 
@@ -86,14 +87,25 @@ def create_app(run_bootstrap: bool = True) -> FastAPI:
 
     app.include_router(routes.router, tags=["v1"])
     app.include_router(admin.router)
+    if get_settings().invoice_enabled:  # modul invoice (ADR 0008): router sendiri, auth HMAC
+        from engine.invoice import api as invoice_api
+
+        app.include_router(invoice_api.router)
 
     @app.get("/", include_in_schema=False)
     def root():
         return RedirectResponse("/ui/")
 
-    @app.get("/healthz", tags=["ops"], summary="Liveness: proses hidup")
+    @app.get("/healthz", tags=["ops"], summary="Liveness: proses hidup + versi engine")
     def healthz():
-        return {"status": "ok", "version": __version__, "build": __build__}
+        body = {"status": "ok", "version": __version__, "build": __build__}
+        st = get_settings()
+        body["invoice"] = {"enabled": st.invoice_enabled, "efaktur_qr": st.invoice_efaktur_qr}
+        if st.invoice_enabled:
+            from engine.invoice.process import engine_versions
+
+            body["engines"] = engine_versions()
+        return body
 
     @app.get("/readyz", tags=["ops"], summary="Readiness: DB & SILO bisa diakses")
     def readyz():

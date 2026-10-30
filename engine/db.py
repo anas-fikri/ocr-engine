@@ -250,6 +250,8 @@ def reset_engine() -> None:
 
 
 def init_db() -> None:
+    import engine.invoice.models  # noqa: F401  tabel modul invoice (ADR 0008)
+
     Base.metadata.create_all(get_engine())
 
 

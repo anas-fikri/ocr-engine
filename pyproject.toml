@@ -28,6 +28,8 @@ dependencies = [
   "fpdf2>=2.7",
   "cryptography>=43",
   "zxing-cpp>=2.2",
+  "pypdfium2>=4.30",
+  "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]

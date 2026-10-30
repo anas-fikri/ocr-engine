@@ -1,0 +1,123 @@
+"""Tanda tangan HMAC request modul invoice (FR-OCR-008) dan api_secret per API key.
+
+Kanonik (sama untuk request ke engine dan callback dari engine):
+
+    timestamp + "\\n" + METHOD + "\\n" + path + "\\n" + hex(sha256(body))
+
+X-Signature = hex(HMAC-SHA256(api_secret, kanonik)). `path` tanpa query string.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import secrets
+import time
+from dataclasses import dataclass
+from datetime import timedelta
+
+from fastapi import Request
+from sqlalchemy.exc import IntegrityError
+
+from engine import metrics, secretbox
+from engine.api.auth import Principal, _lookup
+from engine.api.common import api_error
+from engine.db import ApiKey, AuditLog, session_scope, utcnow
+from engine.invoice.models import ApiKeySecret, InvoiceNonce
+from engine.settings import get_settings
+from engine.tenants import TenantNotFound, registry
+
+
+def canonical(timestamp: str, method: str, path: str, body: bytes) -> bytes:
+    return f"{timestamp}\n{method.upper()}\n{path}\n{hashlib.sha256(body).hexdigest()}".encode()
+
+
+def sign(secret: str, timestamp: str, method: str, path: str, body: bytes) -> str:
+    return hmac.new(secret.encode(), canonical(timestamp, method, path, body), hashlib.sha256).hexdigest()
+
+
+def set_api_secret(key_id: str, actor: str = "system") -> str:
+    """Buat (atau ganti) api_secret untuk API key. Nilai mentah hanya dikembalikan SEKALI."""
+    if not secretbox.available():
+        raise secretbox.SecretKeyMissing("PQE_SECRET_KEY belum diisi: api_secret tidak bisa disimpan terenkripsi")
+    raw = secrets.token_hex(32)
+    with session_scope() as s:
+        if s.get(ApiKey, key_id) is None:
+            raise KeyError(key_id)
+        row = s.get(ApiKeySecret, key_id)
+        if row is None:
+            s.add(ApiKeySecret(key_id=key_id, secret_enc=secretbox.encrypt(raw)))
+        else:
+            row.secret_enc, row.created_at = secretbox.encrypt(raw), utcnow()
+        s.add(AuditLog(actor=actor, action="apikey.secret", target=key_id))
+    return raw
+
+
+def get_api_secret(key_id: str) -> str | None:
+    with session_scope() as s:
+        row = s.get(ApiKeySecret, key_id)
+        return secretbox.decrypt(row.secret_enc) if row else None
+
+
+@dataclass
+class SignedCaller:
+    principal: Principal
+    tenant_code: str
+    secret: str
+
+
+def _deny(status: int, code: str, message: str):
+    metrics.INVOICE_AUTH_FAILURES.labels(code=code).inc()
+    return api_error(status, code, message)
+
+
+def verify(request: Request, body: bytes) -> SignedCaller:
+    """Verifikasi API key + tanda tangan. Dipanggil di awal setiap endpoint invoice (body sudah dibaca, dibatasi)."""
+    h = request.headers
+    raw_key, ts, sig = h.get("x-api-key"), h.get("x-timestamp"), h.get("x-signature")
+    if not raw_key:
+        raise _deny(401, "UNAUTHORIZED", "API key wajib (header X-Api-Key)")
+    if not ts or not sig:
+        raise _deny(401, "SIGNATURE_REQUIRED", "header X-Timestamp dan X-Signature wajib")
+    p = _lookup(raw_key)
+    if p is None:
+        raise _deny(401, "UNAUTHORIZED", "API key tidak valid atau sudah dicabut")
+    try:
+        ts_int = int(ts)
+    except ValueError:
+        raise _deny(401, "TIMESTAMP_OUT_OF_WINDOW", "X-Timestamp harus Unix detik") from None
+    window = get_settings().invoice_signature_window_sec
+    if abs(time.time() - ts_int) > window:
+        raise _deny(401, "TIMESTAMP_OUT_OF_WINDOW", f"X-Timestamp di luar ±{window} detik dari jam server")
+    secret = get_api_secret(p.key_id)
+    if not secret:
+        raise _deny(403, "SIGNATURE_NOT_ENABLED",
+                    "API key ini belum punya api_secret (buat dengan: pqe create-key ... --with-secret)")
+    expected = sign(secret, ts, request.method, request.url.path, body)
+    if not hmac.compare_digest(expected, sig.strip().lower()):
+        raise _deny(401, "INVALID_SIGNATURE", "X-Signature tidak cocok")
+    if p.role != "app" or not p.tenant_code:
+        raise _deny(403, "FORBIDDEN", "endpoint dokumen hanya untuk API key role app yang terikat tenant")
+    try:
+        t = registry.get(p.tenant_code)
+    except TenantNotFound:
+        raise _deny(403, "FORBIDDEN", f"tenant {p.tenant_code} tidak terdaftar") from None
+    if not t.enabled:
+        raise _deny(409, "TENANT_DISABLED", f"tenant {p.tenant_code} sedang dinonaktifkan")
+    if request.method != "GET":
+        _consume_nonce(expected, ts_int + window)
+    request.state.principal = p
+    return SignedCaller(p, p.tenant_code, secret)
+
+
+def _consume_nonce(signature: str, expires_epoch: int) -> None:
+    from datetime import UTC, datetime
+
+    digest = hashlib.sha256(signature.encode()).hexdigest()
+    expires = datetime.fromtimestamp(expires_epoch, UTC) + timedelta(seconds=5)
+    try:
+        with session_scope() as s:
+            s.add(InvoiceNonce(signature_sha256=digest, expires_at=expires))
+    except IntegrityError:
+        raise _deny(409, "REPLAYED_REQUEST", "request dengan tanda tangan ini sudah diterima; "
+                                             "tanda tangani ulang dengan timestamp baru") from None

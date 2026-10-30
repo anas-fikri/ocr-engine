@@ -64,6 +64,28 @@ class Settings(BaseSettings):
     metrics_port: int = Field(9100, alias="PQE_METRICS_PORT")
     log_level: str = Field("INFO", alias="PQE_LOG_LEVEL")
 
+    # --- Modul invoice (ADR 0008, docs/invoice-ocr-design.md) ---
+    invoice_enabled: bool = Field(True, alias="PQE_INVOICE_ENABLED")
+    invoice_worker_concurrency: int = Field(1, alias="PQE_INVOICE_WORKER_CONCURRENCY")
+    invoice_signature_window_sec: int = Field(300, alias="PQE_INVOICE_SIGNATURE_WINDOW_SEC")
+    invoice_max_upload_mb: int = Field(20, alias="PQE_INVOICE_MAX_UPLOAD_MB")
+    invoice_max_pages: int = Field(20, alias="PQE_INVOICE_MAX_PAGES")
+    invoice_render_dpi: int = Field(300, alias="PQE_INVOICE_RENDER_DPI")
+    invoice_max_image_pixels: int = Field(50_000_000, alias="PQE_INVOICE_MAX_IMAGE_PIXELS")
+    invoice_sandbox_memory_mb: int = Field(1536, alias="PQE_INVOICE_SANDBOX_MEMORY_MB")
+    invoice_sandbox_timeout_sec: int = Field(180, alias="PQE_INVOICE_SANDBOX_TIMEOUT_SEC")
+    invoice_ocr_page_timeout_sec: int = Field(30, alias="PQE_INVOICE_OCR_PAGE_TIMEOUT_SEC")
+    invoice_max_pending_per_tenant: int = Field(200, alias="PQE_INVOICE_MAX_PENDING_PER_TENANT")
+    invoice_inbox_retention_days: int = Field(30, alias="PQE_INVOICE_INBOX_RETENTION_DAYS")
+    invoice_result_retention_days: int = Field(365, alias="PQE_INVOICE_RESULT_RETENTION_DAYS")
+    # off (bawaan, izin TBD-15 belum dikonfirmasi) | decode (QR dibaca lokal) | lookup (+ panggil validasi DJP)
+    invoice_efaktur_qr: str = Field("off", alias="PQE_INVOICE_EFAKTUR_QR")
+    invoice_efaktur_hosts: str = Field("svc.efaktur.pajak.go.id,efaktur.pajak.go.id", alias="PQE_INVOICE_EFAKTUR_HOSTS")
+    # host tujuan callback_url yang diizinkan (dipisah koma). Kosong = callback ditolak (cegah SSRF)
+    invoice_callback_hosts: str = Field("", alias="PQE_INVOICE_CALLBACK_HOSTS")
+    # plugin jenis dokumen tambahan: "paket.modul:Kelas,..." (selain entry point pqe.document_extractors)
+    document_plugins: str = Field("", alias="PQE_DOCUMENT_PLUGINS")
+
 
 def addressing_style(s: Settings) -> str:
     if s.aws_addressing_style in ("auto", "path", "virtual"):
