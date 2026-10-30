@@ -184,10 +184,20 @@ def _vendor_name(doc: Document) -> Field | None:
             and not re.search(r"npwp|alamat|jl\.|jalan|telp|phone|email|@|www\.", b.text, re.I)]
     for b in pool:
         if ENTITY.search(b.text):
-            return Field(b.text.strip(" :")[:200], b.conf * 0.6, b.source, "guess", [b.id])
+            return Field(_clean_name(b.text), b.conf * 0.6, b.source, "guess", [b.id])
     if pool:
-        return Field(pool[0].text.strip(" :")[:200], pool[0].conf * 0.4, pool[0].source, "guess", [pool[0].id])
+        return Field(_clean_name(pool[0].text), pool[0].conf * 0.4, pool[0].source, "guess", [pool[0].id])
     return None
+
+
+def _clean_name(text: str) -> str:
+    """OCR sering menggabungkan nama vendor dengan judul di baris yang sama ("PT X  INVOICE"): judul dibuang."""
+    words = text.strip(" :").split()
+    while len(words) > 1 and DOC_WORDS.match(words[-1].strip(" :.|")):
+        words.pop()
+    while len(words) > 1 and DOC_WORDS.match(words[0].strip(" :.|")):
+        words.pop(0)
+    return " ".join(words)[:200]
 
 
 def _currency(doc: Document) -> Field | None:
@@ -245,27 +255,25 @@ def _num_cell(t: str) -> str | None:
 
 
 def _split_row(row: list[Block]) -> tuple[list[str], list[str]]:
-    """Sel teks & sel angka (urut kiri → kanan). Baris OCR yang menyatu dipecah per token dari kanan."""
-    cells = [b.text for b in row]
-    if len(cells) == 1:
-        toks = cells[0].split()
-        nums: list[str] = []
-        while toks and len(nums) < 4:
-            v = _num_cell(toks[-1].lstrip("Rp"))
-            if v is None:
-                break
-            nums.insert(0, v)
-            toks.pop()
-        return [" ".join(toks)], nums
-    text, nums = [], []
-    for c in cells:
-        v = _num_cell(c)
-        if v is None:
-            if nums:  # teks di kanan angka (satuan, catatan): abaikan
-                continue
-            text.append(c)
-        else:
+    """Sel teks & sel angka (urut kiri → kanan). Angka di ujung kanan sel teks dipisah per token (OCR sering
+    menggabungkan deskripsi + qty + harga dalam satu baris)."""
+    text: list[str] = []
+    nums: list[str] = []
+    for b in row:
+        v = _num_cell(b.text)
+        if v is not None:
             nums.append(v)
+            continue
+        toks, tail = b.text.split(), []
+        while toks and len(tail) < 4:
+            t = _num_cell(toks[-1])
+            if t is None:
+                break
+            tail.insert(0, t)
+            toks.pop()
+        if toks and not nums:  # teks di kanan angka (satuan, catatan): abaikan
+            text.append(" ".join(toks))
+        nums += tail
     return text, nums
 
 

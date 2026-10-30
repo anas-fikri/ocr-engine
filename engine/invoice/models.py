@@ -109,8 +109,11 @@ class InvoiceIdempotency(Base):
 
 
 class InvoiceNonce(Base):
-    """Tanda tangan request POST yang sudah dipakai (anti replay) sampai jendela waktunya lewat."""
+    """Tanda tangan POST /v1/jobs yang sudah diterima, sampai jendela waktunya lewat. Request yang sama persis
+    (replay atau retry jaringan) mengembalikan job yang sama, bukan job baru."""
 
     __tablename__ = "invoice_nonces"
     signature_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_code: Mapped[str] = mapped_column(String(64))
+    job_id: Mapped[str] = mapped_column(String(32))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

@@ -124,6 +124,8 @@ def money_from_raw(raw: str) -> str | None:
             s = s.replace(sep, "")
         else:  # 1500,5 / 12.75 → desimal
             s = s.replace(sep, ".")
+    if len(s) > 22:  # > 10^18: bukan nominal invoice (dan melewati presisi Decimal bawaan)
+        return None
     try:
         d = Decimal(s)
     except InvalidOperation:
@@ -131,9 +133,12 @@ def money_from_raw(raw: str) -> str | None:
     return format_money(-d if neg else d)
 
 
-def format_money(d: Decimal) -> str:
-    d = d.quantize(Decimal("0.01"))
-    return str(d.quantize(Decimal(1))) if d == d.to_integral_value() else str(d)
+def format_money(d: Decimal) -> str | None:
+    try:
+        d = d.quantize(Decimal("0.01"))
+        return str(d.quantize(Decimal(1))) if d == d.to_integral_value() else str(d)
+    except InvalidOperation:
+        return None
 
 
 def find_money(text: str) -> list[Match]:
@@ -152,10 +157,11 @@ def normalize_money(value: object) -> str | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return format_money(Decimal(value))
+        return format_money(Decimal(value)) if abs(value) < 10**18 else None
     if isinstance(value, str):
         v = value.strip()
-        if re.fullmatch(r"-?\d+(\.\d+)?", v):  # sudah kanonik (kontrak: string desimal dengan titik)
+        # sudah kanonik (kontrak: string desimal, titik + maks. 2 desimal). "260.000" bukan kanonik → ribuan
+        if re.fullmatch(r"-?\d{1,18}(\.\d{1,2})?", v):
             try:
                 return format_money(Decimal(v))
             except InvalidOperation:

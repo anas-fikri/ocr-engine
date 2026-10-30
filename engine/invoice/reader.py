@@ -306,7 +306,9 @@ def read_image(data: bytes, opt: Options) -> dict[str, Any]:
         img = ImageOps.exif_transpose(img)
     except ReadError:
         raise
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as e:
+    except Image.DecompressionBombError as e:  # PIL menolak dari header (> 2x batas) sebelum decode
+        raise ReadError("IMAGE_TOO_LARGE", "gambar melebihi batas piksel") from e
+    except (UnidentifiedImageError, OSError, ValueError) as e:
         raise ReadError("UNREADABLE_FILE", f"gambar rusak atau tidak bisa dibaca: {type(e).__name__}") from e
     if img.width < 32 or img.height < 32:
         raise ReadError("UNREADABLE_FILE", "gambar terlalu kecil")

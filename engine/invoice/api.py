@@ -25,7 +25,13 @@ from engine.invoice import parsing as P
 from engine.invoice import queue, signing, store
 from engine.invoice.document import Document
 from engine.invoice.extract import FIELD_KINDS, FIELDS
-from engine.invoice.models import InvoiceCorrection, InvoiceIdempotency, InvoiceJob, InvoiceTemplate
+from engine.invoice.models import (
+    InvoiceCorrection,
+    InvoiceIdempotency,
+    InvoiceJob,
+    InvoiceNonce,
+    InvoiceTemplate,
+)
 from engine.invoice.plugins import registry
 from engine.invoice.reader import detect_media_type
 from engine.invoice.templates import learn_rule, normalize_value
@@ -99,6 +105,9 @@ async def create_job(request: Request):
     st = get_settings()
     body = await _read_body(request, st.invoice_max_upload_mb * MB + 64 * 1024)
     caller = signing.verify(request, body)
+    replay = _replayed_job(caller)
+    if replay is not None:
+        return replay
     form = await _multipart(request, body)
     dtype = str(form.get("document_type") or "").strip()
     if dtype not in registry():
@@ -122,17 +131,37 @@ async def create_job(request: Request):
     media = detect_media_type(data)
     if media is None:
         raise api_error(415, "UNSUPPORTED_MEDIA_TYPE", "hanya PDF, JPEG, dan PNG (dicek dari isi file)")
-    with session_scope() as s:
-        if queue.pending_count(s, caller.tenant_code) >= st.invoice_max_pending_per_tenant:
-            raise api_error(429, "QUEUE_FULL", "antrean dokumen namespace ini penuh; coba lagi nanti")
-        job = InvoiceJob(tenant_code=caller.tenant_code, key_id=caller.principal.key_id, document_type=dtype,
-                         template_hint=hint, filename=store.safe_filename(filename), media_type=media,
-                         size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest(), callback_url=callback)
-        s.add(job)
-        s.flush()
-        store.put(s, job.id, data)
-        jid = job.id
+    try:
+        with session_scope() as s:
+            if queue.pending_count(s, caller.tenant_code) >= st.invoice_max_pending_per_tenant:
+                raise api_error(429, "QUEUE_FULL", "antrean dokumen namespace ini penuh; coba lagi nanti")
+            job = InvoiceJob(tenant_code=caller.tenant_code, key_id=caller.principal.key_id, document_type=dtype,
+                             template_hint=hint, filename=store.safe_filename(filename), media_type=media,
+                             size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest(), callback_url=callback)
+            s.add(job)
+            s.flush()
+            store.put(s, job.id, data)
+            s.add(InvoiceNonce(signature_sha256=caller.signature_digest, tenant_code=caller.tenant_code,
+                               job_id=job.id, expires_at=caller.replay_until))
+            jid = job.id
+    except IntegrityError:  # request kembar yang sama persis datang bersamaan: kembalikan job yang menang
+        replay = _replayed_job(caller)
+        if replay is None:
+            raise
+        return replay
     return JSONResponse({"job_id": jid, "status": "queued", "poll_url": f"/v1/jobs/{jid}"}, status_code=202)
+
+
+def _replayed_job(caller: signing.SignedCaller) -> JSONResponse | None:
+    """Request dengan tanda tangan yang sama persis (retry jaringan / replay) → job yang sama, bukan job baru."""
+    with session_scope() as s:
+        n = s.get(InvoiceNonce, caller.signature_digest)
+        if n is None or n.tenant_code != caller.tenant_code:
+            return None
+        job = s.get(InvoiceJob, n.job_id)
+        status = job.status if job else "queued"
+    return JSONResponse({"job_id": n.job_id, "status": status, "poll_url": f"/v1/jobs/{n.job_id}"},
+                        status_code=202, headers={"Idempotent-Replayed": "true"})
 
 
 @router.get("/jobs/{job_id}", summary="Status & hasil job dokumen", responses={401: SIGNED, 404: {}})

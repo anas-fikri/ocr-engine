@@ -52,9 +52,9 @@ def _anchor_text(text: str) -> str | None:
 def _locate(doc: Document, kind: str, target: Any) -> list[tuple[Block, P.Match, int]]:
     out = []
     for b in doc.blocks:
-        if kind == "text":
-            nt = P.norm_text(str(target))
-            if nt and nt in P.norm_text(b.text):
+        if kind == "text":  # teks bebas: harus sebagian besar isi blok, bukan potongan pendek yang kebetulan ada
+            nt, nb = P.norm_text(str(target)), P.norm_text(b.text)
+            if len(nt) >= 4 and nt in nb and len(nt) >= 0.5 * len(nb):
                 idx = b.text.upper().find(str(target).upper()[:3])
                 out.append((b, P.Match(str(target), max(0, idx), len(b.text), b.text), 0))
             continue

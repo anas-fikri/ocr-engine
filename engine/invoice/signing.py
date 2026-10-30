@@ -14,16 +14,15 @@ import hmac
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime
 
 from fastapi import Request
-from sqlalchemy.exc import IntegrityError
 
 from engine import metrics, secretbox
 from engine.api.auth import Principal, _lookup
 from engine.api.common import api_error
 from engine.db import ApiKey, AuditLog, session_scope, utcnow
-from engine.invoice.models import ApiKeySecret, InvoiceNonce
+from engine.invoice.models import ApiKeySecret
 from engine.settings import get_settings
 from engine.tenants import TenantNotFound, registry
 
@@ -64,6 +63,8 @@ class SignedCaller:
     principal: Principal
     tenant_code: str
     secret: str
+    signature_digest: str  # sha256(X-Signature): kunci anti-replay POST /v1/jobs
+    replay_until: datetime
 
 
 def _deny(status: int, code: str, message: str):
@@ -104,20 +105,7 @@ def verify(request: Request, body: bytes) -> SignedCaller:
         raise _deny(403, "FORBIDDEN", f"tenant {p.tenant_code} tidak terdaftar") from None
     if not t.enabled:
         raise _deny(409, "TENANT_DISABLED", f"tenant {p.tenant_code} sedang dinonaktifkan")
-    if request.method != "GET":
-        _consume_nonce(expected, ts_int + window)
     request.state.principal = p
-    return SignedCaller(p, p.tenant_code, secret)
+    return SignedCaller(p, p.tenant_code, secret, hashlib.sha256(expected.encode()).hexdigest(),
+                        datetime.fromtimestamp(ts_int + window + 5, UTC))
 
-
-def _consume_nonce(signature: str, expires_epoch: int) -> None:
-    from datetime import UTC, datetime
-
-    digest = hashlib.sha256(signature.encode()).hexdigest()
-    expires = datetime.fromtimestamp(expires_epoch, UTC) + timedelta(seconds=5)
-    try:
-        with session_scope() as s:
-            s.add(InvoiceNonce(signature_sha256=digest, expires_at=expires))
-    except IntegrityError:
-        raise _deny(409, "REPLAYED_REQUEST", "request dengan tanda tangan ini sudah diterima; "
-                                             "tanda tangani ulang dengan timestamp baru") from None

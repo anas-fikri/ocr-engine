@@ -49,10 +49,19 @@ class SynthInvoice:
 
 
 def _labels(inv: SynthInvoice) -> dict[str, str]:
+    base = {"subtotal": "Subtotal", "discount": "Diskon", "dpp": "DPP", "vat": "PPN 11%", "wht": "PPh 23",
+            "desc": "Deskripsi", "qty": "Qty", "price": "Harga Satuan", "amount": "Jumlah", "to": "Kepada:",
+            "buyer_npwp": "NPWP Pembeli", "pay": "Pembayaran"}
     if inv.layout == "custom":
-        return {"no": "Ref. Dokumen", "date": "Tgl. Cetak", "due": "Batas Bayar", "period": "Masa Layanan",
+        return {**base, "no": "Ref. Dokumen", "date": "Tgl. Cetak", "due": "Batas Bayar", "period": "Masa Layanan",
                 "bank": "Transfer ke", "total": "Wajib Dibayar"}
-    return {"no": "No. Invoice", "date": "Tanggal Invoice", "due": "Jatuh Tempo", "period": "Periode",
+    if inv.layout == "english":
+        return {**base, "no": "Invoice No.", "date": "Invoice Date", "due": "Due Date", "period": "Billing Period",
+                "bank": "Account No", "total": "Total Amount Due", "subtotal": "Sub Total", "discount": "Discount",
+                "dpp": "Tax Base", "vat": "VAT 11%", "wht": "Withholding Tax", "desc": "Description",
+                "price": "Unit Price", "amount": "Amount", "to": "Bill To:", "buyer_npwp": "Customer NPWP",
+                "pay": "Payment"}
+    return {**base, "no": "No. Invoice", "date": "Tanggal Invoice", "due": "Jatuh Tempo", "period": "Periode",
             "bank": "No. Rekening", "total": "Grand Total"}
 
 
@@ -86,15 +95,15 @@ def make_pdf(inv: SynthInvoice | None = None) -> bytes:
         pdf.cell(80, 6, value)
         y += 7
     pdf.set_xy(120, 45)
-    pdf.cell(0, 6, "Kepada:")
+    pdf.cell(0, 6, lb["to"])
     pdf.set_xy(120, 52)
     pdf.cell(0, 6, inv.buyer_name)
     pdf.set_xy(120, 59)
-    pdf.cell(0, 6, f"NPWP Pembeli: {inv.buyer_npwp}")
+    pdf.cell(0, 6, f"{lb['buyer_npwp']}: {inv.buyer_npwp}")
 
     y = 85
     pdf.set_font("Helvetica", "B", 10)
-    for x, w, t in ((15, 85, "Deskripsi"), (100, 20, "Qty"), (120, 35, "Harga Satuan"), (155, 40, "Jumlah")):
+    for x, w, t in ((15, 85, lb["desc"]), (100, 20, lb["qty"]), (120, 35, lb["price"]), (155, 40, lb["amount"])):
         pdf.set_xy(x, y)
         pdf.cell(w, 7, t, align="R" if x >= 100 else "L")
     pdf.set_font("Helvetica", "", 10)
@@ -106,19 +115,19 @@ def make_pdf(inv: SynthInvoice | None = None) -> bytes:
             pdf.cell(w, 7, t, align="R" if x >= 100 else "L")
         y += 8
     y += 6
-    totals = [("Subtotal", inv.subtotal), ("Diskon", inv.discount), ("DPP", inv.dpp), ("PPN 11%", inv.vat),
-              ("PPh 23", inv.wht), (lb["total"], inv.total)]
+    totals = [(lb["subtotal"], inv.subtotal), (lb["discount"], inv.discount), (lb["dpp"], inv.dpp),
+              (lb["vat"], inv.vat), (lb["wht"], inv.wht), (lb["total"], inv.total)]
     for label, value in totals:
         if not value:
             continue
         pdf.set_xy(110, y)
         pdf.cell(40, 7, label)
-        pdf.cell(5, 7, "Rp")
+        pdf.cell(5, 7, "IDR" if inv.layout == "english" else "Rp")
         pdf.cell(40, 7, value, align="R")
         y += 8
     y += 8
     pdf.set_xy(15, y)
-    pdf.cell(0, 6, f"Pembayaran: {inv.bank_name}")
+    pdf.cell(0, 6, f"{lb['pay']}: {inv.bank_name}")
     pdf.set_xy(15, y + 7)
     pdf.cell(0, 6, f"{lb['bank']}: {inv.bank_account}")
     if inv.qr_text:
@@ -133,8 +142,9 @@ def make_pdf(inv: SynthInvoice | None = None) -> bytes:
 
 
 def scan_of(pdf: bytes, *, angle: float = 2.0, noise: float = 6.0, dpi: int = 200, fmt: str = "JPEG",
-            seed: int = 7) -> bytes:
-    """Tiruan hasil scan/foto: render halaman 1, miringkan, beri noise, simpan JPEG/PNG (tanpa text layer)."""
+            seed: int = 7, shade: bool = False) -> bytes:
+    """Tiruan hasil scan/foto: render halaman 1, miringkan, beri noise (dan bayangan seperti foto HP), simpan
+    JPEG/PNG (tanpa text layer)."""
     import pypdfium2 as pdfium
 
     doc = pdfium.PdfDocument(pdf)
@@ -146,6 +156,9 @@ def scan_of(pdf: bytes, *, angle: float = 2.0, noise: float = 6.0, dpi: int = 20
     arr = np.asarray(img).astype(np.float32)
     rng = np.random.default_rng(seed)
     arr = arr * 0.85 + 20 + rng.normal(0, noise, arr.shape)  # kertas agak abu + noise sensor
+    if shade:  # cahaya tidak rata: sisi kanan bawah lebih gelap
+        h, w = arr.shape
+        arr *= np.linspace(1.0, 0.5, w)[None, :] * np.linspace(1.0, 0.8, h)[:, None]
     out = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
     buf = io.BytesIO()
     out.save(buf, fmt, **({"quality": 85} if fmt == "JPEG" else {}))
