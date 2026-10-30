@@ -253,7 +253,20 @@ def test_healthz_versions(client):
     """AC-11: versi engine + komponen OCR."""
     h = client.get("/healthz").json()
     assert h["status"] == "ok" and h["invoice"]["enabled"] is True and h["invoice"]["efaktur_qr"] == "off"
-    assert h["engines"]["pqe"] == h["version"] and h["engines"]["tesseract"] and h["engines"]["pdfium"]
+    assert h["engines"]["pqe"] == h["version"] and h["engines"]["tesserocr"] and h["engines"]["pdfium"]
+
+
+def test_engine_versions_do_not_import_tesserocr_in_threads():
+    """/healthz dijalankan di thread: tidak boleh meng-import tesserocr (cysignals gagal di thread non-main dan import
+    yang gagal mengubah jalur OCR foto ke CLI)."""
+    import subprocess
+    import sys
+
+    code = ("import sys, threading\nfrom engine.invoice.process import engine_versions\n"
+            "t = threading.Thread(target=engine_versions); t.start(); t.join()\n"
+            "print('tesserocr' in sys.modules, sorted(engine_versions()))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+    assert out.startswith("False") and "pdfium" in out
 
 
 def test_photo_endpoints_unchanged_by_invoice_keys(invoice, admin_headers):

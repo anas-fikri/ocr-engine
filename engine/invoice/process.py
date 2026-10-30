@@ -28,10 +28,24 @@ MAX_BLOCKS = 4000
 
 @lru_cache
 def engine_versions() -> dict[str, str]:
-    """Versi komponen OCR (dipakai /healthz dan hasil job). Dihitung di proses induk tanpa membaca dokumen."""
-    from engine.invoice.reader import versions
+    """Versi komponen (dipakai /healthz dan hasil job), dihitung di proses induk tanpa meng-import tesserocr: import
+    pertama tesserocr dari thread non-main gagal (cysignals) dan akan mengubah jalur OCR foto. Versi library Tesseract
+    yang persis ikut di hasil job (dilaporkan proses anak); di sini versi paket tesserocr yang membawanya."""
+    from importlib.metadata import PackageNotFoundError, version
 
-    return {"pqe": __version__, **versions()}
+    out = {"pqe": __version__}
+    for dist in ("tesserocr", "pypdfium2"):
+        try:
+            out[dist] = version(dist)
+        except PackageNotFoundError:
+            pass
+    try:
+        import pypdfium2
+
+        out["pdfium"] = str(pypdfium2.version.PDFIUM_INFO).split()[0]
+    except Exception:
+        pass
+    return out
 
 
 def find_template(tenant: str, document_type: str, npwps: list[str]) -> dict[str, Any] | None:

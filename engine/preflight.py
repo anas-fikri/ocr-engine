@@ -160,7 +160,7 @@ def run(check_silo: bool = True) -> dict[str, Any]:
 
         v = engine_versions()
         out.append(_item("Dokumen invoice", "Pembaca PDF (PDFium) & OCR", "ok" if v.get("pdfium") and
-                         v.get("tesseract") else "warn", ", ".join(f"{k} {x}" for k, x in v.items()),
+                         v.get("tesserocr") else "warn", ", ".join(f"{k} {x}" for k, x in v.items()),
                          "Pakai image engine terbaru (pypdfium2 + Tesseract)."))
         from sqlalchemy import func, select
 

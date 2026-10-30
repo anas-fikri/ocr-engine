@@ -675,7 +675,7 @@ dengan header `X-Timestamp` dan `X-Signature` = HMAC yang sama (`api_secret` key
 
 | Endpoint | Keterangan |
 |---|---|
-| `GET /healthz` | Liveness. `200 {"status": "ok", "version": "...", "build": "...", "invoice": {"enabled", "efaktur_qr"}, "engines": {"pqe", "tesseract", "pdfium"}}` jika proses hidup |
+| `GET /healthz` | Liveness. `200 {"status": "ok", "version": "...", "build": "...", "invoice": {"enabled", "efaktur_qr"}, "engines": {"pqe", "tesserocr", "pypdfium2", "pdfium"}}` jika proses hidup. Versi library Tesseract persis ada di `engine.tesseract` hasil job dokumen |
 | `GET /readyz` | Readiness. `200` jika DB & SILO bisa diakses, `503` + detail jika tidak |
 | `GET /metrics` | Metrik Prometheus (lihat [operations.md](operations.md)) |
 | `POST /v1/events/s3` | Penerima bucket notification SILO. Header `Authorization: Bearer <PQE_S3_EVENT_TOKEN>`. Respons `{"accepted", "ignored"}` |

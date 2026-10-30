@@ -59,11 +59,16 @@ def detect_media_type(data: bytes) -> str | None:
 
 # ---------------------------------------------------------------------------------------------- versi engine OCR
 def versions() -> dict[str, str]:
+    """Versi library yang benar-benar membaca dokumen. Dipanggil di proses anak (main thread): tesserocr (cysignals)
+    tidak bisa di-import pertama kali dari thread lain."""
     out: dict[str, str] = {}
     try:
-        import tesserocr
+        import threading
 
-        out["tesseract"] = tesserocr.tesseract_version().split()[1]
+        if threading.current_thread() is threading.main_thread():
+            import tesserocr
+
+            out["tesseract"] = tesserocr.tesseract_version().split()[1]
     except Exception:
         pass
     try:
