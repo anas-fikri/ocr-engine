@@ -5,6 +5,7 @@
  */
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { correctionKey, DocumentOcrClient, multipart, sha256Hex, sign, verifyCallback } from "./document-client.ts";
 import { PhotoQualityClient, toDecision, verifyWebhook } from "./pqe-client.ts";
 import { assessGray } from "./precheck.js";
 
@@ -80,6 +81,53 @@ if (PQE_URL && PQE_API_KEY && PQE_SAMPLE) {
   }
 } else {
   console.log("skip uji online (set PQE_URL, PQE_API_KEY, PQE_SAMPLE)");
+}
+
+// ---- client modul dokumen (offline): vektor tanda tangan sama dengan engine (engine/documents/signing.py)
+{
+  check("dokumen: tanda tangan GET sesuai engine",
+    await sign("abc123", "1793337600", "GET", "/v1/jobs/3f2a9c0e5b7d4e1f8a6b2c3d4e5f6a7b", "") ===
+      "452df4a4485a72a34b4335fde50ab551ed1937de296a0fb362f5f87285686595");
+  check("dokumen: tanda tangan POST sesuai engine",
+    await sign("abc123", "1793337600", "post", "/v1/templates", '{"a":1}') ===
+      "84198d0b3fe8cd7d145b028d462c4a1096ce3c8a849996a6f8d54684e38fdd9c");
+  const ts = String(Math.floor(Date.now() / 1000));
+  const body = '{"event":"job.finished","job_id":"x","status":"succeeded"}';
+  const sig = await sign("rahasia", ts, "POST", "/ocr/callback", body);
+  check("dokumen: callback valid diterima", await verifyCallback("rahasia", ts, sig, "/ocr/callback", body));
+  check("dokumen: callback diubah ditolak", !(await verifyCallback("rahasia", ts, sig, "/ocr/callback", body + " ")));
+  const old = String(Math.floor(Date.now() / 1000) - 3600);
+  check("dokumen: callback kedaluwarsa ditolak",
+    !(await verifyCallback("rahasia", old, await sign("rahasia", old, "POST", "/ocr/callback", body), "/ocr/callback",
+                           body)));
+  const mp = multipart({ document_type: "invoice" }, 'a"b.pdf', new TextEncoder().encode("%PDF-1.4\nx"));
+  const txt = new TextDecoder().decode(mp.body);
+  check("dokumen: multipart memuat file & field", txt.includes('name="document_type"\r\n\r\ninvoice') &&
+    txt.includes('filename="a_b.pdf"') && mp.contentType.includes("boundary="));
+  check("dokumen: correctionKey stabil",
+    (await correctionKey("j", "total", null, "100")) === (await sha256Hex('j\ntotal\nnull\n"100"')));
+  const offline = new DocumentOcrClient({ baseUrl: "http://127.0.0.1:9", apiKey: "k", apiSecret: "s", timeoutGetMs: 800 });
+  check("dokumen: engine mati -> error UNAVAILABLE tanpa exception",
+    (await offline.getJob("x")).body.error.code === "UNAVAILABLE");
+}
+
+// ---- client modul dokumen (online, opsional): PQE_URL, PQE_DOC_API_KEY, PQE_DOC_API_SECRET, PQE_DOC_SAMPLE
+if (process.env.PQE_URL && process.env.PQE_DOC_API_KEY && process.env.PQE_DOC_API_SECRET && process.env.PQE_DOC_SAMPLE) {
+  const ocr = new DocumentOcrClient({
+    baseUrl: process.env.PQE_URL, apiKey: process.env.PQE_DOC_API_KEY, apiSecret: process.env.PQE_DOC_API_SECRET,
+    sleep: (s) => new Promise((r) => setTimeout(r, Math.min(s, 2) * 1000)),
+  });
+  const job = await ocr.submit(new Uint8Array(readFileSync(process.env.PQE_DOC_SAMPLE)), "sample.pdf", "invoice");
+  check("dokumen: submit", job.ok && !!job.body.job_id, JSON.stringify(job.body));
+  if (job.ok) {
+    const res = await ocr.waitFor(job.body.job_id, 120);
+    check("dokumen: job selesai", ["succeeded", "failed"].includes(res.body.status), res.body.status);
+    const bad = await new DocumentOcrClient({ baseUrl: process.env.PQE_URL, apiKey: process.env.PQE_DOC_API_KEY,
+                                              apiSecret: "secret-salah" }).getJob(job.body.job_id);
+    check("dokumen: secret salah ditolak", bad.status === 401 && bad.body.error.code === "INVALID_SIGNATURE");
+  }
+} else {
+  console.log("skip uji online dokumen (set PQE_URL, PQE_DOC_API_KEY, PQE_DOC_API_SECRET, PQE_DOC_SAMPLE)");
 }
 
 if (failed) {

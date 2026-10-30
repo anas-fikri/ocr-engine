@@ -1,4 +1,4 @@
-"""Abuse case modul invoice (docs/invoice-ocr-design.md bagian 5.2)."""
+"""Abuse case modul dokumen (docs/document-ocr-design.md bagian 6.2)."""
 
 from __future__ import annotations
 

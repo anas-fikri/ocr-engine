@@ -9,7 +9,7 @@
     "ext-json": "*"
   },
   "autoload": {
-    "classmap": ["PhotoQualityClient.php"]
+    "classmap": ["PhotoQualityClient.php", "DocumentOcrClient.php"]
   },
   "scripts": {
     "test": "php test.php"

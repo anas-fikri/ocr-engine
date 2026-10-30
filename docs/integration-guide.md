@@ -29,7 +29,7 @@ menghubungkan aplikasinya ke Photo Quality Engine. Ikuti dari atas ke bawah. Sem
 10. [Kode error](#10-kode-error)
 11. [Checklist sebelum go-live](#11-checklist-sebelum-go-live)
 12. [FAQ integrasi](#12-faq-integrasi)
-13. [Integrasi dokumen invoice](#13-integrasi-dokumen-invoice) (ICTNotes v3 dan aplikasi lain)
+13. [Integrasi modul dokumen](#13-integrasi-modul-dokumen) (OCR invoice dan dokumen lain, untuk aplikasi apa pun)
 
 ---
 
@@ -988,18 +988,21 @@ Cek [troubleshooting.md](troubleshooting.md) dulu. Hampir semua masalah umum ada
 
 ---
 
-## 13. Integrasi dokumen invoice
+## 13. Integrasi modul dokumen
 
-Selain foto POD, engine membaca **invoice vendor** (PDF digital, PDF scan, JPEG/PNG) dan mengembalikan teks, blok
-ber-koordinat, dan field (nomor, tanggal, NPWP, DPP, PPN, PPh, total, item) dengan confidence. Desain:
-[invoice-ocr-design.md](invoice-ocr-design.md); referensi lengkap: [api-reference.md](api-reference.md#dokumen-invoice).
-Alurnya **async**: kirim file → dapat `job_id` → polling sampai `succeeded`/`failed`.
+Selain foto POD, engine membaca **dokumen** (PDF digital, PDF scan, JPEG/PNG) untuk **aplikasi apa pun** dan
+mengembalikan teks, blok ber-koordinat, dan field per jenis dokumen dengan confidence. Jenis dokumen = plugin; yang
+terpasang sekarang: `invoice` (invoice vendor Indonesia: NPWP, nomor, tanggal, DPP, PPN, PPh, total, item). Setiap
+aplikasi = satu client dengan namespace, kredensial, template, dan callback sendiri; client tidak bisa melihat data
+client lain. Referensi lengkap: [api-reference.md](api-reference.md#dokumen); desain:
+[document-ocr-design.md](document-ocr-design.md). Alurnya **async**: kirim file → `job_id` → polling sampai
+`succeeded`/`failed`.
 
 ```mermaid
 sequenceDiagram
-    participant App as ICTNotes (backend)
+    participant App as Backend aplikasi client
     participant E as Engine
-    App->>E: POST /v1/jobs (file, document_type=invoice, template_hint=NPWP) + HMAC
+    App->>E: POST /v1/jobs (file, document_type, template_hint opsional) + HMAC
     E-->>App: 202 {"job_id", "status": "queued"}
     loop polling 3, 5, 10, 15, 30 dtk, lalu tiap 60 dtk (maks. 10 menit)
         App->>E: GET /v1/jobs/{id} + HMAC
@@ -1007,61 +1010,48 @@ sequenceDiagram
     end
     App->>App: Pengguna memeriksa & mengoreksi field
     App->>E: POST /v1/templates (koreksi, Idempotency-Key) + HMAC
-    E-->>App: template issuer versi baru (invoice berikutnya vendor ini lebih akurat)
+    E-->>App: template penerbit versi baru (dokumen berikutnya dari penerbit ini lebih akurat)
 ```
 
-### 13.1 Persiapan (admin engine)
+### 13.1 Mendaftarkan aplikasi (admin engine)
 
-1. Tenant namespace, contoh [`config/tenants/ictnotes.yaml`](../config/tenants/ictnotes.yaml) (ikut di-import saat
-   start, atau buat lewat Web UI → Tenant).
-2. API key + `api_secret` (keduanya hanya tampil **sekali**; simpan di `.env` server aplikasi, bukan di git):
+Satu perintah membuat namespace (tenant) + API key + `api_secret` untuk satu aplikasi. Keduanya hanya tampil
+**sekali**; serahkan ke tim aplikasi lewat kanal aman dan simpan di `.env` server aplikasi (bukan git, bukan frontend):
 
 ```bash
-docker compose -f docker-compose.prod.yml exec engine pqe create-key --name ictnotes-prod --role app --tenant ictnotes --with-secret
+docker compose -f docker-compose.prod.yml exec engine pqe create-client --code aplikasi-keuangan --name "Aplikasi Keuangan"
 ```
 
-3. Rotasi `api_secret` (secret lama langsung tidak berlaku): `pqe set-api-secret <key_id>`. Cabut key: Web UI → API key.
+Opsional `--callback-hosts api.aplikasi.internal` bila aplikasi ingin callback (host lain ditolak). Rotasi secret:
+`pqe set-api-secret <key_id>`. Cabut akses: Web UI → API key. Contoh client: ICTNotes v3 (tenant `ictnotes`) adalah
+client pertama; aplikasi lain didaftarkan dengan cara yang sama.
 
-### 13.2 Menandatangani request
+### 13.2 Client siap pakai
+
+Pakai [clients/php/DocumentOcrClient.php](../clients/php/DocumentOcrClient.php) atau
+[clients/typescript/document-client.ts](../clients/typescript/document-client.ts): tanda tangan, multipart, polling,
+koreksi idempoten, dan verifikasi callback sudah ditangani dan dites terhadap engine.
+
+```php
+$ocr = new DocumentOcrClient(env('PQE_URL'), env('PQE_API_KEY'), env('PQE_API_SECRET'));
+$job = $ocr->submit($pathPdf, 'invoice', $npwpVendor);              // template_hint opsional
+$res = $ocr->getJob($job['body']['job_id']);                        // dari queue worker aplikasi; atau waitFor()
+if ($res['ok'] && $res['body']['status'] === 'succeeded') { $fields = $res['body']['fields']; }
+```
+
+### 13.3 Menandatangani request (bila menulis client sendiri)
 
 ```
 X-Api-Key:   pqe_...
-X-Timestamp: <Unix detik>
+X-Timestamp: <Unix detik, angka saja>
 X-Signature: hex(HMAC-SHA256(api_secret, timestamp + "\n" + METHOD + "\n" + path + "\n" + hex(sha256(body))))
 ```
 
-`path` tanpa query string (contoh `/v1/jobs/3f2a...`); `body` = byte mentah yang benar-benar dikirim (untuk
-multipart: susun body dulu, tandatangani, lalu kirim body yang sama persis). Jam server aplikasi harus sinkron (NTP),
-toleransi ±300 detik. Retry setelah timeout: tandatangani ulang (timestamp baru). Mengirim ulang request yang sama
-persis mengembalikan `job_id` yang sama (tidak membuat job ganda).
+`path` = path mentah tanpa query (contoh `/v1/jobs/3f2a...`); `body` = byte yang benar-benar dikirim (multipart:
+susun body dulu, tandatangani, kirim body yang sama persis). Jam server sinkron NTP (toleransi ±300 dtk). Retry setelah
+timeout: tandatangani ulang. Mengirim ulang request yang sama persis mengembalikan `job_id` yang sama.
 
-**Laravel (Guzzle MultipartStream + Http):**
-
-```php
-use GuzzleHttp\Psr7\MultipartStream;
-use Illuminate\Support\Facades\Http;
-
-function pqeHeaders(string $method, string $path, string $body): array {
-    $ts = (string) time();
-    $sig = hash_hmac('sha256', $ts."\n".strtoupper($method)."\n".$path."\n".hash('sha256', $body), env('PQE_API_SECRET'));
-    return ['X-Api-Key' => env('PQE_API_KEY'), 'X-Timestamp' => $ts, 'X-Signature' => $sig];
-}
-
-$boundary = bin2hex(random_bytes(16));
-$body = (string) new MultipartStream([
-    ['name' => 'file', 'contents' => file_get_contents($path), 'filename' => 'invoice.pdf'],
-    ['name' => 'document_type', 'contents' => 'invoice'],
-    ['name' => 'template_hint', 'contents' => $vendorNpwp],
-], $boundary);
-$ct = "multipart/form-data; boundary=$boundary";
-$job = Http::timeout(60)->withHeaders(pqeHeaders('POST', '/v1/jobs', $body))
-    ->withBody($body, $ct)->post(env('PQE_URL').'/v1/jobs')->throw()->json();
-
-$path = '/v1/jobs/'.$job['job_id'];
-$res = Http::timeout(10)->withHeaders(pqeHeaders('GET', $path, ''))->get(env('PQE_URL').$path)->json();
-```
-
-**Python (referensi, sama dengan test engine):**
+**Python:**
 
 ```python
 import hashlib, hmac, time, httpx
@@ -1071,14 +1061,14 @@ def headers(method, path, body, key, secret):
     msg = f"{ts}\n{method}\n{path}\n{hashlib.sha256(body).hexdigest()}".encode()
     return {"X-Api-Key": key, "X-Timestamp": ts, "X-Signature": hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()}
 
-req = httpx.Request("POST", f"{BASE}/v1/jobs", files={"file": ("inv.pdf", open("inv.pdf", "rb").read())},
+req = httpx.Request("POST", f"{BASE}/v1/jobs", files={"file": ("dok.pdf", open("dok.pdf", "rb").read())},
                     data={"document_type": "invoice"})
 body = req.read()
 r = httpx.post(f"{BASE}/v1/jobs", content=body, timeout=60,
                headers={"Content-Type": req.headers["content-type"], **headers("POST", "/v1/jobs", body, KEY, SECRET)})
 ```
 
-**curl (GET, untuk cek manual):**
+**curl (GET, cek manual):**
 
 ```bash
 TS=$(date +%s); P=/v1/jobs/$JOB_ID; H=$(printf '' | sha256sum | cut -d' ' -f1)
@@ -1086,39 +1076,48 @@ SIG=$(printf '%s\n%s\n%s\n%s' "$TS" GET "$P" "$H" | openssl dgst -sha256 -hmac "
 curl -s -H "X-Api-Key: $PQE_API_KEY" -H "X-Timestamp: $TS" -H "X-Signature: $SIG" "$PQE_URL$P"
 ```
 
-### 13.3 Membaca hasil
+Vektor uji: secret `abc123`, timestamp `1793337600`, `GET /v1/jobs/3f2a9c0e5b7d4e1f8a6b2c3d4e5f6a7b`, body kosong →
+`452df4a4485a72a34b4335fde50ab551ed1937de296a0fb362f5f87285686595`.
 
-- `fields.<nama>.value` + `confidence` (0-1). Field yang tidak ditemukan **tidak ada** di `fields`; tampilkan kosong
-  untuk diisi pengguna. Sarankan pengguna memeriksa field dengan confidence < 0,8 dan semua isi `validation`.
-- Tanggal `YYYY-MM-DD`; uang string desimal (`"14430000"`, `"1250000.50"`); NPWP & rekening digit saja.
-- `layer`: `pdf_text` (PDF digital) atau `ocr` (scan/foto). `layers` berisi juga `template` / `efaktur_qr` jika dipakai.
-- `status: failed` → `error.code` (`UNREADABLE_FILE`, `PDF_ENCRYPTED`, `TOO_MANY_PAGES`, `RESOURCE_LIMIT`, ...):
-  minta pengguna mengunggah ulang / mengisi manual. Error permanen tidak akan berhasil dengan polling lebih lama.
-- Respons ≤ ±900 KB (`text`/`blocks` dipotong bila perlu, `truncated: true`).
+### 13.4 Membaca hasil
 
-### 13.4 Mengirim koreksi (belajar template)
+- `fields.<nama>.value` + `confidence` (0-1). Field yang tidak ditemukan **tidak ada**; tampilkan kosong untuk diisi
+  pengguna. Sarankan pemeriksaan untuk confidence < 0,8 dan semua isi `validation`.
+- Format nilai: tanggal `YYYY-MM-DD`; uang string desimal (`"14430000"`, `"1250000.50"`); NPWP & rekening digit.
+- `layer`: `pdf_text` atau `ocr`; `layers` juga memuat `template` dan layer plugin (invoice: `efaktur_qr`).
+- `failed` → `error.code` (`UNREADABLE_FILE`, `PDF_ENCRYPTED`, `TOO_MANY_PAGES`, `RESOURCE_LIMIT`, ...): minta unggah
+  ulang / isi manual. Error permanen tidak akan berhasil dengan polling lebih lama.
+- Rekomendasi client: timeout POST 60 dtk, GET 10 dtk; batasi ukuran respons yang diterima ±1 MB (engine menjaga
+  ≤ ±900 KB, `truncated: true`). Abaikan field/key yang tidak dikenal (API `/v1` bisa bertambah field).
 
-Setelah pengguna menyimpan invoice, kirim field yang dikoreksi (nilai benar dalam format kanonik di atas).
-`idempotency_key` per koreksi = hex sha256 `job_id + "\n" + field + "\n" + JSON(extracted) + "\n" + JSON(corrected)`
-(diperlakukan engine sebagai kunci opak); header `Idempotency-Key` = hex sha256 key-key koreksi yang diurutkan dan
-digabung `"\n"`. Kirim ulang aman: key yang sudah diterapkan dilaporkan `duplicate`.
+### 13.5 Mengirim koreksi (belajar template)
+
+Setelah pengguna menyimpan dokumen, kirim field yang dikoreksi dalam format kanonik. `issuer.id` = ID penerbit
+(invoice: NPWP vendor). `idempotency_key` per koreksi = kunci unik pilihan aplikasi (client contoh memakai sha256
+`job_id + field + JSON(extracted) + JSON(corrected)`); header `Idempotency-Key` membuat request aman dikirim ulang.
 
 ```json
-{"document_type": "invoice", "issuer": {"npwp": "012345678901000"}, "job_id": "3f2a...",
+{"document_type": "invoice", "issuer": {"id": "012345678901000"}, "job_id": "3f2a...",
  "corrections": [{"field": "invoice_number", "extracted": null, "corrected": "INV/2026/10/0042", "idempotency_key": "..."}]}
 ```
 
 Engine mencari nilai benar di teks dokumen, menjadikan label di dekatnya sebagai anchor, dan mencatat posisinya.
-Invoice berikutnya dari NPWP yang sama (lewat `template_hint` atau NPWP yang terbaca di dokumen) memakai template
-itu. Jika nilai benar tidak ada di teks hasil OCR (`learned: false`, `VALUE_NOT_FOUND_IN_DOCUMENT`), koreksi tetap
-tercatat tetapi tidak mengubah template.
+Dokumen berikutnya dari penerbit yang sama (lewat `template_hint` atau penerbit yang terbaca) memakai template itu.
+Nilai yang tidak ada di teks hasil OCR dicatat tetapi tidak mengubah template (`VALUE_NOT_FOUND_IN_DOCUMENT`).
 
-### 13.5 Checklist integrasi invoice
+### 13.6 Callback (opsional)
+
+Kirim `callback_url` di `POST /v1/jobs` (host harus didaftarkan admin untuk client Anda). Engine mengirim
+`{"event": "job.finished", "job_id", "status", "document_type"}` dengan `X-Timestamp` + `X-Signature` (HMAC
+`api_secret` Anda, `path` = path callback). Verifikasi dengan `verifyCallback`, balas 2xx cepat, lalu ambil hasil
+dengan `GET /v1/jobs/{id}`. Polling tetap berfungsi tanpa callback.
+
+### 13.7 Checklist integrasi
 
 - [ ] `api_key` dan `api_secret` hanya di `.env` server aplikasi; tidak di log, git, atau frontend
-- [ ] Jam server aplikasi sinkron NTP (beda > 5 menit → `TIMESTAMP_OUT_OF_WINDOW`)
-- [ ] Body yang ditandatangani = body yang dikirim (multipart disusun sekali)
+- [ ] Jam server aplikasi sinkron NTP
+- [ ] Body yang ditandatangani = body yang dikirim (atau pakai client contoh)
 - [ ] Timeout POST 60 dtk, GET 10 dtk; polling berhenti saat `succeeded`/`failed` atau setelah 10 menit
 - [ ] Field kosong / confidence rendah / `validation` ditampilkan untuk diperiksa pengguna
 - [ ] Koreksi dikirim dengan `idempotency_key` dan `Idempotency-Key`
-- [ ] Data invoice asli (PDF/gambar) tetap disimpan aplikasi; engine menghapus file inbox setelah 30 hari
+- [ ] Dokumen asli tetap disimpan aplikasi; engine menghapus file inbox setelah 30 hari

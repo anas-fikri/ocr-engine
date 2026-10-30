@@ -10,6 +10,24 @@ atau versi interaktif di `<server-engine>/ui/guide.html` (tanpa login).
 
 Kotlin (Android), Swift (iOS), Dart (Flutter), dan Python: contoh kode ada di panduan integrasi.
 
+**Modul OCR dokumen** (invoice dan jenis dokumen lain, untuk aplikasi apa pun): [typescript/document-client.ts](typescript/document-client.ts)
+dan [php/DocumentOcrClient.php](php/DocumentOcrClient.php). Menandatangani setiap request (HMAC), kirim dokumen,
+polling hasil (3, 5, 10, 15, 30 dtk lalu tiap 60 dtk), kirim koreksi (idempoten), verifikasi callback. Pakai **hanya
+dari server** (ada `api_secret`). Panduan: [integration-guide.md §13](../docs/integration-guide.md#13-integrasi-modul-dokumen).
+
+```php
+$ocr = new DocumentOcrClient(env('PQE_URL'), env('PQE_API_KEY'), env('PQE_API_SECRET'));
+$job = $ocr->submit($pathPdf, 'invoice', $npwpVendor);                 // 202 {"job_id"}
+$res = $ocr->getJob($job['body']['job_id']);                           // queued | running | succeeded | failed
+$ocr->sendCorrections('invoice', $npwpVendor, $jobId, [['field' => 'total', 'extracted' => null, 'corrected' => '14430000']]);
+```
+
+```ts
+const ocr = new DocumentOcrClient({ baseUrl: process.env.PQE_URL!, apiKey: process.env.PQE_API_KEY!, apiSecret: process.env.PQE_API_SECRET! });
+const job = await ocr.submit(pdfBytes, "invoice.pdf", "invoice", { templateHint: npwpVendor });
+const res = await ocr.waitFor(job.body.job_id);                        // berhenti saat succeeded/failed atau 10 menit
+```
+
 ## Cara tercepat: `checkFile` (kirim foto, terima keputusan)
 
 Satu panggilan, satu keputusan. Engine tidak menyimpan ke bucket aplikasi: file foto dikirim
