@@ -13,6 +13,28 @@ Kode build berubah di setiap deploy, nomor versi berubah di setiap rilis.
 Rilis dibuat dengan tag git `vX.Y.Z`; server production memakai tag, bukan cabang
 ([deploy-production.md](docs/deploy-production.md#11-operasional)).
 
+## [0.5.0] - 30 Okt 2026
+
+### Modul baru: OCR dokumen invoice vendor ([ADR 0008](docs/adr/0008-modul-ocr-invoice.md))
+- Engine yang sama sekarang juga membaca **invoice vendor** untuk ICTNotes v3 (SRS FR-OCR-001..013). Terpisah dari
+  pemeriksaan foto POD: router, tabel (`invoice_*`, `api_key_secrets`), antrean, dan thread worker sendiri. Fungsi foto
+  tidak berubah. Desain, abuse case, dan acceptance criteria: [docs/invoice-ocr-design.md](docs/invoice-ocr-design.md).
+- Endpoint `POST /v1/jobs` (PDF/JPEG/PNG, async), `GET /v1/jobs/{id}` (teks, blok ber-koordinat, field + confidence,
+  layer), `POST /v1/templates` (koreksi → template issuer, idempoten), `GET /v1/templates/{type}/{npwp}`.
+- Autentikasi API key + **tanda tangan HMAC** (`X-Timestamp`, `X-Signature`, jendela ±300 dtk, timing-safe).
+  `pqe create-key ... --with-secret` dan `pqe set-api-secret` (secret terenkripsi dengan `PQE_SECRET_KEY`).
+- Layer 1 teks PDF digital (PDFium), layer 2 QR e-Faktur (**mati secara bawaan**, `PQE_INVOICE_EFAKTUR_QR`), layer 3
+  scan/foto (deskew, ratakan bayangan, kontras, binarize, Tesseract ind+eng), layer 4 template per NPWP issuer yang
+  dipelajari dari koreksi pengguna. Validasi silang subtotal/DPP/PPN/total. Tanpa AI generatif / model ML.
+- Dokumen dibaca di proses anak dengan batas memori, CPU, dan waktu, environment tanpa rahasia, prioritas CPU rendah
+  (PDF bom / gambar bom → `RESOURCE_LIMIT`, worker tetap hidup). Tipe file dari magic bytes.
+- Callback ber-HMAC opsional (host di `PQE_INVOICE_CALLBACK_HOSTS`), retensi file inbox 30 hari dan hasil 365 hari,
+  plugin jenis dokumen (`PQE_DOCUMENT_PLUGINS` / entry point `pqe.document_extractors`), `pqe invoice-worker`.
+- `/healthz` menampilkan versi Tesseract & PDFium dan status modul invoice; `pqe preflight` memeriksa modul invoice.
+- Metrik baru: `pqe_invoice_jobs_total`, `pqe_invoice_seconds`, `pqe_invoice_queue_depth`,
+  `pqe_invoice_auth_failures_total`, `pqe_invoice_callbacks_total`.
+- Dependency baru: `pypdfium2` (BSD-3/Apache-2.0). Tenant contoh `config/tenants/ictnotes.yaml`.
+
 ## [0.4.1] - 25 Okt 2026 (UAT)
 
 ### Perbaikan

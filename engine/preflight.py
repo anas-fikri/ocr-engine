@@ -154,5 +154,26 @@ def run(check_silo: bool = True) -> dict[str, Any]:
     except Exception as e:  # OCR opsional
         out.append(_item("Worker", "OCR (Tesseract)", "warn", str(e)[:200]))
 
+    # ---- modul dokumen invoice (ADR 0008): hanya ok/warn, tidak menghalangi go-live fungsi foto
+    if s.invoice_enabled:
+        from engine.invoice.process import engine_versions
+
+        v = engine_versions()
+        out.append(_item("Dokumen invoice", "Pembaca PDF (PDFium) & OCR", "ok" if v.get("pdfium") and
+                         v.get("tesseract") else "warn", ", ".join(f"{k} {x}" for k, x in v.items()),
+                         "Pakai image engine terbaru (pypdfium2 + Tesseract)."))
+        from sqlalchemy import func, select
+
+        from engine.invoice.models import ApiKeySecret
+
+        with session_scope() as sess:
+            n = sess.scalar(select(func.count()).select_from(ApiKeySecret)) or 0
+        out.append(_item("Dokumen invoice", "API key ber-api_secret", "ok" if n else "warn", f"{n} key",
+                         "pqe create-key --name ictnotes-prod --role app --tenant ictnotes --with-secret"))
+        out.append(_item("Dokumen invoice", "QR e-Faktur", "ok" if s.invoice_efaktur_qr == "off" else "warn",
+                         s.invoice_efaktur_qr, "Aktifkan (decode/lookup) hanya setelah izin TBD-15 dikonfirmasi."))
+    else:
+        out.append(_item("Dokumen invoice", "Modul", "ok", "dimatikan (PQE_INVOICE_ENABLED=false)"))
+
     counts = {k: sum(1 for i in out if i["status"] == k) for k in ("ok", "warn", "fail")}
     return {"ready": counts["fail"] == 0, "counts": counts, "checks": out}

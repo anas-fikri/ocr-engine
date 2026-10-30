@@ -11,6 +11,7 @@ Daftar isi:
 - [1. Environment variable](#1-environment-variable)
   - [1.6 Koneksi SILO lewat Web UI](#16-koneksi-silo-lewat-web-ui)
   - [1.7 Backup NAS lewat Web UI](#17-backup-nas-lewat-web-ui)
+  - [1.8 Modul invoice](#18-modul-invoice)
 - [2. Config tenant (YAML)](#2-config-tenant-yaml)
   - [2.1 Field tingkat atas](#21-field-tingkat-atas)
   - [2.2 sources: dari mana foto diambil](#22-sources-dari-mana-foto-diambil)
@@ -200,6 +201,37 @@ Menu **Backup NAS** (role `admin`) mengatur salinan terjadwal database dan foto 
 
 Setiap simpan tercatat di audit log (`settings.backup.update`), permintaan manual sebagai `backup.run_requested`.
 Detail cara kerja, mount NAS, dan restore: [operations.md bagian 6](operations.md#6-postgresql--backup).
+
+### 1.8 Modul invoice
+
+OCR dokumen invoice vendor ([ADR 0008](adr/0008-modul-ocr-invoice.md),
+[desain](invoice-ocr-design.md)). Endpoint `/v1/jobs` dan `/v1/templates`, antrean dan thread worker sendiri (ikut
+berjalan di `pqe run` / `pqe worker`, atau terpisah dengan `pqe invoice-worker`). Namespace = tenant API key; contoh
+tenant: [`config/tenants/ictnotes.yaml`](../config/tenants/ictnotes.yaml).
+
+| Variabel | Default | Arti | Kapan diubah |
+|---|---|---|---|
+| `PQE_INVOICE_ENABLED` | `true` | Router + worker invoice aktif. `false` = endpoint `/v1/jobs`, `/v1/templates` tidak ada | Matikan jika server tidak melayani invoice |
+| `PQE_INVOICE_WORKER_CONCURRENCY` | `1` | Thread OCR invoice per proses worker. Setiap dokumen dibaca di proses anak `nice 10` | Naikkan hanya jika CPU longgar (OCR invoice berebut CPU dengan analisis sinkron foto kurir) |
+| `PQE_INVOICE_SIGNATURE_WINDOW_SEC` | `300` | Toleransi beda jam `X-Timestamp` (±detik) | Jangan dinaikkan; perbaiki NTP di server klien |
+| `PQE_INVOICE_MAX_UPLOAD_MB` | `20` | Batas ukuran file. Lebih besar → `413 FILE_TOO_LARGE` (dicek dari `Content-Length` dan saat streaming). Caddy production membatasi body 30 MB | Jarang |
+| `PQE_INVOICE_MAX_PAGES` | `20` | Batas halaman PDF. Lebih → job `failed` `TOO_MANY_PAGES` | Invoice dengan lampiran panjang |
+| `PQE_INVOICE_RENDER_DPI` | `300` | Resolusi render halaman PDF hasil scan untuk OCR (maks. 40 MP per halaman) | Turunkan (200) jika CPU berat |
+| `PQE_INVOICE_MAX_IMAGE_PIXELS` | `50000000` | Batas piksel gambar (dicek dari header sebelum decode). Lebih → `IMAGE_TOO_LARGE` | Jarang |
+| `PQE_INVOICE_SANDBOX_MEMORY_MB` | `1536` | Batas memori (address space) proses anak pembaca dokumen. Lebih → `RESOURCE_LIMIT` | Naikkan jika PDF scan besar yang sah gagal `RESOURCE_LIMIT` |
+| `PQE_INVOICE_SANDBOX_TIMEOUT_SEC` | `180` | Batas waktu dinding proses anak (CPU = 2/3 nilai ini). Lebih → `PROCESSING_TIMEOUT` | Naikkan untuk PDF scan banyak halaman |
+| `PQE_INVOICE_OCR_PAGE_TIMEOUT_SEC` | `30` | Batas Tesseract per halaman | Jarang |
+| `PQE_INVOICE_MAX_PENDING_PER_TENANT` | `200` | Job `queued`+`running` per namespace. Lebih → `429 QUEUE_FULL` | Impor massal |
+| `PQE_INVOICE_INBOX_RETENTION_DAYS` | `30` | File inbox (tabel `invoice_files`) lebih tua dari ini dihapus (FR-OCR-010). Hasil job tetap | Turunkan untuk minimisasi data; naikkan jika butuh proses ulang |
+| `PQE_INVOICE_RESULT_RETENTION_DAYS` | `365` | Hasil job (`invoice_jobs`) yang selesai lebih tua dari ini dihapus | Sesuai kebijakan retensi finance |
+| `PQE_INVOICE_EFAKTUR_QR` | `off` | Layer 2 QR e-Faktur: `off` / `decode` (QR dibaca lokal, NPWP penjual + nomor faktur, tanpa jaringan) / `lookup` (+ panggil validasi DJP untuk DPP, PPN, tanggal) | **Biarkan `off`** sampai izin TBD-15 dikonfirmasi; `lookup` butuh akses keluar ke DJP |
+| `PQE_INVOICE_EFAKTUR_HOSTS` | `svc.efaktur.pajak.go.id,efaktur.pajak.go.id` | Host QR e-Faktur yang diterima (allowlist; selalu dipanggil lewat HTTPS, tanpa redirect) | Jika DJP mengganti domain |
+| `PQE_INVOICE_CALLBACK_HOSTS` | kosong | Host yang boleh menjadi `callback_url` (dipisah koma). Kosong = callback ditolak `422 CALLBACK_NOT_ALLOWED` (cegah SSRF) | Isi host aplikasi klien jika memakai callback |
+| `PQE_DOCUMENT_PLUGINS` | kosong | Plugin jenis dokumen tambahan `paket.modul:Kelas,...` (selain entry point `pqe.document_extractors`) | Saat menambah jenis dokumen baru |
+
+`api_secret` untuk tanda tangan HMAC dibuat per API key (`pqe create-key ... --with-secret` atau
+`pqe set-api-secret <key_id>` untuk rotasi) dan disimpan terenkripsi dengan `PQE_SECRET_KEY`. Mengganti
+`PQE_SECRET_KEY` membuat semua `api_secret` tidak terbaca: buat ulang dengan `pqe set-api-secret`.
 
 ---
 

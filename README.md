@@ -32,6 +32,7 @@ Engine bisa dipakai oleh aplikasi apa pun (Android, iOS, Flutter, web, Laravel, 
 | Uji coba tanpa aplikasi | `/ui/coba.html`: buka dari HP, ambil foto dengan kamera, lihat pesan yang tampil di layar kurir + detail analisis (simulasi penuh atau uji cepat) |
 | Evidence pelanggan | JSON/PDF per resi atau per invoice, hanya foto layak (bawaan: PASS + WARN; REJECT tidak pernah), dengan hash verifikasi keaslian |
 | Andal | Antrean dengan retry & dead-letter, reconciliation harian, idempotent, webhook bertanda tangan HMAC |
+| **OCR dokumen invoice** (baru, 0.5.0) | Satu server juga melayani invoice vendor (ICTNotes): `POST /v1/jobs` (PDF/JPEG/PNG, async) → teks, blok ber-koordinat, field (NPWP, nomor, tanggal, DPP, PPN, PPh, total, item) + confidence. Layer teks PDF → (QR e-Faktur, mati bawaan) → OCR scan → template per vendor yang belajar dari koreksi pengguna. API key + HMAC, proses dokumen terisolasi (anti PDF bom). Lihat [desain](docs/invoice-ocr-design.md) |
 | Siap produksi | `docker-compose.prod.yml` (engine + Postgres + HTTPS Caddy) dengan `scripts/prod-setup.sh` (secret acak otomatis), `pqe preflight` (cek kesiapan go-live), manifest Kubernetes, metrik Prometheus, CI |
 
 ## Arsitektur singkat
@@ -99,6 +100,7 @@ Langkah lengkap: [docs/getting-started.md](docs/getting-started.md).
 | DevOps / infra | **[Deploy ke production (live uji coba & UAT)](docs/deploy-production.md)** · [Operasional (SILO, K8s, monitoring, backup, runbook)](docs/operations.md) |
 | PIC UAT / semua peran | [Rencana UAT (skenario, kalibrasi, sign-off)](docs/uat-plan.md) |
 | Developer engine | [Pengembangan](docs/development.md) · [Keputusan arsitektur (ADR)](docs/adr/) |
+| Integrasi invoice (ICTNotes) | [Panduan integrasi §13](docs/integration-guide.md#13-integrasi-dokumen-invoice) · [Referensi API](docs/api-reference.md#dokumen-invoice) · [Desain modul](docs/invoice-ocr-design.md) |
 | Saat ada masalah | [Troubleshooting](docs/troubleshooting.md) |
 | Perencanaan | [Dokumen SDLC](docs/sdlc-plan.md) · [Keputusan arsitektur (ADR)](docs/adr/) · [Catatan versi](CHANGELOG.md) |
 
@@ -107,6 +109,7 @@ Langkah lengkap: [docs/getting-started.md](docs/getting-started.md).
 ```
 engine/               kode engine (Python)
   analyzers/          pemeriksaan: sharpness, resolution, exposure, exif, duplicate, ocr
+  invoice/            modul OCR dokumen invoice (API, antrean, sandbox, ekstraksi, template)
   imaging/            decode gambar, perbaikan pencahayaan aman, kompresi, thumbnail
   api/                REST API (FastAPI)
   webui/              Web UI (HTML/JS tanpa build step)
@@ -128,7 +131,9 @@ docs/                 dokumentasi
 | `pqe --version` | Versi engine (juga tampil di Web UI, `/healthz`, `/v1/me`, dan header `X-PQE-Version`) |
 | `pqe api` / `pqe worker` / `pqe ingestor` | Jalankan komponen terpisah (Kubernetes) |
 | `pqe analyze FOTO...` | Analisis file lokal tanpa server (`--profile`, `--json`, `--out-dir`) |
-| `pqe create-key --name X --role app --tenant T` | Buat API key |
+| `pqe create-key --name X --role app --tenant T` | Buat API key (`--with-secret`: plus `api_secret` HMAC untuk endpoint dokumen invoice) |
+| `pqe set-api-secret KEY_ID` | Buat/rotasi `api_secret` HMAC untuk key yang sudah ada |
+| `pqe invoice-worker` | Worker dokumen invoice saja (container terpisah, opsional) |
 | `pqe import-tenants [--force]` | Import config tenant dari `config/tenants/` |
 | `pqe validate-tenant FILE...` | Validasi file config tenant |
 | `pqe preflight [--no-silo] [--json]` | Cek kesiapan production (secret, database, akses baca SILO, tenant, backup NAS, worker, OCR). Exit 1 jika ada yang gagal |

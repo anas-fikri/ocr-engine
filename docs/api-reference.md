@@ -11,7 +11,7 @@ versi interaktif tanpa login di `<base-url>/ui/guide.html`.
 | Hal | Aturan |
 |---|---|
 | Base URL | Produksi sesuai ingress (misal `https://photo-quality.pcpexpress.com`), lokal `http://localhost:8000` |
-| Autentikasi | Header `X-API-Key: pqe_...` atau `Authorization: Bearer pqe_...` |
+| Autentikasi | Header `X-API-Key: pqe_...` atau `Authorization: Bearer pqe_...`. Endpoint dokumen invoice juga wajib tanda tangan HMAC ([lihat](#dokumen-invoice)) |
 | Bahasa pesan | Header `Accept-Language: id` / `en`, atau query `?lang=id` / `?lang=en`. Default `PQE_DEFAULT_LANG` (id) |
 | Format | JSON UTF-8, kecuali upload (`multipart/form-data`), config tenant (`application/x-yaml`), dan PDF |
 | Waktu | ISO-8601 dengan zona waktu, disimpan dalam UTC |
@@ -513,11 +513,169 @@ pilihan), `409 SECRET_KEY_MISSING` (mengirim `s3_secret_key` tetapi `PQE_SECRET_
 Format `text` mengirim `{"text": "..."}` (Slack, Google Chat, Microsoft Teams, Mattermost). Format `json` mengirim
 `{"event": "pqe.digest" | "pqe.alert" | "pqe.test", "text": "...", "data": {...}}`.
 
+## Dokumen invoice
+
+Modul OCR dokumen invoice vendor ([ADR 0008](adr/0008-modul-ocr-invoice.md), desain:
+[invoice-ocr-design.md](invoice-ocr-design.md), panduan integrasi:
+[integration-guide.md §13](integration-guide.md#13-integrasi-dokumen-invoice)). Terpisah dari analisis foto: endpoint,
+tabel, dan antrean sendiri.
+
+### Autentikasi: API key + tanda tangan HMAC
+
+Hanya API key role `app` yang terikat tenant **dan** punya `api_secret` (`pqe create-key ... --with-secret`).
+Namespace (job, file, template) = tenant API key. Setiap request wajib:
+
+| Header | Isi |
+|---|---|
+| `X-Api-Key` | API key (`pqe_...`) |
+| `X-Timestamp` | Unix detik saat request dibuat. Beda dengan jam server > ±300 dtk → `401 TIMESTAMP_OUT_OF_WINDOW` |
+| `X-Signature` | `hex(HMAC-SHA256(api_secret, timestamp + "\n" + METHOD + "\n" + path + "\n" + hex(sha256(body))))` |
+
+- `path` = path URL **tanpa** query string, persis seperti dikirim (contoh `/v1/jobs/3f2a...`). `METHOD` huruf besar.
+- `body` = byte mentah body (multipart apa adanya; GET = kosong, `sha256("")` =
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
+- `api_secret` dipakai sebagai string UTF-8 apa adanya (64 karakter hex).
+- `POST /v1/jobs` yang dikirim ulang dengan tanda tangan yang **sama persis** (retry jaringan / replay) tidak membuat
+  job baru: respons `202` berisi `job_id` yang sama + header `Idempotent-Replayed: true`. Retry dengan timestamp baru =
+  job baru.
+
+### `POST /v1/jobs`
+
+`multipart/form-data`:
+
+| Field | Wajib | Keterangan |
+|---|---|---|
+| `file` | ✓ | PDF, JPEG, atau PNG. Tipe dicek dari **isi file** (magic bytes), bukan nama/Content-Type. Maks. `PQE_INVOICE_MAX_UPLOAD_MB` (20 MB) |
+| `document_type` | ✓ | `invoice` (atau jenis dari plugin) |
+| `template_hint` | | NPWP vendor (15/16 digit, titik/strip boleh) jika diketahui → template issuer dipakai |
+| `callback_url` | | Opsional. Host harus ada di `PQE_INVOICE_CALLBACK_HOSTS`. Polling tetap bisa dipakai |
+
+Respons `202`:
+
+```json
+{"job_id": "3f2a9c0e5b7d4e1f8a6b2c3d4e5f6a7b", "status": "queued", "poll_url": "/v1/jobs/3f2a9c0e5b7d4e1f8a6b2c3d4e5f6a7b"}
+```
+
+### `GET /v1/jobs/{id}`
+
+Status `queued` → `running` → `succeeded` | `failed`. Job milik namespace lain → `404 JOB_NOT_FOUND`.
+
+```json
+{
+  "job_id": "3f2a...", "status": "succeeded", "document_type": "invoice",
+  "created_at": "2026-10-30T03:10:00+00:00", "finished_at": "2026-10-30T03:10:04+00:00", "duration_ms": 3870,
+  "layer": "pdf_text", "layers": ["pdf_text", "template"], "pages": 1,
+  "text": "PT Contoh Sinar Abadi  INVOICE\n...",
+  "blocks": [{"page": 1, "text": "No. Invoice", "bbox": [0.075, 0.104, 0.155, 0.113], "confidence": 0.99, "source": "pdf_text"}],
+  "fields": {
+    "vendor_npwp": {"value": "012345678901000", "confidence": 0.96, "source": "pdf_text", "method": "hint"},
+    "invoice_number": {"value": "INV/2026/10/0042", "confidence": 0.94, "source": "pdf_text", "method": "template"},
+    "invoice_date": {"value": "2026-10-15", "confidence": 0.84, "source": "pdf_text", "method": "label"},
+    "total": {"value": "14430000", "confidence": 0.89, "source": "pdf_text", "method": "label"},
+    "lines": {"value": [{"description": "Sewa server bulanan", "quantity": "1", "unit_price": "10000000", "amount": "10000000"}],
+              "confidence": 0.91, "source": "pdf_text", "method": "table"}
+  },
+  "template": {"issuer_npwp": "012345678901000", "version": 3},
+  "validation": [], "document_score": 0.9, "truncated": false,
+  "engine": {"pqe": "0.5.0", "tesseract": "5.5.1", "pdfium": "153.0.7999.0", "extractor.invoice": "1"}
+}
+```
+
+| Field | Keterangan |
+|---|---|
+| `layer` | Sumber teks: `pdf_text` (layer 1, semua halaman punya text layer) atau `ocr` (layer 3, minimal satu halaman di-OCR) |
+| `layers` | Semua layer yang dipakai: `pdf_text`, `ocr`, `efaktur_qr` (layer 2), `template` (layer 4) |
+| `text` | Teks penuh urut baca; antarhalaman dipisah `\f` |
+| `blocks` | Baris teks dengan `bbox` relatif halaman `[x0, y0, x1, y1]` (0-1, kiri atas = 0,0), `page` mulai 1 |
+| `fields` | `{nama: {value, confidence 0-1, source, method}}`. Field yang tidak ditemukan **tidak ada** (bukan `null`). `method`: `label`, `template`, `hint`, `guess`, `table`, `qr` |
+| `validation` | Hasil validasi silang (`DPP_MISMATCH`, `VAT_MISMATCH`, `TOTAL_MISMATCH`, `LINES_MISMATCH`, `DUE_BEFORE_INVOICE`, `PERIOD_INVERTED`, `NOT_LIKELY_DOCUMENT_TYPE`). Field terkait diturunkan confidence-nya |
+| `truncated` | `true` jika `text`/`blocks` dipotong agar respons ≤ ±900 KB (field tidak pernah dipotong) |
+| `error` | Hanya saat `failed`: `{"code", "message"}` |
+
+Nama field: `vendor_npwp`, `vendor_name`, `bank_account`, `invoice_number`, `invoice_date`, `due_date`,
+`period_start`, `period_end`, `currency`, `subtotal`, `discount`, `dpp`, `vat_amount`, `wht_amount`, `total`,
+`lines[]` (`description`, `quantity`, `unit_price`, `amount`). Tanggal `YYYY-MM-DD`; uang & kuantitas **string
+desimal** (`"1234567.89"`, `"1500000"`, tidak pernah float); NPWP & rekening digit saja.
+
+Kode `error.code` job gagal: `UNREADABLE_FILE`, `PDF_ENCRYPTED`, `TOO_MANY_PAGES`, `PAGE_TOO_LARGE`,
+`IMAGE_TOO_LARGE`, `RESOURCE_LIMIT` (melewati batas memori/CPU, misal PDF bom), `PROCESSING_TIMEOUT`, `FILE_EXPIRED`
+(file inbox sudah dihapus retensi sebelum diproses), `OCR_UNAVAILABLE`, `PROCESSING_ERROR` (dicoba ulang 3×).
+
+### `POST /v1/templates`
+
+Koreksi pengguna → engine belajar/mengupdate template issuer di namespace sendiri. Header opsional
+`Idempotency-Key` (8-128 karakter): request diulang dengan key + body sama → respons tersimpan (header
+`Idempotent-Replayed: true`); key sama + body beda → `422 IDEMPOTENCY_KEY_REUSED`.
+
+```json
+{"document_type": "invoice", "issuer": {"npwp": "012345678901000"}, "job_id": "3f2a...",
+ "corrections": [{"field": "total", "extracted": null, "corrected": "14430000",
+                  "idempotency_key": "9b1c...64 hex"}]}
+```
+
+- `job_id` wajib, milik namespace sendiri, status `succeeded` (`404 JOB_NOT_FOUND` / `409 JOB_NOT_READY`).
+- `idempotency_key` per koreksi (16-128 karakter `[A-Za-z0-9_-]`) diterapkan **paling banyak sekali** per namespace;
+  engine tidak menghitung ulang hash-nya (diperlakukan sebagai kunci opak).
+- `corrected: null` = hapus aturan field itu dari template. `field` di luar daftar → `422 UNKNOWN_FIELD`; nilai tidak
+  valid untuk jenisnya → `422 INVALID_VALUE`. Maks. 100 koreksi, body ≤ 256 KB.
+
+Respons `200`:
+
+```json
+{"template": {"document_type": "invoice", "issuer": {"npwp": "012345678901000"}, "version": 2,
+              "fields": ["due_date", "invoice_number", "total"], "updated_at": "2026-10-30T03:12:00+00:00"},
+ "corrections": [{"idempotency_key": "9b1c...", "field": "total", "status": "applied", "learned": true, "reason": null}]}
+```
+
+`status`: `applied` | `duplicate`. `learned: false` + `reason`: `VALUE_NOT_FOUND_IN_DOCUMENT` (nilai benar tidak
+ditemukan di teks dokumen, misal OCR salah baca), `FIELD_NOT_LEARNABLE` (`lines`), `RULE_REMOVED`.
+
+### `GET /v1/templates/{document_type}/{npwp}`
+
+Template issuer di namespace sendiri (`rules` per field: anchor, jenis pola, posisi). Tidak ada → `404 TEMPLATE_NOT_FOUND`.
+
+### Kode error invoice
+
+| HTTP | `code` | Penyebab |
+|---|---|---|
+| 401 | `UNAUTHORIZED` | `X-Api-Key` kosong/salah/dicabut |
+| 401 | `SIGNATURE_REQUIRED` | `X-Timestamp` / `X-Signature` tidak dikirim |
+| 401 | `TIMESTAMP_OUT_OF_WINDOW` | Jam klien beda > ±300 dtk (atau bukan angka) |
+| 401 | `INVALID_SIGNATURE` | Tanda tangan tidak cocok (secret, path, method, body, atau timestamp beda) |
+| 403 | `SIGNATURE_NOT_ENABLED` | API key belum punya `api_secret` |
+| 403 | `FORBIDDEN` | Bukan key role `app` yang terikat tenant |
+| 409 | `TENANT_DISABLED` | Tenant namespace dinonaktifkan |
+| 400 | `INVALID_REQUEST` | Multipart rusak |
+| 413 | `FILE_TOO_LARGE` | Melebihi `PQE_INVOICE_MAX_UPLOAD_MB` |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | Bukan PDF/JPEG/PNG (dari isi file) atau body bukan multipart |
+| 422 | `UNSUPPORTED_DOCUMENT_TYPE`, `INVALID_TEMPLATE_HINT`, `FILE_REQUIRED`, `EMPTY_FILE`, `CALLBACK_NOT_ALLOWED`, `VALIDATION_ERROR`, `INVALID_NPWP`, `UNKNOWN_FIELD`, `INVALID_VALUE`, `INVALID_IDEMPOTENCY_KEY`, `IDEMPOTENCY_KEY_REUSED`, `DOCUMENT_TYPE_MISMATCH` | Input tidak valid (lihat `message`) |
+| 429 | `QUEUE_FULL` | Antrean namespace penuh (`PQE_INVOICE_MAX_PENDING_PER_TENANT`) |
+| 404 | `JOB_NOT_FOUND`, `TEMPLATE_NOT_FOUND` | Tidak ada / milik namespace lain |
+
+### Batas
+
+| Batas | Nilai bawaan |
+|---|---|
+| Ukuran file | 20 MB (`PQE_INVOICE_MAX_UPLOAD_MB`) |
+| Halaman PDF | 20 (`PQE_INVOICE_MAX_PAGES`) |
+| Ukuran halaman PDF | ≤ 5.000 pt per sisi |
+| Render PDF scan | 300 dpi, ≤ 40 MP per halaman |
+| Piksel gambar | 50 MP (dicek dari header sebelum decode) |
+| Dekompresi/render (PDF bom) | Proses anak dibatasi 1.536 MB memori, 120 dtk CPU, 180 dtk total → `RESOURCE_LIMIT` / `PROCESSING_TIMEOUT` |
+| Respons | ±900 KB (`text`/`blocks` dipotong, `truncated: true`) |
+
+### Callback (opsional)
+
+Jika `callback_url` dikirim, setelah job selesai engine mengirim `POST` JSON
+`{"event": "job.finished", "job_id", "status", "document_type"}` (tanpa hasil; ambil dengan `GET /v1/jobs/{id}`)
+dengan header `X-Timestamp` dan `X-Signature` = HMAC yang sama (`api_secret` key pembuat job, `path` = path
+`callback_url`). Balas 2xx; gagal dicoba ulang 6× dengan jeda bertambah (maks. 1 jam). Tanpa redirect.
+
 ## Operasional
 
 | Endpoint | Keterangan |
 |---|---|
-| `GET /healthz` | Liveness. `200 {"status": "ok", "version": "..."}` jika proses hidup |
+| `GET /healthz` | Liveness. `200 {"status": "ok", "version": "...", "build": "...", "invoice": {"enabled", "efaktur_qr"}, "engines": {"pqe", "tesseract", "pdfium"}}` jika proses hidup |
 | `GET /readyz` | Readiness. `200` jika DB & SILO bisa diakses, `503` + detail jika tidak |
 | `GET /metrics` | Metrik Prometheus (lihat [operations.md](operations.md)) |
 | `POST /v1/events/s3` | Penerima bucket notification SILO. Header `Authorization: Bearer <PQE_S3_EVENT_TOKEN>`. Respons `{"accepted", "ignored"}` |

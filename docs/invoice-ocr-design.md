@@ -58,6 +58,9 @@ erDiagram
         string key_id
         string document_type
         string template_hint
+        string media_type
+        int size_bytes
+        string sha256
         string status
         string layer
         json result
@@ -68,11 +71,11 @@ erDiagram
         datetime created_at
         datetime finished_at
     }
-    INVOICE_FILES { string job_id PK  bytes content  string media_type  int size  string sha256  datetime created_at }
+    INVOICE_FILES { string job_id PK  bytes content  datetime created_at }
     INVOICE_TEMPLATES { int id PK  string tenant_code  string document_type  string issuer_npwp  json rules  int version }
     INVOICE_CORRECTIONS { int id PK  string tenant_code  string idempotency_key  string job_id  string field  json extracted  json corrected  bool learned }
     INVOICE_IDEMPOTENCY { int id PK  string tenant_code  string key  string body_sha256  json response }
-    INVOICE_NONCES { string signature_sha256 PK  datetime expires_at }
+    INVOICE_NONCES { string signature_sha256 PK  string tenant_code  string job_id  datetime expires_at }
 ```
 
 - `invoice_jobs` menyimpan hasil (JSON) di kolom `result`; file asli di `invoice_files` (tabel terpisah supaya
@@ -200,8 +203,10 @@ X-Signature: hex(HMAC-SHA256(api_secret, timestamp + "\n" + METHOD + "\n" + path
   ditampilkan sekali. API key sendiri tetap disimpan sebagai hash.
 - Timestamp di luar ±`PQE_INVOICE_SIGNATURE_WINDOW_SEC` (bawaan 300) → `401 TIMESTAMP_OUT_OF_WINDOW`.
 - Perbandingan memakai `hmac.compare_digest` (timing-safe).
-- **Replay:** tanda tangan request `POST` dicatat sampai jendela waktu lewat; tanda tangan yang sama dipakai lagi →
-  `409 REPLAYED_REQUEST`. Retry dari klien harus menandatangani ulang (timestamp baru). `GET` boleh diulang.
+- **Replay:** tanda tangan `POST /v1/jobs` dicatat sampai jendela waktu lewat; request dengan tanda tangan yang sama
+  persis (replay penyadap atau retry jaringan klien) **tidak membuat job baru**, tetapi mendapat `job_id` yang sama
+  (`Idempotent-Replayed: true`). `POST /v1/templates` sudah idempoten lewat `idempotency_key`. `GET` boleh diulang.
+  (Rancangan awal menolak replay dengan `409`; diubah karena retry klien dalam detik yang sama ikut tertolak.)
 - Hanya role `app` yang terikat tenant; key admin/ops tidak bisa memakai endpoint invoice (namespace tidak jelas).
 
 ### 5.2 Abuse case & mitigasi
@@ -209,7 +214,7 @@ X-Signature: hex(HMAC-SHA256(api_secret, timestamp + "\n" + METHOD + "\n" + path
 | # | Abuse case | Mitigasi | Test |
 |---|---|---|---|
 | A1 | Tanda tangan palsu / secret salah | HMAC dihitung ulang, `compare_digest`, 401 | `test_invoice_api::test_bad_signature_rejected` |
-| A2 | Replay request yang disadap | Jendela ±300 dtk + daftar tanda tangan POST yang sudah dipakai | `test_replay_rejected`, `test_old_timestamp_rejected` |
+| A2 | Replay request yang disadap | Jendela ±300 dtk; replay `POST /v1/jobs` dalam jendela mengembalikan job yang sama (tidak ada efek ganda); koreksi template idempoten per key | `test_replay_rejected`, `test_old_timestamp_rejected` |
 | A3 | Body diubah di tengah jalan | Hash body ikut ditandatangani | `test_tampered_body_rejected` |
 | A4 | Namespace lain membaca job/template, atau melatih template namespace lain | Semua query difilter tenant dari API key; job/template milik tenant lain → `404` (tidak membocorkan keberadaan) | `test_namespace_isolation_*` |
 | A5 | File berbahaya (EXE/ZIP/HTML berganti nama `.pdf`) | Tipe ditentukan dari **magic bytes** (`%PDF-`, JPEG, PNG), bukan nama/Content-Type → `415` | `test_unsupported_file_rejected` |
