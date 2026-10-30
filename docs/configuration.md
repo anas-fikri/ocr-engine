@@ -208,7 +208,8 @@ OCR dokumen generik untuk aplikasi client mana pun ([ADR 0008](adr/0008-modul-oc
 [ADR 0009](adr/0009-modul-dokumen-generik-multi-client.md), [desain](document-ocr-design.md)). Endpoint `/v1/jobs` dan
 `/v1/templates`, antrean dan thread worker sendiri (ikut berjalan di `pqe run` / `pqe worker`, atau terpisah dengan
 `pqe document-worker`). Setiap client = satu tenant; daftarkan dengan
-`pqe create-client --code <kode> --name "<nama>" [--callback-hosts h1,h2]`. Field opsional di config tenant:
+`scripts/pqe.sh create-client --code <kode> --name "<nama>" [--callback-hosts h1,h2]` (di server production; sama dengan
+`docker compose -f docker-compose.prod.yml exec engine pqe create-client ...`). Field opsional di config tenant:
 `callback_hosts: [api.aplikasi.internal]` (host callback_url khusus client itu).
 
 | Variabel | Default | Arti | Kapan diubah |
@@ -231,9 +232,10 @@ OCR dokumen generik untuk aplikasi client mana pun ([ADR 0008](adr/0008-modul-oc
 | `PQE_DOCS_CALLBACK_HOSTS` | kosong | Host `callback_url` yang diizinkan untuk **semua** client (dipisah koma), ditambah `callback_hosts` di config tenant masing-masing client. `host` = hanya port 80/443; port lain tulis `host:port`. Tidak terdaftar → `422 CALLBACK_NOT_ALLOWED` (cegah SSRF) | Lebih baik isi per client (`callback_hosts` tenant) agar client lain tidak bisa memakai host itu |
 | `PQE_DOCUMENT_PLUGINS` | kosong | Plugin jenis dokumen tambahan `paket.modul:Kelas,...` (selain entry point `pqe.document_extractors`) | Saat menambah jenis dokumen baru |
 
-`api_secret` untuk tanda tangan HMAC dibuat per API key (`pqe create-key ... --with-secret` atau
-`pqe set-api-secret <key_id>` untuk rotasi) dan disimpan terenkripsi dengan `PQE_SECRET_KEY`. Mengganti
-`PQE_SECRET_KEY` membuat semua `api_secret` tidak terbaca: buat ulang dengan `pqe set-api-secret`.
+`api_secret` untuk tanda tangan HMAC dibuat per API key (`scripts/pqe.sh create-client ...`,
+`scripts/pqe.sh create-key ... --with-secret`, atau `scripts/pqe.sh set-api-secret <key_id>` untuk rotasi) dan disimpan
+terenkripsi dengan `PQE_SECRET_KEY`. Mengganti `PQE_SECRET_KEY` membuat semua `api_secret` tidak terbaca: buat ulang
+dengan `scripts/pqe.sh set-api-secret <key_id>`.
 
 ---
 

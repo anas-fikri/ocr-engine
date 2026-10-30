@@ -46,7 +46,8 @@ pqe ingestor
 
 Setiap peran menjalankan `bootstrap` saat start: membuat tabel database (jika belum ada), membuat kunci admin dari `PQE_BOOTSTRAP_ADMIN_KEY` (jika belum ada), meng-import tenant dari `PQE_TENANTS_DIR` (hanya tenant yang **belum** ada di DB), dan (hanya untuk uji lokal) membuat bucket jika `ENGINE_CREATE_BUCKETS=true`. Di server, bucket arsip `ocr` dibuat tim infra (bagian 4.1); bucket engine versi lama tidak diperlukan.
 
-Perintah operasional lain:
+Perintah operasional lain. Di server production (Docker Compose) perintah `pqe` hanya ada **di dalam container**:
+jalankan `scripts/pqe.sh <perintah>` atau `docker compose -f docker-compose.prod.yml exec engine pqe <perintah>`.
 
 | Perintah | Fungsi |
 |---|---|

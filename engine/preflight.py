@@ -169,7 +169,7 @@ def run(check_silo: bool = True) -> dict[str, Any]:
         with session_scope() as sess:
             n = sess.scalar(select(func.count()).select_from(ApiKeySecret)) or 0
         out.append(_item("Modul dokumen", "API key ber-api_secret", "ok" if n else "warn", f"{n} key",
-                         "pqe create-client --code <kode-aplikasi> --name \"Nama Aplikasi\""))
+                         "Di server: scripts/pqe.sh create-client --code <kode-aplikasi> --name \"Nama Aplikasi\""))
         out.append(_item("Modul dokumen", "Plugin invoice: QR e-Faktur",
                          "ok" if s.invoice_efaktur_qr == "off" else "warn",
                          s.invoice_efaktur_qr, "Aktifkan (decode/lookup) hanya setelah izin TBD-15 dikonfirmasi."))

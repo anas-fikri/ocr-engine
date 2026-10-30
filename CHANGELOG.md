@@ -37,6 +37,13 @@ Rilis dibuat dengan tag git `vX.Y.Z`; server production memakai tag, bukan caban
 - Client contoh tanpa dependency: `clients/php/DocumentOcrClient.php`, `clients/typescript/document-client.ts`.
 - Dependency baru: `pypdfium2` (BSD-3/Apache-2.0). Config tenant: field opsional `callback_hosts`.
 
+### Operasional
+- `scripts/deploy.sh` tidak lagi butuh `curl` di server: `/healthz` dibaca dari dalam container (Python image),
+  `curl`/`wget` host hanya cadangan. Jika versi tidak bisa dibaca, skrip mengatakannya dengan jelas (bukan melaporkan
+  build yang salah); preflight selalu dijalankan; peringatan bila ada commit/perubahan lokal di server.
+- `scripts/pqe.sh`: jalankan perintah `pqe` di dalam container engine (`scripts/pqe.sh create-client ...`). Dokumen
+  menulis perintah lengkap untuk server.
+
 ## [0.4.1] - 25 Okt 2026 (UAT)
 
 ### Perbaikan

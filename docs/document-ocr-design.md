@@ -38,7 +38,7 @@ Referensi API: [api-reference.md](api-reference.md#dokumen); cara integrasi:
 
 | Konsep | Implementasi |
 |---|---|
-| Client | Satu aplikasi pemakai OCR dokumen = satu **tenant** (namespace). Dibuat dengan `pqe create-client --code <kode> --name "<nama>"` (tenant + API key role `app` + `api_secret`) |
+| Client | Satu aplikasi pemakai OCR dokumen = satu **tenant** (namespace). Dibuat dengan `pqe create-client --code <kode> --name "<nama>"` (di server: `scripts/pqe.sh create-client ...`; tenant + API key role `app` + `api_secret`) |
 | Kredensial | API key (disimpan hash) + `api_secret` HMAC (terenkripsi). Rotasi `pqe set-api-secret <key_id>`, cabut lewat Web UI |
 | Data milik client | Job, file inbox, hasil, template penerbit, koreksi, idempotency, nonce replay: semua berkolom `tenant_code`, semua query difilter tenant API key. Data client lain = `404` |
 | Callback | Opsional per job. Host harus ada di `callback_hosts` tenant client itu atau `PQE_DOCS_CALLBACK_HOSTS` global. Ditandatangani dengan `api_secret` key pembuat job |

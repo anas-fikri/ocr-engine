@@ -520,14 +520,15 @@ Modul OCR dokumen generik untuk aplikasi client mana pun ([ADR 0008](adr/0008-mo
 panduan integrasi: [integration-guide.md §13](integration-guide.md#13-integrasi-modul-dokumen), client contoh:
 [clients/](../clients/README.md)). Terpisah dari analisis foto: endpoint, tabel, dan antrean sendiri.
 
-Setiap client = satu tenant (namespace) dengan API key + `api_secret` sendiri (`pqe create-client`); job, file,
+Setiap client = satu tenant (namespace) dengan API key + `api_secret` sendiri (di server:
+`scripts/pqe.sh create-client --code <kode> --name "<nama>"`); job, file,
 template, dan callback client lain tidak terlihat (`404`). Jenis dokumen = plugin (`document_type`); yang terpasang
 tampil di `GET /healthz` (`documents.types`). Plugin bawaan: `invoice` (lihat [field invoice](#plugin-invoice)).
 
 ### Autentikasi: API key + tanda tangan HMAC
 
-Hanya API key role `app` yang terikat tenant **dan** punya `api_secret` (`pqe create-client` atau
-`pqe create-key ... --with-secret`).
+Hanya API key role `app` yang terikat tenant **dan** punya `api_secret` (`scripts/pqe.sh create-client ...` atau
+`scripts/pqe.sh create-key ... --with-secret`; `scripts/pqe.sh` = `docker compose -f docker-compose.prod.yml exec engine pqe`).
 Namespace (job, file, template) = tenant API key. Setiap request wajib:
 
 | Header | Isi |

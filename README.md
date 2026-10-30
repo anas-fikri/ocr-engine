@@ -125,6 +125,9 @@ docs/                 dokumentasi
 
 ## Perintah `pqe`
 
+Di server production perintah `pqe` ada **di dalam container engine**: `scripts/pqe.sh <perintah>` atau
+`docker compose -f docker-compose.prod.yml exec engine pqe <perintah>`.
+
 | Perintah | Fungsi |
 |---|---|
 | `pqe run` | API + worker + ingestor dalam satu proses (PC / uji coba) |

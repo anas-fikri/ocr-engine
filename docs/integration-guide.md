@@ -1018,12 +1018,15 @@ sequenceDiagram
 Satu perintah membuat namespace (tenant) + API key + `api_secret` untuk satu aplikasi. Keduanya hanya tampil
 **sekali**; serahkan ke tim aplikasi lewat kanal aman dan simpan di `.env` server aplikasi (bukan git, bukan frontend):
 
+Jalankan dari folder repo di server (perintah `pqe` ada di dalam container engine, tidak di host):
+
 ```bash
-docker compose -f docker-compose.prod.yml exec engine pqe create-client --code aplikasi-keuangan --name "Aplikasi Keuangan"
+scripts/pqe.sh create-client --code aplikasi-keuangan --name "Aplikasi Keuangan"
 ```
 
-Opsional `--callback-hosts api.aplikasi.internal` bila aplikasi ingin callback (host lain ditolak). Rotasi secret:
-`pqe set-api-secret <key_id>`. Cabut akses: Web UI → API key. Contoh client: ICTNotes v3 (tenant `ictnotes`) adalah
+Sama dengan `docker compose -f docker-compose.prod.yml exec engine pqe create-client --code aplikasi-keuangan --name
+"Aplikasi Keuangan"`. Opsional `--callback-hosts api.aplikasi.internal` bila aplikasi ingin callback (host lain
+ditolak). Rotasi secret: `scripts/pqe.sh set-api-secret <key_id>`. Cabut akses: Web UI → API key. Contoh client: ICTNotes v3 (tenant `ictnotes`) adalah
 client pertama; aplikasi lain didaftarkan dengan cara yang sama.
 
 ### 13.2 Client siap pakai

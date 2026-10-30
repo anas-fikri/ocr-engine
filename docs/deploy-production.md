@@ -183,11 +183,14 @@ Lanjutkan dengan [Rencana UAT](uat-plan.md).
 |---|---|
 | Lihat log | `docker compose -f docker-compose.prod.yml logs -f engine` |
 | Status | `docker compose -f docker-compose.prod.yml ps` |
-| Update ke kode terbaru | `scripts/deploy.sh` (git pull, build dengan kode build = commit, tunggu siap, cek build yang berjalan, preflight) |
+| Update ke kode terbaru | `scripts/deploy.sh` (git pull, build dengan kode build = commit, tunggu siap, cek build yang berjalan, preflight). Tidak butuh `curl`/`wget` di server: `/healthz` dibaca dari dalam container. Memperingatkan bila ada commit/perubahan lokal di server yang tidak ada di remote |
 | Update ke versi/tag tertentu | `scripts/deploy.sh v0.1.1` |
 | Rollback | `scripts/deploy.sh v0.1.0` |
 | Restart | `docker compose -f docker-compose.prod.yml restart engine` |
 | Cek versi yang berjalan | `docker compose -f docker-compose.prod.yml exec engine pqe --version`, atau lihat Web UI (sidebar / pojok kanan atas), `GET /healthz`, header `X-PQE-Version` |
+| Perintah `pqe` lain | **Tidak ada perintah `pqe` di host**; jalankan di dalam container: `scripts/pqe.sh <perintah>` atau `docker compose -f docker-compose.prod.yml exec engine pqe <perintah>` |
+| Daftarkan aplikasi client modul dokumen | `scripts/pqe.sh create-client --code aplikasi-keuangan --name "Aplikasi Keuangan"` (= `docker compose -f docker-compose.prod.yml exec engine pqe create-client ...`); `api_key` + `api_secret` hanya tampil sekali |
+| Rotasi `api_secret` client | `scripts/pqe.sh set-api-secret <key_id>` |
 | Restore dari NAS | [operations.md bagian 6.4](operations.md) |
 
 Sebelum update, pastikan backup database terakhir berhasil (Web UI → Backup NAS). Setelah update atau rollback, cek
